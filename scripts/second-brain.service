@@ -1,0 +1,9 @@
+# systemd --user:  cp scripts/second-brain.service ~/.config/systemd/user/ && systemctl --user enable --now second-brain
+[Unit]
+Description=Second Brain (API + UI local)
+[Service]
+ExecStart=/usr/bin/env node %h/projetos/second-brain/packages/cli/dist/bin.js serve
+Restart=on-failure
+Environment=BRAIN_VAULT=%h/second-brain
+[Install]
+WantedBy=default.target

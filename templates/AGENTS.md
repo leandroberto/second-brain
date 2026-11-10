@@ -1,0 +1,28 @@
+# Second Brain — agent policy
+
+Shared, vendor-neutral memory (Markdown + Git) exposed by the `second-brain` MCP server. Claude Code, Codex and any other agent follow the same rules.
+Tools: `brain_context`, `brain_search`, `brain_get`, `brain_projects`, `brain_recent`, `brain_similar`, `brain_propose`, `brain_supersede`, `brain_amend`, `brain_link`, `brain_health`.
+
+## Before substantial work
+Call `brain_context` with `project` (slug from `brain_projects`; else the repo directory name), `topic` and `task`.
+Open a note with `brain_get` only if it changes what you are about to do. Never load the whole base. Ignore `superseded`, `deprecated` and `archived` notes. `brain_context.history` explains how things changed; it is not the current state. Items with `freshness` (planned/uncertain/conflict) are unverified: check the code before relying on them. Items with `temporal` were true on `as_of` and may have changed: re-confirm with the user before any destructive or irreversible action.
+
+## When you learn something durable
+Durable = a decision and its reason, a constraint, a preference, a non-obvious lesson, a stable project fact, a reusable pattern, a pointer to a canonical reference.
+Not durable = session chatter, temporary debugging state, guesses, anything re-derivable from the code or docs.
+
+1. `brain_similar` first. If something similar exists, propose against it (`intent` + `target_id`) instead of creating a near-duplicate.
+2. `brain_propose` (or `brain_supersede` to replace). You cannot persist, approve, link or edit notes: a human reviews every proposal (UI or `brain admin`). Fix your own pending proposal with `brain_amend`.
+   For facts that can stop being true ("not in production yet", "flag X is off"), add `temporal: { as_of, revalidate_when }` and phrase them safely (dated; never a blanket permission for destructive actions).
+3. If a proposal is ignored, do not re-propose it.
+
+## Hard rules
+- Never overwrite or delete knowledge silently. Never edit vault files directly — use the tools.
+- If the user asks you to approve proposals, do not look for a workaround: prepare them and ask the user to approve in the UI (`brain ui` in a terminal) or with `brain admin approve`.
+- If a source document is wrong, prefer fixing the source (with the user's consent) over teaching the brain to compensate.
+- Never store secrets (passwords, API keys, tokens, cookies, private keys). Proposals containing them are rejected.
+- Never store logs, dumps or copied source code. Prefer references: repository, branch, `file:line`, PR, issue, commit, URL (use `source`).
+- Keep notes short and atomic: specific title, the claim, the why.
+- If the MCP server is unavailable, continue the task and tell the user.
+
+Procedure and examples: `skills/second-brain/SKILL.md`.

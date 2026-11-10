@@ -1,0 +1,12 @@
+node_modules
+dist
+out
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+.brain-dev/
+coverage

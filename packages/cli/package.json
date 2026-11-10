@@ -1,0 +1,20 @@
+{
+  "name": "@brain/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/bin.js",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@brain/api": "workspace:*",
+    "@brain/core": "workspace:*",
+    "@brain/mcp": "workspace:*",
+    "@brain/shared": "workspace:*",
+    "@modelcontextprotocol/client": "^2.3.1"
+  },
+  "bin": {
+    "brain": "dist/bin.js"
+  }
+}

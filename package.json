@@ -1,0 +1,30 @@
+{
+  "name": "second-brain",
+  "private": true,
+  "license": "MIT",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/*' build && pnpm --filter @brain/web build",
+    "typecheck": "tsc -b packages/shared packages/core packages/mcp packages/api packages/cli && pnpm --filter @brain/web typecheck",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "brain": "node packages/cli/dist/bin.js",
+    "start": "./scripts/start.sh",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.12.0",
+    "playwright-core": "^1.64.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.4"
+  }
+}
