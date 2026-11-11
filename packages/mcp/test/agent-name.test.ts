@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Brain } from "@brain/core";
-import { agentNameFromEnv } from "../src/index.js";
+import { agentChannelFromEnv, agentNameFromEnv } from "../src/index.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const human = await terminalHuman("t");
@@ -28,6 +28,22 @@ describe("nome do agente do MCP vindo de BRAIN_AGENT_NAME", () => {
     expect(avisos[0]).toContain("BRAIN_AGENT_NAME");
     expect(agentNameFromEnv({}, warn)).toBeUndefined();
     expect(agentNameFromEnv({ BRAIN_AGENT_NAME: "" }, warn)).toBeUndefined();
+  });
+
+  it("canal module aceito só com nome module/<id>", () => {
+    const avisos: string[] = [];
+    const warn = (m: string) => { avisos.push(m); };
+    expect(agentChannelFromEnv({ BRAIN_AGENT_NAME: "module/xy", BRAIN_AGENT_CHANNEL: "module" }, "module/xy", warn)).toBe("module");
+    expect(avisos).toEqual([]);
+    expect(agentChannelFromEnv({ BRAIN_AGENT_NAME: "claude-code", BRAIN_AGENT_CHANNEL: "module" }, "claude-code", warn)).toBe("mcp");
+    expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: "module" }, undefined, warn)).toBe("mcp");
+    expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: "module" }, "module/X", warn)).toBe("mcp");
+    for (const c of ["ui", "cli-admin", "desktop", "bobagem"]) expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: c }, "module/xy", warn)).toBe("mcp");
+    expect(avisos).toHaveLength(7);
+    expect(avisos[0]).toContain("BRAIN_AGENT_CHANNEL");
+    expect(agentChannelFromEnv({}, "module/xy", warn)).toBe("mcp");
+    expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: "" }, "module/xy", warn)).toBe("mcp");
+    expect(avisos).toHaveLength(7);
   });
 
   it("o MCP grava como agent/<BRAIN_AGENT_NAME>, mesmo com outro nome de cliente", async () => {

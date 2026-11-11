@@ -17,9 +17,24 @@ export type CaptureResult =
 
 export type AskResult = { ok: true; resposta: string; fontes: string[] } | AssistantError;
 
+/** Chamada genérica (módulos): o prompt vai inteiro pela entrada padrão; sem `schemaJson`, `dados` é o texto da resposta. */
+export interface CompleteParams {
+  /** identidade do chamador (ex.: `module/<id>`); vai em `BRAIN_AGENT_NAME` quando `comNotas` */
+  agente: string;
+  prompt: string;
+  schemaJson?: object;
+  modelo?: string;
+  orcamentoUsd: number;
+  timeoutS: number;
+  /** libera as ferramentas de leitura do MCP do vault (as mesmas do `ask`); sem isso, nenhuma ferramenta */
+  comNotas: boolean;
+}
+export type CompleteResult = { ok: true; dados: unknown; custoUsd?: number } | AssistantError;
+
 export interface AssistantEngine {
   capture(entry: CaptureEntry): Promise<CaptureResult>;
   ask(q: string, conversationId?: string): Promise<AskResult>;
+  complete(p: CompleteParams): Promise<CompleteResult>;
 }
 
 /** Resposta padrão quando nada nas notas sustenta a resposta. */

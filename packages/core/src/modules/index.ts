@@ -7,3 +7,4 @@ export * from "./loader.js";
 export * from "./cron.js";
 export * from "./scheduler.js";
 export * from "./avisos.js";
+export * from "./ia.js";

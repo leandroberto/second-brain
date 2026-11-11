@@ -52,13 +52,28 @@ export function agentNameFromEnv(env: NodeJS.ProcessEnv = process.env, warn: (m:
   return "claude-code";
 }
 
+const MODULE_AGENT = /^module\/[a-z][a-z0-9-]{1,30}$/;
+
+/**
+ * Canal do agente, definido por quem INICIA o processo (`BRAIN_AGENT_CHANNEL`). Só `module` é aceito, e só com nome
+ * `module/<id>`; qualquer outro valor (inclusive canais humanos como `ui`) é ignorado com aviso no stderr: continua `mcp`.
+ */
+export function agentChannelFromEnv(env: NodeJS.ProcessEnv, name: string | undefined, warn: (m: string) => void = (m) => console.error(m)): "mcp" | "module" {
+  const raw = env.BRAIN_AGENT_CHANNEL;
+  if (raw === undefined || raw === "") return "mcp";
+  if (raw === "module" && name !== undefined && MODULE_AGENT.test(name)) return "module";
+  warn(`[brain] BRAIN_AGENT_CHANNEL ignorado (${JSON.stringify(raw.slice(0, 40))} com agente ${JSON.stringify((name ?? "").slice(0, 80))}); usando "mcp"`);
+  return "mcp";
+}
+
 /** Cria o servidor MCP. `brain` é compartilhado com nenhum outro processo: cada cliente (Claude, Codex) tem o seu, coordenados por lock de arquivo. */
 export function createServer(brain: Brain, opts: { agentOverride?: string } = {}): McpServer {
   const server = new McpServer({ name: "second-brain", version: VERSION }, { instructions: INSTRUCTIONS });
   const fromEnv = agentNameFromEnv();
+  const channel = agentChannelFromEnv(process.env, fromEnv);
   // a identidade é do ADAPTER: todo cliente MCP é um agente (canal mcp); nenhum argumento de ferramenta muda isso
   const actor = (): Principal => {
-    if (fromEnv) return principal("agent", fromEnv, "mcp");
+    if (fromEnv) return principal("agent", fromEnv, channel);
     const raw = (opts.agentOverride ?? server.server.getClientVersion()?.name ?? "unknown-agent").toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
     // nomes de cliente variam (ex.: "codex-mcp-client"); normaliza para a auditoria agrupar por agente
     const name = /^codex/.test(raw) ? "codex" : /^claude/.test(raw) ? "claude-code" : raw;
