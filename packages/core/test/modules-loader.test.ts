@@ -144,6 +144,30 @@ describe("loadModules", () => {
     expect(reg.get("ok")!.causa).toContain("explode no import");
   });
 
+  it("causa de import/iniciar sai truncada em 300 e sem possível segredo (mesma higiene dos erros recentes)", async () => {
+    const pastas: string[] = [];
+    const pacote = (id: string, corpo: string) => {
+      const d = mkdtempSync(join(tmpdir(), `brain-modcausa-${id}-`)); pastas.push(d);
+      writeFileSync(join(d, "package.json"), '{"type":"module","exports":{".":"./index.js"}}');
+      writeFileSync(join(d, "index.js"), corpo);
+      return { path: d };
+    };
+    const segredo = `ghp_${"a".repeat(36)}`;
+    const b = await comModulos({
+      longo: pacote("longo", `export default { sdk: 1, id: "longo", nome: "L", async iniciar() { throw new Error("${"x".repeat(400)}"); } };`),
+      chave: pacote("chave", `export default { sdk: 1, id: "chave", nome: "C", async iniciar() { throw new Error("token ${segredo} recusado"); } };`),
+      importa: pacote("importa", `throw new Error("no import: ${segredo}");`),
+    });
+    const reg = await loadModules(b, { modo: "serve" });
+    const longo = reg.get("longo")!.causa!;
+    expect(longo.length).toBe(300);
+    expect(longo.startsWith("iniciar falhou: xxx")).toBe(true);
+    expect(reg.get("chave")!.causa).toBe("[mensagem omitida: possível segredo]");
+    expect(reg.get("importa")!.causa).toBe("[mensagem omitida: possível segredo]");
+    expect(JSON.stringify(reg.list().map((m) => m.causa))).not.toContain("ghp_");
+    for (const d of pastas) rmSync(d, { recursive: true, force: true });
+  });
+
   it("estado fora do vault: grava e lê o mesmo valor", async () => {
     const b = await comModulos({ ok: mod("ok") });
     const reg = await loadModules(b, { modo: "serve" });

@@ -8,7 +8,7 @@ import { safeResolve } from "../paths.js";
 import { scanSecrets } from "../secrets.js";
 import { AVISOS_NOOP, IA_INDISPONIVEL, createModuleContext, type AvisosSink } from "./context.js";
 import { MODULE_ID_RE } from "./identity.js";
-import { ModuleRegistry, type LoadedModule, type ModuleStatus } from "./registry.js";
+import { ModuleRegistry, mensagemSegura, type LoadedModule, type ModuleStatus } from "./registry.js";
 import { validar } from "./schema.js";
 import { serveEstado } from "./serve-info.js";
 import { modulesStateRoot } from "./state.js";
@@ -95,7 +95,7 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
 
     let def: ModuleDef;
     try { def = await importModuleDef(dir); }
-    catch (e) { falhar(`falha ao importar o módulo: ${msg(e)}`); continue; }
+    catch (e) { falhar(mensagemSegura(`falha ao importar o módulo: ${msg(e)}`)); continue; }
 
     m.def = def;
     m.versao = typeof def.versao === "string" ? def.versao : undefined;
@@ -132,7 +132,7 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
       m.status = "ativo"; m.causa = undefined;
     } catch (e) {
       m.ctx = undefined;
-      falhar(`iniciar falhou: ${msg(e)}`);
+      falhar(mensagemSegura(`iniciar falhou: ${msg(e)}`)); // vai crua para a API, a UI e o doctor: mesma higiene dos erros
       reg.recordError(id, "iniciar", e);
     }
   }

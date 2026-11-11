@@ -25,6 +25,15 @@ const MAX_ERROS = 50;
 const MARCADOR = "_executando.json";
 const MAX_MENSAGEM = 300;
 
+/**
+ * Higiene de toda mensagem de módulo que sai do processo (API, UI, doctor): truncada em 300 caracteres e trocada por
+ * "[mensagem omitida: possível segredo]" se ela (inteira ou truncada) parecer conter segredo.
+ */
+export function mensagemSegura(mensagem: string): string {
+  const t = mensagem.slice(0, MAX_MENSAGEM);
+  return scanSecrets(mensagem).length || scanSecrets(t).length ? "[mensagem omitida: possível segredo]" : t;
+}
+
 /** Módulos carregados + erros de execução (rotas, tarefas, ferramentas), gravados em `<root>/_erros.jsonl` (50 últimos por módulo). */
 export class ModuleRegistry {
   private readonly modules = new Map<string, LoadedModule>();
@@ -64,10 +73,7 @@ export class ModuleRegistry {
    * mensagem truncada em 300 caracteres e omitida se parecer conter segredo.
    */
   errosRecentes(id: string, n = 10): ModuleError[] {
-    return this.errors(id).slice(-n).map((e) => {
-      const t = e.mensagem.slice(0, MAX_MENSAGEM);
-      return { ...e, mensagem: scanSecrets(e.mensagem).length || scanSecrets(t).length ? "[mensagem omitida: possível segredo]" : t };
-    });
+    return this.errors(id).slice(-n).map((e) => ({ ...e, mensagem: mensagemSegura(e.mensagem) }));
   }
 
   /**
