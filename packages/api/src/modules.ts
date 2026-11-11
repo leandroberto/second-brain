@@ -8,7 +8,11 @@ import type { Chamador, Rota } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 
 /** Peças de módulos que o `serve` entrega à API (spec de módulos §7.6, §7.8, §7.9). */
-export interface ModulesApiOptions { registry: ModuleRegistry; scheduler?: Scheduler; avisos: AvisosStore }
+export interface ModulesApiOptions {
+  registry: ModuleRegistry; scheduler?: Scheduler; avisos: AvisosStore;
+  /** `true` quando o bloco `modules` do `config.yaml` em disco mudou desde a subida (o `serve` precisa reiniciar) */
+  reiniciar?: () => boolean;
+}
 
 /** Tipo de credencial de uma requisição. A decisão fica concentrada em `negarAntesDoRoteamento`/`credencialDeModulo`. */
 export type TipoCredencial = "sessao" | "desktop" | "api-token" | "pagina";
@@ -149,7 +153,7 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
   if (caminho === "/api/modules" && metodo === "GET") {
     if (!o) return responder(res, 200, { modulos: [], reiniciar: false });
     const { badges } = o.avisos.listar();
-    return responder(res, 200, { modulos: o.registry.list().map((m) => resumo(o, m, badges[m.id] ?? 0)), reiniciar: false });
+    return responder(res, 200, { modulos: o.registry.list().map((m) => resumo(o, m, badges[m.id] ?? 0)), reiniciar: o.reiniciar?.() ?? false });
   }
   if (!caminho.startsWith(PREFIXO)) return false;
 
@@ -184,7 +188,7 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
     // schema que lança é defeito do módulo (500 + Saúde); issues são entrada inválida (400)
     if (!v.ok) return v.lancou ? erroDoModulo(o, res, id, `mcp:${nome}`, v.erro) : responder(res, 400, { error: "invalid", message: v.mensagem });
     let texto: string | undefined;
-    try { texto = serializar({ resultado: (await ferramenta.rodar(v.value, ctx)) ?? null, chamador }); }
+    try { texto = serializar({ resultado: (await o.registry.executando(id, `mcp:${nome}`, () => ferramenta.rodar(v.value, ctx))) ?? null, chamador }); }
     catch (e) { return erroDoModulo(o, res, id, `mcp:${nome}`, e); }
     return responder(res, 200, texto);
   }
@@ -209,7 +213,7 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
     if (!params) continue;
     if (!podeChamar(rota, chamador)) throw new BrainError("forbidden", "esta rota exige um humano");
     let texto: string | undefined;
-    try { texto = serializar(await rota.rodar({ metodo, params, query: new URLSearchParams(url.search), body, chamador }, ctx)); }
+    try { texto = serializar(await o.registry.executando(id, `rota:${metodo} ${rota.caminho}`, () => rota.rodar({ metodo, params, query: new URLSearchParams(url.search), body, chamador }, ctx))); }
     catch (e) { return erroDoModulo(o, res, id, `rota:${metodo} ${rota.caminho}`, e); }
     return texto === undefined ? responder(res, 204) : responder(res, 200, texto);
   }

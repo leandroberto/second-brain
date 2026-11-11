@@ -39,6 +39,11 @@ function gravar(arquivo: string, g: Gastos): void {
   renameSync(tmp, arquivo);
 }
 
+/** Gasto de IA do módulo no dia local (de `<root>/_ia.json`), em US$. Para o doctor e a lista de módulos. */
+export function gastoIaDoDia(root: string, id: string, dia: Date = new Date()): number {
+  return ler(join(root, "_ia.json"))[id]?.[diaLocal(dia)] ?? 0;
+}
+
 const valido = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
 
 /**

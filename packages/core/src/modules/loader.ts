@@ -10,6 +10,7 @@ import { AVISOS_NOOP, IA_INDISPONIVEL, createModuleContext, type AvisosSink } fr
 import { MODULE_ID_RE } from "./identity.js";
 import { ModuleRegistry, type LoadedModule, type ModuleStatus } from "./registry.js";
 import { validar } from "./schema.js";
+import { readServeInfo } from "./serve-info.js";
 import { modulesStateRoot } from "./state.js";
 
 /** Expande `~` e `$VAR`/`${VAR}` num caminho configurado. Variável ausente vira vazio. */
@@ -42,6 +43,13 @@ function entrada(dir: string): string {
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** Importa o `export default` do pacote do módulo (sem validar o contrato). Lança se não houver. */
+export async function importModuleDef(dir: string): Promise<ModuleDef> {
+  const mod = await import(pathToFileURL(entrada(dir)).href) as { default?: ModuleDef };
+  if (!mod.default || typeof mod.default !== "object") throw new Error("o módulo não tem export default (use defineModule)");
+  return mod.default;
+}
+
 async function comTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let t: NodeJS.Timeout | undefined;
   try {
@@ -54,6 +62,8 @@ export interface LoadOptions {
   deps?: { iaPara?: (id: string) => ModuleIa; avisos?: AvisosSink };
   hostname?: string;
   iniciarTimeoutMs?: number;
+  /** `false` (só `brain modules check`, em modo `definicoes`): não exige a config do vault, que a checagem não tem */
+  validarConfig?: boolean;
 }
 
 /**
@@ -65,6 +75,11 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
   const host = o.hostname ?? osHostname();
   const avisos = o.deps?.avisos ?? AVISOS_NOOP;
   const timeout = o.iniciarTimeoutMs ?? 30_000;
+  // execução interrompida pela queda do serve anterior vira erro do módulo; não mexe no marcador de outro serve vivo
+  if (o.modo === "serve") {
+    const vivo = readServeInfo(modulesStateRoot(brain));
+    if (!vivo || vivo.pid === process.pid) reg.recuperarExecucoesInterrompidas();
+  }
 
   for (const [id, entry] of Object.entries(brain.config.modules)) {
     if (entry.enabled === false) continue;
@@ -77,11 +92,8 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
     if (!existsSync(dir)) { m.status = "ausente"; m.causa = `pasta do módulo não encontrada: ${dir}`; continue; }
 
     let def: ModuleDef;
-    try {
-      const mod = await import(pathToFileURL(entrada(dir)).href) as { default?: ModuleDef };
-      if (!mod.default || typeof mod.default !== "object") throw new Error("o módulo não tem export default (use defineModule)");
-      def = mod.default;
-    } catch (e) { falhar(`falha ao importar o módulo: ${msg(e)}`); continue; }
+    try { def = await importModuleDef(dir); }
+    catch (e) { falhar(`falha ao importar o módulo: ${msg(e)}`); continue; }
 
     m.def = def;
     m.versao = typeof def.versao === "string" ? def.versao : undefined;
@@ -90,11 +102,12 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
     if (def.id !== id) { falhar(`id do módulo ("${def.id}") difere da chave na config ("${id}")`); continue; }
     if (!MODULE_ID_RE.test(id)) { falhar(`id inválido na config: "${id}"`); continue; }
 
+    const validarConfig = o.validarConfig !== false || o.modo === "serve";
     // o valor nunca entra na mensagem
-    if (scanSecrets(JSON.stringify(entry.config ?? null)).length) { falhar(`segredo na configuração do módulo ${id}: use variável de ambiente ou o cofre do sistema`); continue; }
+    if (validarConfig && scanSecrets(JSON.stringify(entry.config ?? null)).length) { falhar(`segredo na configuração do módulo ${id}: use variável de ambiente ou o cofre do sistema`); continue; }
 
     let config: unknown = entry.config;
-    if (def.configSchema) {
+    if (def.configSchema && validarConfig) {
       const r = await validar(def.configSchema, entry.config);
       if (!r.ok) { falhar(`configuração inválida: ${r.mensagem}`); continue; }
       config = r.value;
@@ -113,7 +126,7 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
     try {
       const ctx = createModuleContext(brain, id, config, { ia: o.deps?.iaPara?.(id) ?? IA_INDISPONIVEL, avisos });
       m.ctx = ctx;
-      if (def.iniciar) await comTimeout(def.iniciar(ctx), timeout);
+      if (def.iniciar) await reg.executando(id, "iniciar", () => comTimeout(def.iniciar!(ctx), timeout));
       m.status = "ativo"; m.causa = undefined;
     } catch (e) {
       m.ctx = undefined;

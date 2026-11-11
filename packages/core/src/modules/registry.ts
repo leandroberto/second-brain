@@ -1,5 +1,6 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { ModuleContext, ModuleDef } from "@brain/module-sdk";
 
 export type ModuleStatus = "ativo" | "falho" | "inativo" | "ausente";
@@ -16,11 +17,17 @@ export interface LoadedModule {
 
 export interface ModuleError { em: string; onde: string; mensagem: string }
 
+/** Uma execução de código de módulo em curso, como gravada em `<root>/_executando.json`. */
+export interface Execucao { id: string; onde: string; desde: string }
+
 const MAX_ERROS = 50;
+const MARCADOR = "_executando.json";
 
 /** Módulos carregados + erros de execução (rotas, tarefas, ferramentas), gravados em `<root>/_erros.jsonl` (50 últimos por módulo). */
 export class ModuleRegistry {
   private readonly modules = new Map<string, LoadedModule>();
+  private readonly emCurso = new Map<number, Execucao>();
+  private seq = 0;
   constructor(private readonly root?: string) {}
 
   /** @internal usado pelo carregador */
@@ -46,6 +53,52 @@ export class ModuleRegistry {
 
   errors(id: string): ModuleError[] {
     return this.ler().filter((l) => l.id === id).map(({ em, onde, mensagem }) => ({ em, onde, mensagem }));
+  }
+
+  /**
+   * Roda código de módulo (handler de rota, ferramenta `_mcp`, `iniciar`, tarefa) com o marcador `<root>/_executando.json`
+   * gravado antes e atualizado no fim (spec §7.12). Execuções concorrentes: o marcador guarda a LISTA das que estão em curso
+   * (`[{ id, onde, desde }]`) e some quando a lista esvazia. Se o processo cair no meio (laço infinito, `process.exit`), o
+   * marcador fica e a próxima subida o converte em erro (`recuperarExecucoesInterrompidas`).
+   */
+  async executando<T>(id: string, onde: string, fn: () => Promise<T> | T): Promise<T> {
+    if (!this.root) return fn();
+    const n = ++this.seq;
+    this.emCurso.set(n, { id, onde, desde: new Date().toISOString() });
+    this.gravarMarcador();
+    try { return await fn(); }
+    finally { this.emCurso.delete(n); this.gravarMarcador(); }
+  }
+
+  /** Na subida do `serve`: cada execução que ficou no marcador vira erro do módulo ("o serve caiu enquanto…") e o arquivo é apagado. */
+  recuperarExecucoesInterrompidas(): void {
+    if (!this.root) return;
+    const arq = join(this.root, MARCADOR);
+    if (!existsSync(arq)) return;
+    let v: unknown;
+    try { v = JSON.parse(readFileSync(arq, "utf8")); } catch { v = []; }
+    for (const e of Array.isArray(v) ? v : [v]) {
+      const { id, onde } = (e ?? {}) as Partial<Execucao>;
+      if (typeof id === "string" && typeof onde === "string") this.recordError(id, onde, new Error(`o serve caiu enquanto ${id} executava ${onde}`));
+    }
+    try { rmSync(arq, { force: true }); } catch { /* best effort */ }
+  }
+
+  /** Desligamento ordenado: o que ainda roda (tarefa que estourou o tempo e não respeitou o sinal) não é queda; apaga o marcador. */
+  encerrarExecucoes(): void {
+    this.emCurso.clear();
+    this.gravarMarcador();
+  }
+
+  private gravarMarcador(): void {
+    if (!this.root) return;
+    const arq = join(this.root, MARCADOR);
+    try {
+      if (!this.emCurso.size) { rmSync(arq, { force: true }); return; }
+      const tmp = `${arq}.${randomBytes(6).toString("hex")}.tmp`;
+      writeFileSync(tmp, JSON.stringify([...this.emCurso.values()]), { mode: 0o600 });
+      renameSync(tmp, arq);
+    } catch { /* o marcador é diagnóstico: falha de disco nunca impede a execução */ }
   }
 
   private ler(): Array<ModuleError & { id: string }> {

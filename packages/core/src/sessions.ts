@@ -34,21 +34,26 @@ const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 function load<T>(f: string, empty: T): T { try { return JSON.parse(readFileSync(f, "utf8")) as T; } catch { return empty; } }
 function save(f: string, data: unknown) { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(data, null, 2), { mode: 0o600 }); try { chmodSync(f, 0o600); } catch { /* fs sem chmod */ } }
 
-/** Emite uma sessão humana da UI. Só para quem JÁ provou ser o revisor num terminal (`humanFromTerminal`): sem isso, negado. */
-export function issueHumanSession(vault: string, proof: Principal, o: SessionStoreOptions & { label?: string; ttlDays?: number; scope?: SessionScope } = {}): string {
+/**
+ * Emite uma sessão humana da UI. Só para quem JÁ provou ser o revisor num terminal (`humanFromTerminal`): sem isso, negado.
+ * `ttlMinutes`, se vier, prevalece sobre `ttlDays` (sessão curta do `brain modules run`).
+ */
+export function issueHumanSession(vault: string, proof: Principal, o: SessionStoreOptions & { label?: string; ttlDays?: number; ttlMinutes?: number; scope?: SessionScope } = {}): string {
   if (!isPrincipal(proof) || proof.kind !== "human" || proof.channel !== "cli-admin") throw new BrainError("forbidden", "sessão humana só é emitida para o revisor autenticado num terminal interativo (brain ui / brain serve)");
   const scope = o.scope ?? "full";
   if (!SCOPES.includes(scope)) throw new BrainError("invalid", `escopo de sessão inválido: ${String(scope)}`);
   const f = o.file ?? defaultSessionsFile(); const st = load<Store>(f, {} as Store); const k = keyOf(vault);
   const token = `hs_${randomBytes(32).toString("hex")}`; const now = Date.now();
   const live = (st[k] ?? []).filter((e) => Date.parse(e.expires_at) > now);
-  st[k] = capped([...live, entry(token, now, o.ttlDays, o.label ?? (scope === "desktop" ? "desktop" : "ui"), scope)]); save(f, st);
+  if (o.ttlMinutes !== undefined && !(Number.isFinite(o.ttlMinutes) && o.ttlMinutes > 0)) throw new BrainError("invalid", "ttlMinutes deve ser maior que zero");
+  const ttlMs = o.ttlMinutes !== undefined ? o.ttlMinutes * 60_000 : (o.ttlDays ?? 30) * 864e5;
+  st[k] = capped([...live, entry(token, now, ttlMs, o.label ?? (scope === "desktop" ? "desktop" : "ui"), scope)]); save(f, st);
   return token;
 }
 
 const MAX_FULL = 10; const MAX_DESKTOP = 2;
-const entry = (token: string, now: number, ttlDays: number | undefined, label: string, scope: SessionScope): Entry =>
-  ({ hash: sha(token), created_at: new Date(now).toISOString(), expires_at: new Date(now + (ttlDays ?? 30) * 864e5).toISOString(), label: label.slice(0, 60), scope });
+const entry = (token: string, now: number, ttlMs: number, label: string, scope: SessionScope): Entry =>
+  ({ hash: sha(token), created_at: new Date(now).toISOString(), expires_at: new Date(now + ttlMs).toISOString(), label: label.slice(0, 60), scope });
 /**
  * Cotas por vault, separadas: no máximo 10 sessões `full` e 2 `desktop` vivas (as mais antigas de cada escopo saem primeiro).
  * Assim abrir a UI muitas vezes nunca despeja a credencial de longa duração do desktop.
@@ -71,7 +76,7 @@ export function renewDesktopSession(vault: string, token: string, o: SessionStor
   const cur = list.find((e) => e.hash.length === h.length && timingSafeEqual(Buffer.from(e.hash), h));
   if (!cur || cur.scope !== "desktop") throw deny();
   const next = `hs_${randomBytes(32).toString("hex")}`;
-  st[k] = capped([...list.filter((e) => e !== cur), entry(next, now, o.ttlDays, cur.label, "desktop")]);
+  st[k] = capped([...list.filter((e) => e !== cur), entry(next, now, (o.ttlDays ?? 30) * 864e5, cur.label, "desktop")]);
   save(f, st);
   return next;
 }
@@ -99,6 +104,19 @@ export function revokeHumanSessions(vault: string, proof: Principal, o: SessionS
   if (!isPrincipal(proof) || !isHumanReviewer(proof)) throw new BrainError("forbidden", "revogar sessões exige o revisor humano");
   const f = o.file ?? defaultSessionsFile(); const st = load<Store>(f, {} as Store); const k = keyOf(vault);
   const n = st[k]?.length ?? 0; delete st[k]; if (existsSync(f)) save(f, st); return n;
+}
+
+/**
+ * Revoga só a sessão deste token (a sessão curta do `brain modules run`, no `finally`). As demais continuam válidas. Token
+ * desconhecido ou já expirado: nada a fazer, não lança. Não exige prova de humano: quem tem o token já pode usá-lo.
+ */
+export function revokeHumanSession(vault: string, token: string, o: SessionStoreOptions = {}): void {
+  if (typeof token !== "string" || !token) return;
+  const f = o.file ?? defaultSessionsFile(); if (!existsSync(f)) return;
+  const st = load<Store>(f, {} as Store); const k = keyOf(vault); const h = sha(token);
+  const list = st[k] ?? []; const rest = list.filter((e) => e.hash !== h);
+  if (rest.length === list.length) return;
+  st[k] = rest; save(f, st);
 }
 
 // ---- frase-senha opcional do revisor (eleva a barreira: um agente não a conhece) ----

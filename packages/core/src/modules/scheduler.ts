@@ -164,11 +164,14 @@ export class Scheduler {
     });
     try {
       const tctx: TarefaContext = { ...ctx, ocorrencia, sinal: ctl.signal };
-      const exec = (async () => {
-        try { await t.rodar(tctx); return { resultado: "ok" } as ResultadoTarefa; }
-        catch (e) { return { resultado: "erro", erro: (e instanceof Error ? e.message : String(e)).slice(0, 500), interna: e } as ResultadoTarefa & { interna: unknown }; }
-      })();
-      return await Promise.race([exec, limite]);
+      // marcador de execução (§7.12) gravado antes de chamar `rodar`; sai no fim, no timeout ou na interrupção
+      return await this.reg.executando(id, `tarefa:${t.id}`, () => {
+        const exec = (async () => {
+          try { await t.rodar(tctx); return { resultado: "ok" } as ResultadoTarefa; }
+          catch (e) { return { resultado: "erro", erro: (e instanceof Error ? e.message : String(e)).slice(0, 500), interna: e } as ResultadoTarefa & { interna: unknown }; }
+        })();
+        return Promise.race([exec, limite]);
+      });
     } finally {
       clearTimeout(timer);
       if (onAbort) ctl.signal.removeEventListener("abort", onAbort);

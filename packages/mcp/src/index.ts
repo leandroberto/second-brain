@@ -1,7 +1,8 @@
-import { McpServer } from "@modelcontextprotocol/server";
+import { readFileSync } from "node:fs";
+import { McpServer, fromJsonSchema } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import { Brain, principal } from "@brain/core";
+import { BRAIN_TOOLS, Brain, MODULE_TOOL_RE, loadModules, modulesStateRoot, principal, serveAddress, type LoadedModule, type ModuleRegistry } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, RESOLUTIONS, type Principal } from "@brain/shared";
 
 const VERSION = "0.1.0";
@@ -66,8 +67,92 @@ export function agentChannelFromEnv(env: NodeJS.ProcessEnv, name: string | undef
   return "mcp";
 }
 
-/** Cria o servidor MCP. `brain` é compartilhado com nenhum outro processo: cada cliente (Claude, Codex) tem o seu, coordenados por lock de arquivo. */
-export function createServer(brain: Brain, opts: { agentOverride?: string } = {}): McpServer {
+/**
+ * Problema que impede registrar a ferramenta de módulo no MCP, ou `undefined` se ela é registrável: nome fora de
+ * `MODULE_TOOL_RE`, sem descrição, `entrada` que não é Standard Schema, ou `entradaJson` que não é um JSON Schema de objeto
+ * que o SDK do MCP compile. Usado no registro e no `brain modules check`.
+ */
+export function problemaDaFerramenta(f: unknown): string | undefined {
+  const x = (f ?? {}) as Partial<FerramentaMcp>;
+  if (typeof x.nome !== "string" || !MODULE_TOOL_RE.test(x.nome)) return `nome de ferramenta inválido: "${String(x.nome)}" (use ${MODULE_TOOL_RE.source})`;
+  if (typeof x.descricao !== "string" || !x.descricao.trim()) return `ferramenta ${x.nome}: descricao ausente`;
+  if (typeof (x.entrada as { "~standard"?: { validate?: unknown } } | undefined)?.["~standard"]?.validate !== "function") return `ferramenta ${x.nome}: entrada não é um Standard Schema (use zod 4)`;
+  if (typeof x.rodar !== "function") return `ferramenta ${x.nome}: rodar ausente`;
+  const j = x.entradaJson as { type?: unknown } | undefined;
+  if (!j || typeof j !== "object" || Array.isArray(j) || j.type !== "object") return `ferramenta ${x.nome}: entradaJson deve ser um JSON Schema com type "object"`;
+  try { fromJsonSchema(j as Parameters<typeof fromJsonSchema>[0]); }
+  catch (e) { return `ferramenta ${x.nome}: entradaJson inválido (${(e as Error).message})`; }
+  return undefined;
+}
+
+type FerramentaMcp = NonNullable<NonNullable<LoadedModule["def"]>["ferramentasMcp"]>[number];
+
+const textoDeErro = (texto: string): Ok => ({ isError: true, content: [{ type: "text", text: texto }] });
+
+/**
+ * Executa a ferramenta de módulo no `serve` (§7.10): `POST <serve>/api/modules/<id>/_mcp/<nome>` com o api-token do vault.
+ * O estado do módulo tem um único dono (o `serve`); aqui só se repassa a entrada e o `resultado`. Nenhuma mensagem leva o token.
+ */
+async function executarNoServe(brain: Brain, id: string, nome: string, args: unknown): Promise<Ok> {
+  const ferramenta = `${id}_${nome}`;
+  const foraDoAr = textoDeErro(`o brain serve não está rodando; a ferramenta ${ferramenta} precisa dele`);
+  let token: string;
+  try { token = readFileSync(brain.vault.tokenPath, "utf8").trim(); } catch { return foraDoAr; }
+  if (!token) return foraDoAr;
+  const limpar = (t: string) => t.split(token).join("***");
+  const { url } = serveAddress(modulesStateRoot(brain));
+  let r: Response;
+  try {
+    r = await fetch(`${url}/api/modules/${encodeURIComponent(id)}/_mcp/${encodeURIComponent(nome)}`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ args: args ?? {} }),
+    });
+  } catch { return foraDoAr; }
+  let corpo: { resultado?: unknown; message?: unknown } = {};
+  try { corpo = await r.json() as typeof corpo; } catch { /* corpo vazio ou não JSON */ }
+  if (r.ok) return ok(corpo.resultado ?? null);
+  const detalhe = typeof corpo.message === "string" && corpo.message ? `: ${limpar(corpo.message).slice(0, 300)}` : "";
+  const porStatus: Record<number, string> = {
+    400: `entrada inválida para ${ferramenta}${detalhe}`,
+    401: `o brain serve em ${url} recusou o api-token deste vault (é de outro vault?)`,
+    403: `o brain serve negou a ferramenta ${ferramenta}${detalhe}`,
+    404: `${ferramenta} não existe no brain serve em execução${detalhe}; se o módulo foi adicionado agora, reinicie o brain serve`,
+    500: `a ferramenta ${ferramenta} falhou no módulo ${id}; o erro foi registrado (veja brain doctor ou a Saúde na UI)`,
+    503: `o módulo ${id} está indisponível no brain serve${detalhe}`,
+  };
+  return textoDeErro(limpar(porStatus[r.status] ?? `o brain serve respondeu ${r.status} para ${ferramenta}${detalhe}`));
+}
+
+/**
+ * Registra `<id>_<nome>` para cada ferramenta dos módulos carregados (só os que têm definição). Nunca substitui uma do core:
+ * todo o espaço `brain_*` é reservado a ele, e nome repetido ou inválido é ignorado. Avisos vão para o stderr (stdout é do protocolo).
+ */
+function registrarFerramentasDeModulos(server: McpServer, brain: Brain, modulos: ModuleRegistry, ocupados: Set<string>, warn: (m: string) => void): void {
+  for (const m of modulos.list()) {
+    if (!m.def || m.status !== "ativo") continue;
+    for (const f of Array.isArray(m.def.ferramentasMcp) ? m.def.ferramentasMcp : []) {
+      const nomeMcp = `${m.id}_${String((f as Partial<FerramentaMcp> | undefined)?.nome)}`;
+      const problema = problemaDaFerramenta(f);
+      if (problema) { warn(`[brain] módulo ${m.id}: ferramenta ignorada: ${problema}`); continue; }
+      if (nomeMcp.startsWith("brain_")) { warn(`[brain] módulo ${m.id}: ferramenta ${nomeMcp} ignorada (o prefixo brain_ é das ferramentas do core)`); continue; }
+      if (ocupados.has(nomeMcp)) { warn(`[brain] módulo ${m.id}: ferramenta ${nomeMcp} ignorada (nome repetido)`); continue; }
+      ocupados.add(nomeMcp);
+      server.registerTool(nomeMcp, {
+        title: `${m.def.nome ?? m.id}: ${f.nome}`,
+        description: f.descricao,
+        inputSchema: fromJsonSchema(f.entradaJson as Parameters<typeof fromJsonSchema>[0]),
+      }, async (args: unknown) => {
+        try { return await executarNoServe(brain, m.id, f.nome, args); }
+        catch (e) { return textoDeErro(`falha ao chamar o brain serve para ${nomeMcp}: ${(e as Error)?.message ?? String(e)}`); }
+      });
+    }
+  }
+}
+
+/**
+ * Cria o servidor MCP. `brain` é compartilhado com nenhum outro processo: cada cliente (Claude, Codex) tem o seu, coordenados por lock de arquivo.
+ * Síncrono: `modulos` (definições já carregadas, sem `iniciar`) vem de quem chama (`runStdio`).
+ */
+export function createServer(brain: Brain, opts: { agentOverride?: string; modulos?: ModuleRegistry } = {}): McpServer {
   const server = new McpServer({ name: "second-brain", version: VERSION }, { instructions: INSTRUCTIONS });
   const fromEnv = agentNameFromEnv();
   const channel = agentChannelFromEnv(process.env, fromEnv);
@@ -194,13 +279,20 @@ export function createServer(brain: Brain, opts: { agentOverride?: string } = {}
     title: "Saúde da base", description: "Status de Git, índice SQLite, embeddings, busca e problemas da base.", inputSchema: z.object({}), annotations: RO,
   }, guard(async () => { const h = await brain.health(); return { ...h, details: undefined, problems: h.problems }; }));
 
+  if (opts.modulos) registrarFerramentasDeModulos(server, brain, opts.modulos, new Set<string>(BRAIN_TOOLS), (m) => console.error(m));
   return server;
 }
 
 /** Entrada stdio: stdout é exclusivo do protocolo; logs vão para stderr. */
 export async function runStdio(vaultRoot: string, agentOverride?: string): Promise<void> {
   const brain = await Brain.open(vaultRoot);
-  const server = createServer(brain, { agentOverride });
+  // só as definições (sem `iniciar`): a execução é no serve. Sem módulos na config, nada muda (nem a pasta de estado é criada)
+  let modulos: ModuleRegistry | undefined;
+  if (Object.keys(brain.config.modules).length) {
+    try { modulos = await loadModules(brain, { modo: "definicoes" }); }
+    catch (e) { console.error(`[brain] módulos não carregados no MCP: ${(e as Error)?.message ?? String(e)}`); }
+  }
+  const server = createServer(brain, { agentOverride, modulos });
   await server.connect(new StdioServerTransport());
   const shutdown = () => { brain.close(); process.exit(0); };
   process.stdin.on("end", shutdown); process.on("SIGTERM", shutdown); process.on("SIGINT", shutdown);
