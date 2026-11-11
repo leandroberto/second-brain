@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Bot, FileInput, FolderKanban, Home as HomeIcon, Inbox, Network, ScanSearch, Search, Settings as Cog, ListChecks } from "lucide-react";
-import { api, captureToken, getToken, setToken } from "./api";
+import { api, captureToken, type ModulosResp, getToken, setToken } from "./api";
 import { Palette, type Cmd } from "./Palette";
 import { go, href, ToastProvider, useData, useHotkey, useRoute, useToast, errMsg } from "./lib";
 import { AgentsPage, GraphPage, ProjectsPage, ReviewPage, TimelinePage } from "./pages2";
@@ -8,6 +8,7 @@ import { Home, NotePage, SearchPage } from "./pages1";
 import { AddKnowledge, SettingsPage } from "./pages3";
 import { ImportPage } from "./ImportPage";
 import { RecentWritesPage } from "./RecentWrites";
+import { ModuleFrame, iconeDoModulo } from "./ModuleFrame";
 import { AssistantModal, type AssistantTab } from "./AssistantBox";
 
 captureToken();
@@ -20,6 +21,10 @@ function Shell() {
   const [pal, setPal] = useState(false); const [add, setAdd] = useState(false); const [asst, setAsst] = useState<AssistantTab>();
   const { data: rv } = useData<unknown[]>("/api/review", [], 15000);
   const { data: ib } = useData<unknown[]>("/api/inbox", [], 15000);
+  const { data: mods } = useData<ModulosResp>("/api/modules", [], 15000); // erro: mantém o último valor (ou nenhum módulo)
+  const [badgeLocal, setBadgeLocal] = useState<Record<string, number>>({});
+  useEffect(() => { setBadgeLocal({}); }, [mods]); // brain:badge só vale até o próximo GET /api/modules
+  const abas = (mods?.modulos ?? []).filter((m) => m.aba && /^[a-z][a-z0-9-]{1,30}$/.test(m.id));
   useHotkey("k", () => setPal((p) => !p), { ctrl: true });
   useHotkey("/", () => setPal(true));
   const section = r.path[0] ?? "";
@@ -53,6 +58,7 @@ function Shell() {
     case "graph": page = <GraphPage />; break;
     case "import": page = <ImportPage />; break;
     case "settings": page = <SettingsPage />; break;
+    case "m": page = <ModuleFrame id={r.path[1] ?? ""} resto={r.path.slice(2).join("/")} onBadge={(id, n) => setBadgeLocal((b) => ({ ...b, [id]: n }))} />; break;
     default: page = <div className="wrap"><h1>Página não encontrada</h1></div>;
   }
   const counts: Record<string, number> = { review: rv?.length ?? 0, inbox: ib?.length ?? 0 };
@@ -62,6 +68,7 @@ function Shell() {
       <nav className="side" aria-label="Principal">
         <div className="brand"><div className="brand-mark"><ScanSearch size={15} /></div><span>Second Brain</span></div>
         {NAV.map(([k, label, Icon]) => <a key={k} className="nav" href={href(k)} aria-current={section === k ? "page" : undefined}><Icon size={16} /><span className="lbl">{label}</span>{counts[k] ? <span className="count">{counts[k]}</span> : null}</a>)}
+        {abas.map((m) => { const Icon = iconeDoModulo(m.icone); const n = badgeLocal[m.id] ?? m.badge; return <a key={`m-${m.id}`} className="nav" href={href(`m/${m.id}`)} aria-current={section === "m" && r.path[1] === m.id ? "page" : undefined}><Icon size={16} /><span className="lbl">{m.nome}</span>{n ? <span className="count">{n}</span> : null}</a>; })}
         <div className="side-foot"><div className="side-sep" /><a className="nav" href={href("settings")} aria-current={section === "settings" ? "page" : undefined}><Cog size={16} /><span className="lbl">Configurações</span></a></div>
       </nav>
       <div className="main">
