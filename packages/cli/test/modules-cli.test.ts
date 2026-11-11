@@ -1,13 +1,13 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, serveVivo, writeServeInfo } from "@brain/core";
+import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, serveVivo, vaultFingerprint, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
 import { dispararTarefa, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
@@ -159,6 +159,99 @@ describe("serve que não responde e lock do serve", () => {
     const s = await startServe(brain, { port: 0, sessions: sessions() });
     await s.close();
     expect(existsSync(join(root, "..", "serve.lock"))).toBe(false);
+  });
+});
+
+describe("lock do serve depois de uma queda (pid reaproveitado)", () => {
+  const lock = () => join(root, "..", "serve.lock");
+  const queda = (pid: number) => {
+    // sobras de um SIGKILL/queda de energia: lock e serve.json com o mesmo pid, que renasceu em outro processo
+    writeFileSync(lock(), JSON.stringify({ pid, nonce: "de-um-processo-anterior", desde: new Date(Date.now() - 60_000).toISOString() }));
+    writeServeInfo(root, { url: semServe, pid, iniciado: new Date().toISOString() });
+  };
+
+  it("lock e serve.json com o pid deste processo (nonce desconhecido): o serve sobe", async () => {
+    queda(process.pid);
+    const s = await startServe(brain, { port: 0, sessions: sessions() });
+    try { expect(readServeInfo(root)).toEqual({ url: s.url, pid: process.pid }); } finally { await s.close(); }
+    expect(existsSync(lock())).toBe(false);
+  });
+
+  it("lock e serve.json com um pid vivo alheio e URL fechada: serveEstado morto, o serve sobe", async () => {
+    queda(process.ppid);
+    const s = await startServe(brain, { port: 0, sessions: sessions() });
+    await s.close();
+    expect(existsSync(lock())).toBe(false);
+  });
+
+  it("lock vivo de outro processo ainda subindo (sem serve.json dele): recusa citando o lock", async () => {
+    writeFileSync(lock(), JSON.stringify({ pid: process.ppid, nonce: "x", desde: new Date().toISOString() }));
+    rmSync(join(root, "..", "serve.json"), { force: true });
+    try { await expect(startServe(brain, { port: 0, sessions: sessions() })).rejects.toThrow(`já há um brain serve subindo para este vault (pid ${process.ppid})`); }
+    finally { rmSync(lock(), { force: true }); }
+    expect(String(await startServe(brain, { port: 0, sessions: sessions() }).then(async (s) => { await s.close(); return "subiu"; }))).toBe("subiu");
+  });
+
+  it("retomada concorrente de um lock velho: só um vence, o lock do vencedor não é apagado", async () => {
+    writeFileSync(lock(), JSON.stringify({ pid: 2 ** 22 + 777, nonce: "morto", desde: new Date().toISOString() }));
+    const r = await Promise.allSettled([startServe(brain, { port: 0, sessions: sessions() }), startServe(brain, { port: 0, sessions: sessions() })]);
+    const ok = r.filter((x): x is PromiseFulfilledResult<Awaited<ReturnType<typeof startServe>>> => x.status === "fulfilled");
+    expect(ok).toHaveLength(1);
+    expect(String((r.find((x) => x.status === "rejected") as PromiseRejectedResult).reason)).toContain(`(lock: ${lock()})`);
+    expect(existsSync(lock())).toBe(true); // o do vencedor
+    await ok[0]!.value.close();
+    expect(existsSync(lock())).toBe(false);
+  });
+
+  it("lock velho retomado por outro processo entre a avaliação e o rename: o lock novo é devolvido, não apagado", async () => {
+    let chamadas = 0;
+    // durante a 1ª checagem HTTP (lock avaliado como de um serve que caiu), "outro processo" retoma o lock com nonce "novo"
+    // e passa a responder como o serve vivo deste vault
+    const srv = createServer((_q, res) => {
+      chamadas++;
+      if (chamadas === 1) {
+        writeFileSync(lock(), JSON.stringify({ pid: process.ppid, nonce: "novo", desde: new Date().toISOString() }));
+        res.writeHead(404); res.end("{}"); return;
+      }
+      res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ pid: process.ppid, vault: vaultFingerprint(brain.vault.root) }));
+    });
+    const porta = await new Promise<number>((ok) => srv.listen(0, "127.0.0.1", () => ok((srv.address() as { port: number }).port)));
+    writeFileSync(lock(), JSON.stringify({ pid: process.ppid, nonce: "velho", desde: new Date().toISOString() }));
+    writeServeInfo(root, { url: `http://127.0.0.1:${porta}`, pid: process.ppid, iniciado: new Date().toISOString() });
+    try {
+      await expect(startServe(brain, { port: 0, sessions: sessions() })).rejects.toThrow("já há um brain serve rodando para este vault");
+      expect(JSON.parse(readFileSync(lock(), "utf8")).nonce).toBe("novo");
+    } finally {
+      rmSync(lock(), { force: true }); rmSync(join(root, "..", "serve.json"), { force: true });
+      await new Promise<void>((ok) => { srv.close(() => ok()); srv.closeAllConnections(); });
+    }
+  });
+
+  it("serve.json apontando para outro servidor (404) é morto; 5xx é indeterminado", async () => {
+    let status = 404;
+    const outro = createServer((_q, res) => { res.writeHead(status); res.end("{}"); });
+    const porta = await new Promise<number>((ok) => outro.listen(0, "127.0.0.1", () => ok((outro.address() as { port: number }).port)));
+    writeServeInfo(root, { url: `http://127.0.0.1:${porta}`, pid: process.ppid, iniciado: new Date().toISOString() });
+    try {
+      expect(await serveEstado(root, brain.vault)).toEqual({ estado: "morto" });
+      status = 503;
+      expect(await serveEstado(root, brain.vault)).toMatchObject({ estado: "indeterminado", motivo: "respondeu HTTP 503" });
+    } finally { rmSync(join(root, "..", "serve.json"), { force: true }); await new Promise<void>((ok) => { outro.close(() => ok()); outro.closeAllConnections(); }); }
+  });
+
+  it("falha ao gravar o serve.json depois do listen: API, agendador e módulos desfeitos e lock liberado", async () => {
+    const livre = createServer();
+    const porta = await new Promise<number>((ok) => livre.listen(0, "127.0.0.1", () => ok((livre.address() as { port: number }).port)));
+    await new Promise<void>((ok) => livre.close(() => ok()));
+    mkdirSync(join(root, "..", "serve.json"), { recursive: true }); // rename do tmp sobre um diretório falha
+    try {
+      await expect(startServe(brain, { port: porta, sessions: sessions() })).rejects.toThrow();
+      expect(existsSync(lock())).toBe(false);
+      // a porta voltou a ficar livre: a API foi fechada
+      const de_novo = createServer();
+      await new Promise<void>((ok, err) => { de_novo.once("error", err); de_novo.listen(porta, "127.0.0.1", () => ok()); });
+      await new Promise<void>((ok) => de_novo.close(() => ok()));
+    } finally { rmSync(join(root, "..", "serve.json"), { recursive: true, force: true }); }
   });
 });
 

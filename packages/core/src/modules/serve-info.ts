@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
@@ -58,7 +58,8 @@ export function vaultFingerprint(vaultRoot: string): string {
 /**
  * Estado do `serve` anunciado no `serve.json`, para este vault:
  * - `vivo`: `GET <url>/api/serve` com o api-token respondeu 200 com o MESMO pid do arquivo e a impressão do MESMO vault;
- * - `morto`: sem `serve.json`, pid inexistente (ESRCH), conexão recusada, token recusado (401/403) ou resposta de outro pid/vault;
+ * - `morto`: sem `serve.json`, pid inexistente (ESRCH), conexão recusada, qualquer 4xx (token de outro vault, outro servidor na
+ *   porta) ou resposta de outro pid/vault;
  * - `indeterminado`: o pid existe mas não deu para confirmar (timeout, outro erro de rede, 5xx, sem api-token). Um serve com o
  *   event loop travado (laço síncrono de módulo, indexação pesada) cai aqui.
  * Quem DESTRÓI estado (recusar um segundo serve, recuperar o marcador) trata `indeterminado` como vivo; quem ENVIA credencial
@@ -89,8 +90,9 @@ export async function serveEstado(root: string, vault: { root: string; tokenPath
     if (codigoDeRede(e) === "ECONNREFUSED") return { estado: "morto" };
     return indeterminado((e as Error)?.name === "TimeoutError" ? `não respondeu em ${ms} ms` : `erro de rede (${codigoDeRede(e) ?? (e as Error)?.message ?? "desconhecido"})`);
   }
-  if (r.status === 401 || r.status === 403) return { estado: "morto" };
-  if (!r.ok) return indeterminado(`respondeu HTTP ${r.status}`);
+  // 5xx: pode ser o brain com problema. 4xx (401/403 = token de outro vault, 404 = outro servidor na porta): não é este serve
+  if (r.status >= 500) return indeterminado(`respondeu HTTP ${r.status}`);
+  if (!r.ok) return { estado: "morto" };
   let j: { vault?: unknown; pid?: unknown };
   try { j = await r.json() as typeof j; } catch { return indeterminado("resposta ilegível"); }
   return j.pid === i.pid && j.vault === vaultFingerprint(vault.root) ? { estado: "vivo", url: i.url, pid: i.pid } : { estado: "morto" };
@@ -118,40 +120,72 @@ const pidExiste = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
 };
 
+/** Nonces dos locks adquiridos por ESTE processo: lock com o nosso pid e nonce desconhecido é de um processo anterior (pid reusado). */
+const noncesDoProcesso = new Set<string>();
+
+const lerLock = (arq: string): { pid: number; nonce?: string } => {
+  try {
+    const v = JSON.parse(readFileSync(arq, "utf8")) as { pid?: unknown; nonce?: unknown };
+    return { pid: Number.isInteger(v.pid) ? (v.pid as number) : 0, nonce: typeof v.nonce === "string" ? v.nonce : undefined };
+  } catch { return { pid: 0 }; }
+};
+
 /**
  * Lock exclusivo `<stateDir>/serve.lock` (`{ pid, nonce, desde }`, criado com `wx`), adquirido no começo do `startServe`, antes
- * de carregar qualquer coisa. Ocupado por pid vivo (inclusive outro `startServe` deste mesmo processo): `BrainError("locked")`.
- * Pid inexistente, ou pid vivo sem `serve.json` dele e lock com mais de 10 min: lock velho, retomado. `liberar()` só apaga o
- * lock se ele ainda for desta aquisição.
+ * de carregar qualquer coisa. Quando o lock existe:
+ * - pid deste processo: só é válido se o nonce for de uma aquisição deste processo (outro `startServe` aqui); senão é velho;
+ * - pid inexistente: velho;
+ * - pid vivo e `serve.json` desse pid: `serveEstado` decide (`morto` = pid reusado depois de uma queda, velho; `vivo` ou
+ *   `indeterminado` = recusa);
+ * - pid vivo sem `serve.json` dele (o dono ainda está subindo): recusa, a menos que o lock tenha mais de 10 min (velho).
+ * Lock velho é retomado com `rename` para um nome único (atômico: entre dois concorrentes só um vence; o outro recomeça) e
+ * só então o novo é criado com `wx`. `liberar()` só apaga o lock se ele ainda for desta aquisição.
  */
-export function acquireServeLock(root: string): { liberar(): void } {
+export async function acquireServeLock(root: string, vault: { root: string; tokenPath: string }): Promise<{ liberar(): void }> {
   const alvo = arquivoLock(root);
   const nonce = randomBytes(8).toString("hex");
-  for (let tentativa = 0; tentativa < 2; tentativa++) {
+  for (let tentativa = 0; tentativa < 5; tentativa++) {
     try {
       writeFileSync(alvo, JSON.stringify({ pid: process.pid, nonce, desde: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
+      noncesDoProcesso.add(nonce);
       return {
         liberar() {
-          try { if ((JSON.parse(readFileSync(alvo, "utf8")) as { nonce?: string }).nonce === nonce) rmSync(alvo, { force: true }); } catch { /* já não existe */ }
+          noncesDoProcesso.delete(nonce);
+          try { if (lerLock(alvo).nonce === nonce) rmSync(alvo, { force: true }); } catch { /* já não existe */ }
         },
       };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
-    let dono: { pid?: unknown } = {};
-    try { dono = JSON.parse(readFileSync(alvo, "utf8")) as typeof dono; } catch { /* lock ilegível: tratado como velho */ }
-    const pid = Number.isInteger(dono.pid) ? (dono.pid as number) : 0;
-    const anunciado = ler(root);
-    let idade = 0; try { idade = Date.now() - statSync(alvo).mtimeMs; } catch { /* sumiu: tenta de novo */ }
-    const velho = !pid || !pidExiste(pid) || (anunciado?.pid !== pid && idade > LOCK_VELHO_MS);
-    if (!velho) {
-      throw new BrainError("locked", anunciado?.pid === pid
-        ? `já há um brain serve rodando para este vault em ${anunciado.url}`
-        : `já há um brain serve subindo para este vault (pid ${pid}); se esse processo não é um brain serve, apague ${alvo}`);
+    const dono = lerLock(alvo);
+    const recusar = (motivo: string) => new BrainError("locked", `${motivo} (lock: ${alvo})`);
+    // cada ramo que não recusa conclui que o lock é velho (dono morto, pid reusado, ou lock ilegível)
+    if (dono.pid === process.pid) {
+      if (dono.nonce && noncesDoProcesso.has(dono.nonce)) throw recusar("já há um brain serve subindo ou rodando neste processo para este vault");
+    } else if (dono.pid && pidExiste(dono.pid)) {
+      if (ler(root)?.pid === dono.pid) {
+        const e = await serveEstado(root, vault);
+        if (e.estado === "vivo") throw recusar(`já há um brain serve rodando para este vault em ${e.url}`);
+        if (e.estado === "indeterminado") throw recusar(`há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
+      } else {
+        let idade: number; try { idade = Date.now() - statSync(alvo).mtimeMs; } catch { continue; } // sumiu: recomeça
+        if (idade <= LOCK_VELHO_MS) throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
+      }
     }
-    try { rmSync(alvo, { force: true }); } catch { /* corrida: a próxima tentativa decide */ }
+    retomar(alvo, dono.nonce);
   }
   throw new BrainError("locked", `não foi possível obter o lock do brain serve (${alvo})`);
+}
+
+/** Tira o lock velho do caminho por `rename` (atômico). Se o arquivo já não é o avaliado (outro processo o retomou), devolve-o. */
+function retomar(alvo: string, nonceAvaliado: string | undefined): void {
+  const fora = `${alvo}.${randomBytes(6).toString("hex")}.velho`;
+  try { renameSync(alvo, fora); } catch { return; } // ENOENT: outro venceu; recomeça a aquisição
+  if (lerLock(fora).nonce !== nonceAvaliado) {
+    // pegamos um lock NOVO de quem retomou antes: devolve sem sobrescrever (link falha se já houver outro lock no lugar)
+    try { linkSync(fora, alvo); } catch { /* já há outro lock: ele decide */ }
+  }
+  try { rmSync(fora, { force: true }); } catch { /* best effort */ }
 }
 
 /** JSON com chaves ordenadas (a ordem das chaves no YAML não muda o hash). */

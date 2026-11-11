@@ -26,7 +26,7 @@ export async function startServe(b: Brain, o: ServeOptions): Promise<ServeHandle
   // um segundo serve no mesmo vault rodaria `iniciar` e as tarefas de novo e pisaria no estado e no marcador do vivo.
   // Lock exclusivo primeiro (a recusa é atômica); depois o serve anunciado (um build antigo, sem lock): vivo ou que não
   // respondeu contam como "já há um serve"
-  const lock = acquireServeLock(root);
+  const lock = await acquireServeLock(root, b.vault);
   try {
     const e = await serveEstado(root, b.vault);
     if (e.estado === "vivo" && e.pid !== process.pid) throw new BrainError("locked", `já há um brain serve rodando para este vault em ${e.url}`);
@@ -58,7 +58,12 @@ async function montar(b: Brain, o: ServeOptions, root: string, lock: { liberar()
     await scheduler.stop(); await stopModules(registry); registry.encerrarExecucoes();
     throw e;
   }
-  writeServeInfo(root, { url: api.url, pid: process.pid, iniciado: new Date().toISOString() });
+  try { writeServeInfo(root, { url: api.url, pid: process.pid, iniciado: new Date().toISOString() }); }
+  catch (e) {
+    // a API já escuta: desfaz tudo antes de o startServe liberar o lock e relançar
+    await api.close(); await scheduler.stop(); await stopModules(registry); registry.encerrarExecucoes();
+    throw e;
+  }
 
   let fechado: Promise<void> | undefined;
   const close = () => (fechado ??= (async () => {
