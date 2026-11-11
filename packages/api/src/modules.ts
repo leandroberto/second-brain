@@ -265,7 +265,13 @@ export const CORS_OPACO = { "access-control-allow-origin": "null", vary: "Origin
 export const PREFLIGHT_OPACO = {
   ...CORS_OPACO, "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE", "access-control-max-age": "600",
 } as const;
-export const CSP_DA_ABA = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'";
+/**
+ * CSP do estático da aba. O `sandbox` (sem `allow-same-origin`) força a origem opaca mesmo quando a página é aberta como
+ * documento de topo (link numa nota, favorito, URL digitada, um `.svg` da aba): sem ele, ela rodaria na origem real do SB e
+ * leria o `localStorage` onde a UI guarda a sessão humana (anti-objetivo do §4). Os subrecursos de um documento sandboxed
+ * mandam `Origin: null`, que é exatamente o CORS aceito nos prefixos de módulo.
+ */
+export const CSP_DA_ABA = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; sandbox allow-scripts allow-forms";
 
 /** Caminho cru com segmento `.`/`..` (inclusive `%2e`, e `\` que a URL trata como `/`): a URL já normalizou, então recusa. */
 export const temSegmentoDePonto = (bruto: string): boolean =>

@@ -306,9 +306,11 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   function serveAba(pathname: string, method: string, res: ServerResponse) {
     if (method !== "GET" && method !== "HEAD") return plain(res, 405, "método não permitido");
     const arq = arquivoDaAba(opts.modules, pastaSdk, pathname);
-    if (!arq) return plain(res, 404, "não encontrado");
+    let conteudo: Buffer | undefined;
+    try { conteudo = arq ? readFileSync(arq) : undefined; } catch { conteudo = undefined; } // sumiu entre o stat e a leitura
+    if (!arq || !conteudo) return plain(res, 404, "não encontrado");
     res.writeHead(200, { "content-type": MIME[extname(arq)] ?? "application/octet-stream", "cache-control": "no-cache", "x-content-type-options": "nosniff", "content-security-policy": CSP_DA_ABA, ...CORS_OPACO });
-    res.end(readFileSync(arq));
+    res.end(conteudo);
   }
 
   const webRoot = opts.webRoot;

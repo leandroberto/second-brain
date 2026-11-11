@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SDK_VERSION, type ModuleDef, type ModuleIa } from "@brain/module-sdk";
 import type { Brain } from "../brain.js";
+import { safeResolve } from "../paths.js";
 import { scanSecrets } from "../secrets.js";
 import { AVISOS_NOOP, IA_INDISPONIVEL, createModuleContext, type AvisosSink } from "./context.js";
 import { MODULE_ID_RE } from "./identity.js";
@@ -99,7 +100,13 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
       config = r.value;
     }
 
-    if (def.aba && !existsSync(join(dir, def.aba.pasta, "index.html"))) { falhar(`a aba "${def.aba.titulo}" não tem ${def.aba.pasta}/index.html`); continue; }
+    if (def.aba) {
+      // a aba é servida de dentro desta pasta (mesmo `safeResolve` da API): raiz do módulo, absoluta ou fora dele não serve
+      let raizDaAba: string | undefined;
+      try { raizDaAba = typeof def.aba.pasta === "string" ? safeResolve(dir, def.aba.pasta) : undefined; } catch { raizDaAba = undefined; }
+      if (!raizDaAba) { falhar(`aba.pasta deve ser uma subpasta do módulo (recebido: "${String(def.aba.pasta)}")`); continue; }
+      if (!existsSync(join(raizDaAba, "index.html"))) { falhar(`a aba "${def.aba.titulo}" não tem ${def.aba.pasta}/index.html`); continue; }
+    }
 
     if (o.modo === "definicoes") { m.status = "ativo"; m.causa = undefined; continue; }
 

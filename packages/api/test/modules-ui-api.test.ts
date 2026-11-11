@@ -12,7 +12,7 @@ import { terminalHuman } from "../../core/test/helpers.js";
 // Aba de módulo (spec de módulos §7.7): estático em /modules/<id>/, token de página, CORS só para a origem opaca `null`.
 const FIX = resolve(import.meta.dirname, "fixtures/modules");
 const savedState = process.env.BRAIN_STATE_DIR;
-const CSP_MODULO = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'";
+const CSP_MODULO = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; sandbox allow-scripts allow-forms";
 
 let dir: string; let brain: Brain; let api: ApiHandle;
 let registry: ModuleRegistry;
@@ -231,6 +231,19 @@ describe("estático do módulo", () => {
     expect((await call("", "GET", "/modules/lanca/index.html")).status).toBe(404); // falho
     expect((await call("", "GET", "/modules/fantasma/index.html")).status).toBe(404);
     expect((await call("", "GET", "/modules/ok/%E0%A4%A")).status).toBe(404);
+  });
+
+  it("todo o estático da aba força origem opaca (sandbox sem allow-same-origin), até aberto como documento de topo", async () => {
+    for (const p of ["/modules/ok/index.html", "/modules/ok/", "/modules/_sdk/base.css", "/modules/_sdk/brain-module-client.js"]) {
+      const csp = (await call("", "GET", p)).headers.get("content-security-policy") ?? "";
+      const sandbox = csp.split(";").map((d) => d.trim()).find((d) => d.startsWith("sandbox"));
+      expect(sandbox, p).toBe("sandbox allow-scripts allow-forms");
+      expect(csp, p).not.toContain("allow-same-origin");
+    }
+    // subrecursos do documento sandboxed chegam com Origin: null e são aceitos com CORS
+    const js = await call("", "GET", "/modules/_sdk/brain-module-client.js", { origin: "null" });
+    expect(js.status).toBe(200);
+    expect(js.headers.get("access-control-allow-origin")).toBe("null");
   });
 
   it("arquivos do SDK em /modules/_sdk", async () => {

@@ -60,7 +60,7 @@ export function conectar() {
         navegar(resto) { avisar("brain:navegar", { resto: String(resto) }); },
         abrirNota(id) { avisar("brain:abrirNota", { id: String(id) }); },
         /** Registra `fn` e já a chama com o tema atual. */
-        aoMudarTema(fn) { ouvintesTema.add(fn); fn(tema); },
+        aoMudarTema(fn) { ouvintesTema.add(fn); try { fn(tema); } catch (e) { console.error(e); } },
       });
     });
     avisar("brain:pronto", {});

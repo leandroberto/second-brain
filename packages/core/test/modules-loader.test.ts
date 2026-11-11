@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -73,6 +73,27 @@ describe("loadModules", () => {
     const reg = await loadModules(b, { modo: "serve" });
     expect(reg.get("sem-aba")!.status).toBe("falho");
     expect(reg.get("sem-aba")!.causa).toContain("index.html");
+  });
+
+  it("aba.pasta na raiz do módulo, absoluta ou fora dele fica falho", async () => {
+    const raiz = mkdtempSync(join(tmpdir(), "brain-mod-aba-"));
+    const criar = (id: string, pasta: string) => {
+      const d = join(raiz, id);
+      mkdirSync(join(d, "ui"), { recursive: true });
+      writeFileSync(join(d, "package.json"), JSON.stringify({ name: `fixture-${id}`, version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+      writeFileSync(join(d, "index.js"), `export default { sdk: 1, id: ${JSON.stringify(id)}, nome: "A", versao: "1.0.0", aba: { titulo: "A", pasta: ${JSON.stringify(pasta)} } };\n`);
+      // index.html em todo lugar: a recusa vem da pasta, não da falta do arquivo
+      for (const f of [join(d, "index.html"), join(d, "ui", "index.html"), join(raiz, "index.html")]) writeFileSync(f, "<!doctype html>");
+      return { path: d };
+    };
+    const b = await comModulos({ "aba-raiz": criar("aba-raiz", "."), "aba-abs": criar("aba-abs", join(raiz, "aba-abs", "ui")), "aba-fora": criar("aba-fora", ".."), "aba-boa": criar("aba-boa", "ui") });
+    const reg = await loadModules(b, { modo: "serve" });
+    for (const id of ["aba-raiz", "aba-abs", "aba-fora"]) {
+      expect(reg.get(id)!.status, id).toBe("falho");
+      expect(reg.get(id)!.causa, id).toContain("aba.pasta deve ser uma subpasta do módulo");
+    }
+    expect(reg.get("aba-boa")!.status).toBe("ativo");
+    rmSync(raiz, { recursive: true, force: true });
   });
 
   it("config inválida pelo schema do módulo cita o caminho do campo", async () => {
