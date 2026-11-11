@@ -86,7 +86,7 @@ packages/shared  tipos/schemas        packages/mcp  adaptador MCP (stdio)
 packages/core    regra de negócio     packages/api  adaptador HTTP/SSE + serve a UI
 packages/cli     comando `brain`      apps/web      React + Vite (só fala com a API)
 templates/       AGENTS.md, SKILL.md, README do vault (copiados no `brain init`)
-docs/            architecture · knowledge-model · mcp · windows-wsl · vault-sincronizado · gui · backup · FUTURE · decisions/ (ADRs)
+docs/            architecture · knowledge-model · mcp · modules · windows-wsl · vault-sincronizado · gui · backup · FUTURE · decisions/ (ADRs)
 e2e/             testes de browser (Playwright)      scripts/  start/dev/backup/windows/systemd
 ```
 
@@ -105,6 +105,10 @@ E2E precisa de um Chromium do Playwright (`~/.cache/ms-playwright`) ou `CHROME_P
 ## Segurança e privacidade
 
 Tudo local. API só em `127.0.0.1` com token, checagem de `Host`/`Origin`. Segredos rejeitados antes de gravar. Embeddings externos são **opt-in** e mostram o que sai da máquina; sem embeddings a busca funciona (FTS5). Veja [`docs/architecture.md`](docs/architecture.md#segurança).
+
+## Módulos
+
+O second-brain carrega módulos de outros repositórios (aba na UI, rotas, tarefas agendadas, ferramentas MCP, avisos) sem que o código deles entre aqui. O exemplo é `examples/modules/lembrete`. Guia de autoria: [`docs/modules.md`](docs/modules.md).
 
 ## Backup
 
