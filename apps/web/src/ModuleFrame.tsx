@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, BookOpen, Bot, CalendarDays, ChartBar, CircleCheck, Clock, Cloud, Database, FileText, Folder, Globe, Heart, Lightbulb, ListTodo, Mail, MessageSquare, Puzzle, Rocket, Sparkles, Star, StickyNote, Tag, Timer, Users, Wallet, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { api } from "./api";
 import { errMsg, go } from "./lib";
-import { idModuloValido, mensagemInit, mensagemTema, mensagemToken, parseMensagemDoModulo, restoValido, deveRemontar, type Tema } from "./moduleBridge";
+import { idModuloValido, mensagemInit, mensagemTema, mensagemToken, parseMensagemDoModulo, restoValido, criarControleRemontagem, type Tema } from "./moduleBridge";
 
 /** Ícones aceitos para `icone` do módulo (nome em kebab-case do lucide). Qualquer outro vira `Puzzle`. */
 const ICONES: Record<string, LucideIcon> = {
@@ -22,14 +22,26 @@ const ANTECEDENCIA_MS = 3600_000; // renova 1 h antes de expirar
 /** Aba de um módulo: iframe sandbox de origem opaca + ponte postMessage. O token de página fica só em memória. */
 export function ModuleFrame({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (id: string, n: number) => void }) {
   if (!idModuloValido(id)) return <div className="wrap"><h1>Módulo não encontrado</h1></div>;
-  return <ModuleFrameValido id={id} resto={restoValido(resto) ? resto : ""} onBadge={onBadge} />;
+  return <ModuleFrameValido key={id} id={id} resto={restoValido(resto) ? resto : ""} onBadge={onBadge} />;
+}
+
+/** `resto` da rota atual `#/m/<id>/<resto>`, lido do hash (o mesmo parse do `useRoute`). */
+function restoDoHash(id: string): string {
+  const [path = ""] = location.hash.replace(/^#\/?/, "").split("?");
+  let seg: string[]; try { seg = path.split("/").filter(Boolean).map(decodeURIComponent); } catch { return ""; }
+  if (seg[0] !== "m" || seg[1] !== id) return "";
+  const r = seg.slice(2).join("/"); return restoValido(r) ? r : "";
 }
 
 function ModuleFrameValido({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (id: string, n: number) => void }) {
-  const ultimo = useRef(resto); // último resto conhecido do iframe (inicial ou enviado por brain:navegar)
+  const ctrl = useRef(criarControleRemontagem(resto));
   const [geracao, setGeracao] = useState(0);
-  useEffect(() => { if (deveRemontar(resto, ultimo.current)) { ultimo.current = resto; setGeracao((g) => g + 1); } }, [resto]);
-  return <Frame key={`${id}#${geracao}`} id={id} resto={resto} onBadge={onBadge} onNavegou={(r) => { ultimo.current = r; }} />;
+  // `replaceState` do `brain:navegar` não dispara hashchange; qualquer hashchange é mudança externa.
+  useEffect(() => {
+    const f = () => { if (ctrl.current.aoMudarHash(restoDoHash(id))) setGeracao((g) => g + 1); };
+    addEventListener("hashchange", f); return () => removeEventListener("hashchange", f);
+  }, [id]);
+  return <Frame key={geracao} id={id} resto={ctrl.current.ultimo()} onBadge={onBadge} onNavegou={(r) => ctrl.current.aoNavegar(r)} />;
 }
 
 function Frame({ id, resto, onBadge, onNavegou }: { id: string; resto: string; onBadge?: (id: string, n: number) => void; onNavegou: (resto: string) => void }) {

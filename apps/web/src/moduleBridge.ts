@@ -46,3 +46,15 @@ export const mensagemTema = (tema: Tema) => ({ type: "brain:tema" as const, tema
  * `brain:navegar` (ou do inicial) significa mudança externa (link, menu, voltar). Mudança vinda do módulo não remonta.
  */
 export const deveRemontar = (restoDaRota: string, ultimoDoModulo: string): boolean => restoDaRota !== ultimoDoModulo;
+
+/** Controlador puro da remontagem: guarda o último resto conhecido do iframe e decide a cada mudança de hash. */
+export function criarControleRemontagem(restoInicial: string) {
+  let ultimo = restoInicial;
+  return {
+    ultimo: () => ultimo,
+    /** O módulo navegou sozinho (`brain:navegar`): não remonta. */
+    aoNavegar(resto: string): void { ultimo = resto; },
+    /** O hash mudou (qualquer origem que dispare `hashchange`): true se o iframe deve ser remontado com `resto`. */
+    aoMudarHash(resto: string): boolean { if (!deveRemontar(resto, ultimo)) return false; ultimo = resto; return true; },
+  };
+}

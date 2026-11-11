@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deveRemontar, idModuloValido, mensagemInit, parseMensagemDoModulo, restoValido } from "./moduleBridge";
+import { criarControleRemontagem, deveRemontar, idModuloValido, mensagemInit, parseMensagemDoModulo, restoValido } from "./moduleBridge";
 
 const janela = {};
 const ev = (data: unknown, over: Partial<{ origin: string; source: unknown }> = {}) => ({ origin: "null", source: janela, data, ...over });
@@ -57,4 +57,21 @@ describe("validadores", () => {
 describe("deveRemontar", () => {
   it("não remonta quando a rota acompanha o último resto enviado pelo módulo", () => { expect(deveRemontar("a/b", "a/b")).toBe(false); expect(deveRemontar("", "")).toBe(false); });
   it("remonta quando o resto muda por fora", () => { expect(deveRemontar("", "a/b")).toBe(true); expect(deveRemontar("x", "")).toBe(true); });
+});
+
+describe("criarControleRemontagem", () => {
+  it("navegar e depois mudar por fora para o resto inicial remonta", () => {
+    const c = criarControleRemontagem("");
+    c.aoNavegar("a/b");
+    expect(c.aoMudarHash("")).toBe(true); // clique no item do menu do próprio módulo
+    expect(c.ultimo()).toBe("");
+    expect(c.aoMudarHash("")).toBe(false); // sem laço
+  });
+  it("hash igual ao último navegado não remonta; outro resto remonta uma vez", () => {
+    const c = criarControleRemontagem("x");
+    c.aoNavegar("a/b");
+    expect(c.aoMudarHash("a/b")).toBe(false);
+    expect(c.aoMudarHash("c")).toBe(true);
+    expect(c.aoMudarHash("c")).toBe(false);
+  });
 });
