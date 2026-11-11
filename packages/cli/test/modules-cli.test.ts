@@ -124,6 +124,62 @@ describe("liveness do serve e serve duplicado", () => {
   });
 });
 
+describe("vaults diferentes com o mesmo vault_name", () => {
+  it("cada vault tem o próprio estado de módulos; o serve do segundo não toca no lock, no serve.json nem no marcador do primeiro", async () => {
+    const antes = { home: process.env.HOME, estado: process.env.BRAIN_STATE_DIR };
+    const base = mkdtempSync(join(tmpdir(), "brain-dois-vaults-"));
+    process.env.HOME = join(base, "home"); delete process.env.BRAIN_STATE_DIR; // estado padrão, como no systemd e no dev.sh
+    const a = await Brain.init(join(base, "real")); const b = await Brain.init(join(base, "demo"));
+    try {
+      expect(a.config.vault_name).toBe(b.config.vault_name);
+      const ra = modulesStateRoot(a); const rb = modulesStateRoot(b);
+      expect(ra).not.toBe(rb);
+      const sa = await startServe(a, { port: 0, sessions: sessions() });
+      try {
+        const marcador = JSON.stringify([{ id: "ok", onde: "tarefa:diaria", desde: new Date().toISOString() }]);
+        writeFileSync(join(ra, "_executando.json"), marcador);
+        const lockA = readFileSync(join(ra, "..", "serve.lock"), "utf8");
+        const sb = await startServe(b, { port: 0, sessions: sessions() });
+        try {
+          expect(readServeInfo(rb)).toEqual({ url: sb.url, pid: process.pid });
+          expect(readServeInfo(ra)).toEqual({ url: sa.url, pid: process.pid });
+          expect(readFileSync(join(ra, "..", "serve.lock"), "utf8")).toBe(lockA);
+          expect(readFileSync(join(ra, "_executando.json"), "utf8")).toBe(marcador);
+          expect(await serveEstado(ra, a.vault)).toMatchObject({ estado: "vivo", url: sa.url });
+        } finally { await sb.close(); }
+        expect(readServeInfo(ra)).toEqual({ url: sa.url, pid: process.pid });
+        rmSync(join(ra, "_executando.json"), { force: true });
+      } finally { await sa.close(); }
+      // BRAIN_STATE_DIR dividido (sem state.external): o segundo serve é recusado antes de tocar em qualquer coisa
+      process.env.BRAIN_STATE_DIR = join(base, "estado-dividido");
+      const sa2 = await startServe(a, { port: 0, sessions: sessions() });
+      try {
+        const info = readFileSync(join(base, "estado-dividido", "serve.json"), "utf8");
+        await expect(startServe(b, { port: 0, sessions: sessions() })).rejects.toThrow(/pertence a outro vault/);
+        expect(readFileSync(join(base, "estado-dividido", "serve.json"), "utf8")).toBe(info);
+        expect(existsSync(join(base, "estado-dividido", "serve.lock"))).toBe(true);
+      } finally { await sa2.close(); }
+    } finally {
+      a.close(); b.close(); rmSync(base, { recursive: true, force: true });
+      if (antes.home === undefined) delete process.env.HOME; else process.env.HOME = antes.home;
+      if (antes.estado === undefined) delete process.env.BRAIN_STATE_DIR; else process.env.BRAIN_STATE_DIR = antes.estado;
+    }
+  });
+
+  it("401 do serve anunciado (api-token trocado em disco) é indeterminado, nunca morto", async () => {
+    const recusa = createServer((_req, res) => { res.writeHead(401); res.end(); });
+    const porta = await new Promise<number>((ok) => recusa.listen(0, "127.0.0.1", () => ok((recusa.address() as { port: number }).port)));
+    writeServeInfo(root, { url: `http://127.0.0.1:${porta}`, pid: process.ppid, iniciado: new Date().toISOString() });
+    try {
+      expect(await serveEstado(root, brain.vault)).toMatchObject({ estado: "indeterminado", motivo: expect.stringContaining("401") });
+      await expect(startServe(brain, { port: 0, sessions: sessions() })).rejects.toThrow(/não respondeu|encerre-o/);
+    } finally {
+      rmSync(join(root, "..", "serve.json"), { force: true });
+      await new Promise<void>((ok) => recusa.close(() => ok()));
+    }
+  });
+});
+
 describe("serve que não responde e lock do serve", () => {
   it("serve anunciado que aceita a conexão e nunca responde: indeterminado, nada destrutivo acontece", async () => {
     const mudo = createServer(() => { /* nunca responde: event loop do serve travado */ });

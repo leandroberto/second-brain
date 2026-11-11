@@ -31,6 +31,16 @@ export function resolveStateDir(vaultRoot: string, cfg: BrainConfig, env: NodeJS
   } catch (e) {
     throw new BrainError("state_unavailable", `diretório de estado indisponível ou sem permissão de escrita: ${dir} (${(e as Error).message})`);
   }
+  claimStateOwner(dir, vaultRoot);
+  return dir;
+}
+
+/**
+ * Garantia de dono de um diretório de estado: na primeira vez grava `<dir>/vault-path` com o realpath do vault; depois, um
+ * vault diferente apontando para o mesmo diretório é recusado (`state_unavailable`). Usada pelo estado da máquina e pelo
+ * estado dos módulos (com o `serve.json` e o `serve.lock`).
+ */
+export function claimStateOwner(dir: string, vaultRoot: string): void {
   const vault = (() => { try { return realpathSync(vaultRoot); } catch { return resolve(vaultRoot); } })();
   const owner = join(dir, STATE_OWNER_FILE);
   if (existsSync(owner)) {
@@ -41,5 +51,4 @@ export function resolveStateDir(vaultRoot: string, cfg: BrainConfig, env: NodeJS
   } else {
     writeFileSync(owner, `${vault}\n`, { mode: 0o600 });
   }
-  return dir;
 }

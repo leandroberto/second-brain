@@ -86,7 +86,12 @@ de consumo.
 - **Alterar `modules` na config exige reiniciar o `serve`.** Não há recarga a quente. Saúde avisa quando a config em disco
   difere da carregada.
 - **Um `serve` por vault.** O `serve.lock` impede um segundo `serve` no mesmo vault. A liveness vem de `GET /api/serve`:
-  um `serve.json` com pid vivo que não responde ali não conta como serve vivo.
+  um `serve.json` com pid vivo que não responde ali não conta como serve vivo; uma resposta 401/403 (api-token trocado em
+  disco) conta como "não confirmado" e também impede o segundo `serve`. O estado dos módulos, o `serve.lock` e o
+  `serve.json` nunca são divididos entre vaults: sem `state.external`, ficam em
+  `~/.local/state/second-brain/<slug do vault_name>-<impressão do caminho do vault>/` (ou em `BRAIN_STATE_DIR`), com o
+  mesmo `vault-path` de dono do estado da máquina; outro vault apontando para a mesma pasta é recusado. Vaults com o mesmo
+  nome (o demo do `dev.sh` e o vault real, por exemplo) têm cada um o seu `serve`.
 - Sem marketplace, sem instalação remota, sem módulos em outras linguagens, sem comunicação entre módulos e sem janelas
   próprias no desktop.
 

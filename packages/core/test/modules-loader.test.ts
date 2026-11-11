@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -7,9 +7,11 @@ import { loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, 
 import { claude, cleanup, tempBrain } from "./helpers.js";
 
 const FIX = resolve(import.meta.dirname, "fixtures/modules");
-const saved = { dir: process.env.BRAIN_STATE_DIR };
-beforeAll(() => { process.env.BRAIN_STATE_DIR = mkdtempSync(join(tmpdir(), "brain-modstate-")); });
-afterAll(() => { cleanup(); if (saved.dir === undefined) delete process.env.BRAIN_STATE_DIR; else process.env.BRAIN_STATE_DIR = saved.dir; });
+const saved = { dir: process.env.BRAIN_STATE_DIR, home: process.env.HOME };
+const restaurar = (k: "BRAIN_STATE_DIR" | "HOME", v?: string) => { if (v === undefined) delete process.env[k]; else process.env[k] = v; };
+// sem BRAIN_STATE_DIR e com HOME temporário: cada vault de teste ganha o próprio estado padrão (`<slug>-<impressão do vault>`)
+beforeAll(() => { delete process.env.BRAIN_STATE_DIR; process.env.HOME = mkdtempSync(join(tmpdir(), "brain-modstate-")); });
+afterAll(() => { cleanup(); restaurar("BRAIN_STATE_DIR", saved.dir); restaurar("HOME", saved.home); });
 
 /** brain com `modules` na config (como o usuário faria no config.yaml) */
 async function comModulos(modules: Record<string, unknown>): Promise<Brain> {
@@ -153,6 +155,21 @@ describe("loadModules", () => {
     expect(() => estado.gravarJson("../fuga", 1)).toThrow();
     expect(await estado.lock("x", async () => 7)).toBe(7);
     expect(modulesStateRoot(b).startsWith(b.vault.root)).toBe(false);
+  });
+
+  it("dois vaults com o mesmo vault_name nunca dividem o estado dos módulos", async () => {
+    const home = mkdtempSync(join(tmpdir(), "brain-modhome-"));
+    const a = await tempBrain(); const b = await tempBrain();
+    expect(a.config.vault_name).toBe(b.config.vault_name);
+    const ra = modulesStateRoot(a, { HOME: home }); const rb = modulesStateRoot(b, { HOME: home });
+    expect(ra).not.toBe(rb);
+    expect(modulesStateRoot(a, { HOME: home })).toBe(ra);
+    expect(readFileSync(join(ra, "..", "vault-path"), "utf8").trim()).toBe(realpathSync(a.vault.root));
+    // BRAIN_STATE_DIR sem state.external: a mesma garantia de dono do estado da máquina
+    const dividido = { HOME: home, BRAIN_STATE_DIR: join(home, "estado") };
+    expect(modulesStateRoot(a, dividido)).toBe(join(home, "estado", "modules"));
+    expect(() => modulesStateRoot(b, dividido)).toThrow(/pertence a outro vault/);
+    rmSync(home, { recursive: true, force: true });
   });
 
   it("modo definicoes não inicia nem cria contexto", async () => {

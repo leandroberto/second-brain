@@ -58,10 +58,12 @@ export function vaultFingerprint(vaultRoot: string): string {
 /**
  * Estado do `serve` anunciado no `serve.json`, para este vault:
  * - `vivo`: `GET <url>/api/serve` com o api-token respondeu 200 com o MESMO pid do arquivo e a impressão do MESMO vault;
- * - `morto`: sem `serve.json`, pid inexistente (ESRCH), conexão recusada, qualquer 4xx (token de outro vault, outro servidor na
+ * - `morto`: sem `serve.json`, pid inexistente (ESRCH), conexão recusada, 4xx que não é de credencial (404: outro servidor na
  *   porta) ou resposta de outro pid/vault;
- * - `indeterminado`: o pid existe mas não deu para confirmar (timeout, outro erro de rede, 5xx, sem api-token). Um serve com o
- *   event loop travado (laço síncrono de módulo, indexação pesada) cai aqui.
+ * - `indeterminado`: o pid existe mas não deu para confirmar (timeout, outro erro de rede, 5xx, 401/403, sem api-token). Um
+ *   serve com o event loop travado (laço síncrono de módulo, indexação pesada) cai aqui. O `serve.json` mora no estado deste
+ *   vault (com dono, ver `modulesStateRoot`), então 401/403 não vem de outro vault: é o próprio serve com um api-token
+ *   trocado em disco depois que ele subiu, e não pode ser tratado como morto.
  * Quem DESTRÓI estado (recusar um segundo serve, recuperar o marcador) trata `indeterminado` como vivo; quem ENVIA credencial
  * trata como não confirmado.
  */
@@ -90,8 +92,10 @@ export async function serveEstado(root: string, vault: { root: string; tokenPath
     if (codigoDeRede(e) === "ECONNREFUSED") return { estado: "morto" };
     return indeterminado((e as Error)?.name === "TimeoutError" ? `não respondeu em ${ms} ms` : `erro de rede (${codigoDeRede(e) ?? (e as Error)?.message ?? "desconhecido"})`);
   }
-  // 5xx: pode ser o brain com problema. 4xx (401/403 = token de outro vault, 404 = outro servidor na porta): não é este serve
+  // 5xx: pode ser o brain com problema. 401/403: o serve deste vault com outro api-token. Demais 4xx (404 = outro servidor na
+  // porta): não é este serve
   if (r.status >= 500) return indeterminado(`respondeu HTTP ${r.status}`);
+  if (r.status === 401 || r.status === 403) return indeterminado(`recusou o api-token em disco (HTTP ${r.status})`);
   if (!r.ok) return { estado: "morto" };
   let j: { vault?: unknown; pid?: unknown };
   try { j = await r.json() as typeof j; } catch { return indeterminado("resposta ilegível"); }
