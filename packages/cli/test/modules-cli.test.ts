@@ -5,8 +5,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Brain, clearServeInfo, isHumanSession, issueHumanSession, modulesStateRoot, readServeInfo, revokeHumanSession, writeServeInfo } from "@brain/core";
+import { EventEmitter } from "node:events";
+import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveVivo, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
+import { dispararTarefa, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const run = promisify(execFile);
@@ -86,6 +88,99 @@ describe("serve com módulos", () => {
       writeFileSync(brain.vault.configPath, original.replace('"cor":"azul"', '"cor":"verde"'), "utf8");
       expect((await lista()).reiniciar).toBe(true);
     } finally { writeFileSync(brain.vault.configPath, original, "utf8"); await s.close(); }
+  });
+});
+
+describe("liveness do serve e serve duplicado", () => {
+  it("pid vivo alheio com URL sem serve conta como morto e o marcador é recuperado", async () => {
+    // pid que existe (o processo pai do teste) mas não é um serve: só o kill(pid, 0) diria "vivo"
+    writeServeInfo(root, { url: "http://127.0.0.1:1", pid: process.ppid, iniciado: new Date().toISOString() });
+    expect(readServeInfo(root)).toEqual({ url: "http://127.0.0.1:1", pid: process.ppid });
+    expect(await serveVivo(root, brain.vault)).toBeUndefined();
+    writeFileSync(join(root, "_executando.json"), JSON.stringify([{ id: "ok", onde: "rota:GET /eco", desde: new Date().toISOString() }]));
+    const reg = await loadModules(brain, { modo: "serve" });
+    expect(existsSync(join(root, "_executando.json"))).toBe(false);
+    expect(reg.errors("ok").at(-1)).toMatchObject({ onde: "rota:GET /eco", mensagem: "o serve caiu enquanto ok executava rota:GET /eco" });
+    rmSync(join(root, "..", "serve.json"), { force: true });
+  });
+
+  it("segundo brain serve no mesmo vault é recusado e não mexe no vivo", async () => {
+    const s = await startServe(brain, { port: 0, sessions: sessions() });
+    try {
+      expect(await serveVivo(root, brain.vault)).toEqual({ url: s.url, pid: process.pid });
+      writeFileSync(join(root, "_executando.json"), "[]"); // marcador "do vivo": o recusado não pode apagá-lo
+      const r = await run(process.execPath, [BIN, "serve", "--port", "0", "--vault", brain.vault.root], { env: env(), timeout: 30_000 }).catch((e) => e as { code: number; stderr: string });
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(`já há um brain serve rodando para este vault em ${s.url}`);
+      expect(readServeInfo(root)).toEqual({ url: s.url, pid: process.pid });
+      expect(existsSync(join(root, "_executando.json"))).toBe(true);
+      rmSync(join(root, "_executando.json"));
+    } finally { await s.close(); }
+  });
+});
+
+describe("doctor: erros recentes dos módulos", () => {
+  it("mostra os erros recentes e um erro nas últimas 24 h vira warn", async () => {
+    const reg = new ModuleRegistry(root);
+    reg.recordError("ok", "tarefa:diaria", new Error("o serve caiu enquanto ok executava tarefa:diaria"));
+    const checks = await modulesChecks(brain, 1);
+    const ok = checks.find((c) => c.id === "module-ok")!;
+    expect(ok.status).toBe("warn");
+    expect(ok.detail).toContain("tarefa:diaria: o serve caiu enquanto ok executava tarefa:diaria");
+    expect(checks.find((c) => c.id === "modules")!.status).toBe("warn");
+  });
+
+  it("via serve usa os erros de GET /api/modules", async () => {
+    const s = await startServe(brain, { port: 0, sessions: sessions() });
+    try {
+      s.registry.recordError("ok", "mcp:eco", new Error("falha registrada pelo serve"));
+      const ok = (await modulesChecks(brain)).find((c) => c.id === "module-ok")!;
+      expect(ok.detail).toContain("mcp:eco: falha registrada pelo serve");
+      expect(ok.status).toBe("warn");
+    } finally { await s.close(); }
+  });
+});
+
+describe("brain modules run: a sessão curta é sempre revogada", () => {
+  const base = () => {
+    const revogadas: string[] = []; const saidas: number[] = [];
+    return { revogadas, saidas, o: { url: "http://127.0.0.1:1", id: "ok", tarefa: "diaria", emitir: () => "hs_sessao", revogar: (t: string) => { revogadas.push(t); }, sinais: new EventEmitter(), sair: (c: number) => { saidas.push(c); } } };
+  };
+  const resposta = (status: number, corpo: unknown) => (async () => new Response(JSON.stringify(corpo), { status })) as unknown as typeof fetch;
+
+  it("erro de rede", async () => {
+    const t = base();
+    const r = await dispararTarefa({ ...t.o, fetch: (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch });
+    expect(r).toMatchObject({ codigo: 1, erro: expect.stringContaining("não está rodando") });
+    expect(t.revogadas).toEqual(["hs_sessao"]);
+  });
+
+  it("HTTP ≠ 2xx", async () => {
+    const t = base();
+    const r = await dispararTarefa({ ...t.o, fetch: resposta(403, { message: "rodar tarefa exige a sessão humana da UI" }) });
+    expect(r).toMatchObject({ codigo: 1, erro: expect.stringContaining("403") });
+    expect(t.revogadas).toEqual(["hs_sessao"]);
+  });
+
+  it("resultado ok e resultado de erro", async () => {
+    const t = base();
+    expect(await dispararTarefa({ ...t.o, fetch: resposta(200, { resultado: "ok" }) })).toEqual({ codigo: 0, saida: "ok/diaria: ok" });
+    expect(await dispararTarefa({ ...t.o, fetch: resposta(200, { resultado: "erro", erro: "boom" }) })).toMatchObject({ codigo: 1, saida: "ok/diaria: erro — boom" });
+    expect(t.revogadas).toEqual(["hs_sessao", "hs_sessao"]);
+  });
+
+  it("Ctrl+C durante a execução revoga e sai com 130; handlers removidos no fim", async () => {
+    const t = base();
+    let liberar!: () => void;
+    const pendente = (async () => { await new Promise<void>((ok) => { liberar = ok; }); return new Response(JSON.stringify({ resultado: "ok" }), { status: 200 }); }) as unknown as typeof fetch;
+    const p = dispararTarefa({ ...t.o, fetch: pendente });
+    await new Promise((ok) => setImmediate(ok));
+    t.o.sinais.emit("SIGINT");
+    expect(t.revogadas).toEqual(["hs_sessao"]);
+    expect(t.saidas).toEqual([130]);
+    liberar(); await p;
+    expect(t.revogadas).toEqual(["hs_sessao"]); // não revoga duas vezes
+    expect(t.o.sinais.listenerCount("SIGINT") + t.o.sinais.listenerCount("SIGTERM")).toBe(0);
   });
 });
 

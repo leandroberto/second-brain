@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { AvisosStore, Brain, clearServeInfo, loadModules, modulesStateRoot, writeServeInfo } from "@brain/core";
+import { AvisosStore, BRAIN_TOOLS, Brain, clearServeInfo, loadModules, modulesStateRoot, vaultFingerprint, writeServeInfo } from "@brain/core";
+import { moduleToolsEnabledFromEnv } from "../src/index.js";
 import { loadOrCreateToken, startApi, type ApiHandle } from "@brain/api";
 
 const BIN = fileURLToPath(new URL("../../cli/dist/bin.js", import.meta.url));
@@ -18,11 +19,11 @@ let dir: string; let vault: string; let root: string; let portaLivre: number; le
 let stderr = "";
 const clients: Client[] = [];
 
-async function connect(): Promise<Client> {
+async function connect(extra: Record<string, string> = {}): Promise<Client> {
   const c = new Client({ name: "claude-code", version: "1.0.0" });
   const t = new StdioClientTransport({
     command: process.execPath, args: [BIN, "mcp"], stderr: "pipe",
-    env: { ...(process.env as Record<string, string>), BRAIN_VAULT: vault, BRAIN_STATE_DIR: join(dir, "state"), BRAIN_PORT: String(portaLivre) },
+    env: { ...(process.env as Record<string, string>), BRAIN_VAULT: vault, BRAIN_STATE_DIR: join(dir, "state"), BRAIN_PORT: String(portaLivre), ...extra },
   });
   t.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
   await c.connect(t);
@@ -82,6 +83,31 @@ describe("ferramentas MCP de módulo", () => {
     expect(Array.isArray(r.data)).toBe(true);
   });
 
+  it("BRAIN_MCP_SEM_MODULOS=1 (MCP do assistente) não registra ferramentas de módulo", async () => {
+    expect(moduleToolsEnabledFromEnv({ BRAIN_MCP_SEM_MODULOS: "1" })).toBe(false);
+    expect(moduleToolsEnabledFromEnv({})).toBe(true);
+    expect(moduleToolsEnabledFromEnv({ BRAIN_MCP_SEM_MODULOS: "0" })).toBe(true);
+    const c = await connect({ BRAIN_MCP_SEM_MODULOS: "1" });
+    const nomes = (await c.listTools()).tools.map((t) => t.name).sort();
+    expect(nomes).toEqual([...BRAIN_TOOLS].sort());
+  });
+
+  it("serve.json com pid reusado apontando para outro processo: tratado como fora do ar", async () => {
+    // na URL anunciada responde outra coisa (pid e vault diferentes): só o kill(pid, 0) diria "vivo"
+    const outro = createServer((req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(req.url === "/api/serve" ? { pid: 1, vault: "outro-vault" } : { resultado: "sequestro" }));
+    });
+    const porta = await ouvir(outro);
+    writeServeInfo(root, { url: `http://127.0.0.1:${porta}`, pid: process.ppid, iniciado: new Date().toISOString() });
+    try {
+      const c = await connect();
+      const r = await call(c, "ok_eco", { texto: "oi" });
+      expect(r.isError).toBe(true);
+      expect(r.text).toBe("o brain serve não está rodando; a ferramenta ok_eco precisa dele");
+    } finally { rmSync(join(dir, "state", "serve.json"), { force: true }); await fechar(outro); }
+  });
+
   it("sem serve devolve erro claro", async () => {
     clearServeInfo(root);
     const c = await connect();
@@ -110,8 +136,9 @@ describe("ferramentas MCP de módulo", () => {
 
   it("serve respondendo 403 ou 500 vira erro da ferramenta sem o token", async () => {
     let status = 403;
-    // serve falso que ecoa a credencial na mensagem: o MCP não pode repassá-la
+    // serve falso que ecoa a credencial na mensagem: o MCP não pode repassá-la. Responde /api/serve como o serve do vault
     const falso = createServer((req, res) => {
+      if (req.url === "/api/serve") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ pid: process.pid, vault: vaultFingerprint(vault) })); return; }
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "x", message: `negado para ${req.headers.authorization}` }));
     });

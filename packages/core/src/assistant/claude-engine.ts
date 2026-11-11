@@ -196,7 +196,8 @@ export function createClaudeEngine(brain: Brain, exec: ExecutorClaude = executar
     try {
       let mcpConfig: string | undefined;
       if (dir) {
-        const env: Record<string, string> = { BRAIN_VAULT: brain.vault.root, BRAIN_AGENT_NAME: o.agent };
+        // BRAIN_MCP_SEM_MODULOS: o assistente só usa as brain_* (as demais ficam negadas); o MCP nem importa módulos
+        const env: Record<string, string> = { BRAIN_VAULT: brain.vault.root, BRAIN_AGENT_NAME: o.agent, BRAIN_MCP_SEM_MODULOS: "1" };
         if (o.mode === "complete") env.BRAIN_AGENT_CHANNEL = "module";
         if (process.env.BRAIN_STATE_DIR) env.BRAIN_STATE_DIR = process.env.BRAIN_STATE_DIR;
         mcpConfig = join(dir, "mcp.json");

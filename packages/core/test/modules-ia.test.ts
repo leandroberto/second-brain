@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
+import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, gastoIaDoDia, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
 
 const MCP = { command: "/usr/bin/node-ficticio", args: ["/opt/brain-ficticio/bin.js", "mcp"] };
 const saida = (extra: Record<string, unknown> = {}, estruturado: unknown = { x: 1 }): SaidaProcesso => ({
@@ -60,6 +60,7 @@ describe("complete / createModuleIa", () => {
     expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__second-brain__brain_search,mcp__second-brain__brain_get,mcp__second-brain__brain_context");
     expect(chamadas[0]!.mcp!.env.BRAIN_AGENT_NAME).toBe("module/x");
     expect(chamadas[0]!.mcp!.env.BRAIN_AGENT_CHANNEL).toBe("module");
+    expect(chamadas[0]!.mcp!.env.BRAIN_MCP_SEM_MODULOS).toBe("1"); // o MCP do motor não importa módulos
   });
 
   it("extrai total_cost_usd e soma no dia", async () => {
@@ -140,5 +141,21 @@ describe("complete / createModuleIa", () => {
     const { chamadas, ia } = montar(() => saida());
     await ia.completar({ prompt: "p", timeoutS: 1e9 });
     expect(chamadas[0]!.timeoutMs).toBe(3_600_000);
+  });
+});
+
+describe("gastoIaDoDia", () => {
+  it("_ia.json corrompido ou com valor que não é número dá 0", () => {
+    const root = mkdtempSync(join(dir, "gasto-"));
+    const dia = hoje();
+    writeFileSync(join(root, "_ia.json"), JSON.stringify({ x: { [dia]: "muito" }, y: { [dia]: null }, z: { [dia]: 0.25 } }));
+    expect(gastoIaDoDia(root, "x")).toBe(0);
+    expect(gastoIaDoDia(root, "y")).toBe(0);
+    expect(gastoIaDoDia(root, "z")).toBe(0.25);
+    expect(gastoIaDoDia(root, "nenhum")).toBe(0);
+    writeFileSync(join(root, "_ia.json"), "{ não é json");
+    expect(gastoIaDoDia(root, "z")).toBe(0);
+    writeFileSync(join(root, "_ia.json"), JSON.stringify({ z: "texto" }));
+    expect(gastoIaDoDia(root, "z")).toBe(0);
   });
 });

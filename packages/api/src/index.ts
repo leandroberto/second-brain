@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, extname, join, normalize, sep } from "node:path";
-import { Brain, type Vault, principal, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
+import { Brain, type Vault, principal, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
@@ -69,6 +69,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   const q = (u: URL, k: string) => u.searchParams.get(k) ?? undefined;
 
   r("GET", "/api/health", async ({ brain }) => ({ ...(await brain.health()), api: { watcher: watching, port: listenPort, build: opts.build } }));
+  // identificação leve do serve (sem segredo): o MCP, a CLI e o doctor confirmam por aqui que o serve.json é deste processo e vault
+  r("GET", "/api/serve", ({ brain }) => ({ pid: process.pid, vault: vaultFingerprint(brain.vault.root) }));
   r("GET", "/api/integrations", ({ brain }) => ({ ...integrationStatus(), vault: brain.vault.root }));
   r("GET", "/api/doctor", async ({ brain }) => [...(await coreDoctor(brain)), ...integrationChecks(brain.vault.root)]);
   r("GET", "/api/dashboard", ({ brain }) => brain.dashboard());

@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFile
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { ModuleContext, ModuleDef } from "@brain/module-sdk";
+import { scanSecrets } from "../secrets.js";
 
 export type ModuleStatus = "ativo" | "falho" | "inativo" | "ausente";
 
@@ -22,6 +23,7 @@ export interface Execucao { id: string; onde: string; desde: string }
 
 const MAX_ERROS = 50;
 const MARCADOR = "_executando.json";
+const MAX_MENSAGEM = 300;
 
 /** Módulos carregados + erros de execução (rotas, tarefas, ferramentas), gravados em `<root>/_erros.jsonl` (50 últimos por módulo). */
 export class ModuleRegistry {
@@ -53,6 +55,17 @@ export class ModuleRegistry {
 
   errors(id: string): ModuleError[] {
     return this.ler().filter((l) => l.id === id).map(({ em, onde, mensagem }) => ({ em, onde, mensagem }));
+  }
+
+  /**
+   * Os `n` erros mais recentes, em ordem cronológica (o último é o mais novo), prontos para sair do processo (API, doctor):
+   * mensagem truncada em 300 caracteres e omitida se parecer conter segredo.
+   */
+  errosRecentes(id: string, n = 10): ModuleError[] {
+    return this.errors(id).slice(-n).map((e) => {
+      const t = e.mensagem.slice(0, MAX_MENSAGEM);
+      return { ...e, mensagem: scanSecrets(e.mensagem).length || scanSecrets(t).length ? "[mensagem omitida: possível segredo]" : t };
+    });
   }
 
   /**

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { McpServer, fromJsonSchema } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import { BRAIN_TOOLS, Brain, MODULE_TOOL_RE, loadModules, modulesStateRoot, principal, serveAddress, type LoadedModule, type ModuleRegistry } from "@brain/core";
+import { BRAIN_TOOLS, Brain, MODULE_TOOL_RE, loadModules, modulesStateRoot, principal, serveUrl, type LoadedModule, type ModuleRegistry } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, RESOLUTIONS, type Principal } from "@brain/shared";
 
 const VERSION = "0.1.0";
@@ -87,6 +87,17 @@ export function problemaDaFerramenta(f: unknown): string | undefined {
 
 type FerramentaMcp = NonNullable<NonNullable<LoadedModule["def"]>["ferramentasMcp"]>[number];
 
+/** Tempo máximo de uma chamada de ferramenta de módulo no serve. */
+const TIMEOUT_FERRAMENTA_MS = 5 * 60_000;
+
+/**
+ * `BRAIN_MCP_SEM_MODULOS=1` (posto pelo motor do assistente no mcp.json que ele gera): o processo não importa módulos nem
+ * registra ferramentas deles, que o assistente não pode usar.
+ */
+export function moduleToolsEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.BRAIN_MCP_SEM_MODULOS !== "1";
+}
+
 const textoDeErro = (texto: string): Ok => ({ isError: true, content: [{ type: "text", text: texto }] });
 
 /**
@@ -100,13 +111,17 @@ async function executarNoServe(brain: Brain, id: string, nome: string, args: unk
   try { token = readFileSync(brain.vault.tokenPath, "utf8").trim(); } catch { return foraDoAr; }
   if (!token) return foraDoAr;
   const limpar = (t: string) => t.split(token).join("***");
-  const { url } = serveAddress(modulesStateRoot(brain));
+  const url = await serveUrl(modulesStateRoot(brain), brain.vault);
   let r: Response;
   try {
     r = await fetch(`${url}/api/modules/${encodeURIComponent(id)}/_mcp/${encodeURIComponent(nome)}`, {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ args: args ?? {} }),
+      signal: AbortSignal.timeout(TIMEOUT_FERRAMENTA_MS),
     });
-  } catch { return foraDoAr; }
+  } catch (e) {
+    if ((e as Error)?.name === "TimeoutError") return textoDeErro(`a ferramenta ${ferramenta} não respondeu em ${TIMEOUT_FERRAMENTA_MS / 60_000} min (o brain serve pode seguir com ela)`);
+    return foraDoAr;
+  }
   let corpo: { resultado?: unknown; message?: unknown } = {};
   try { corpo = await r.json() as typeof corpo; } catch { /* corpo vazio ou não JSON */ }
   if (r.ok) return ok(corpo.resultado ?? null);
@@ -288,7 +303,7 @@ export async function runStdio(vaultRoot: string, agentOverride?: string): Promi
   const brain = await Brain.open(vaultRoot);
   // só as definições (sem `iniciar`): a execução é no serve. Sem módulos na config, nada muda (nem a pasta de estado é criada)
   let modulos: ModuleRegistry | undefined;
-  if (Object.keys(brain.config.modules).length) {
+  if (Object.keys(brain.config.modules).length && moduleToolsEnabledFromEnv()) {
     try { modulos = await loadModules(brain, { modo: "definicoes" }); }
     catch (e) { console.error(`[brain] módulos não carregados no MCP: ${(e as Error)?.message ?? String(e)}`); }
   }

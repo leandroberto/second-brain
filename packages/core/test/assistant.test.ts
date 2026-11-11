@@ -104,6 +104,7 @@ describe("registro de capturas e motor de assistente", () => {
     expect(srv.args).toEqual(MCP.args);
     expect(srv.env.BRAIN_VAULT).toBe(b.vault.root);
     expect(srv.env.BRAIN_AGENT_NAME).toBe(`assistant/${r.capture.id}`);
+    expect(srv.env.BRAIN_MCP_SEM_MODULOS).toBe("1"); // ferramentas de módulo nem são importadas no MCP do assistente
     expect(existsSync(c.mcpPath)).toBe(false); // arquivo temporário apagado ao terminar
   });
 

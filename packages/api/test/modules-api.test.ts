@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AvisosStore, Brain, Scheduler, loadModules, modulesStateRoot, type ModuleRegistry } from "@brain/core";
+import { AvisosStore, Brain, Scheduler, loadModules, modulesStateRoot, vaultFingerprint, type ModuleRegistry } from "@brain/core";
 import type { Chamador, ModuleContext, Rota } from "@brain/module-sdk";
 import { issueHumanSession, startApi, type ApiHandle } from "../src/index.js";
 import { podeChamar } from "../src/modules.js";
@@ -165,6 +165,26 @@ describe("rotas de módulo", () => {
     expect(por.lanca.causa).toContain("iniciar falhou");
     expect(por.sumido).toMatchObject({ id: "sumido", nome: "sumido", status: "ausente", aba: false });
     okCtx().badge(0);
+  });
+
+  it("GET /api/modules traz os 10 erros mais recentes, truncados e sem possível segredo", async () => {
+    for (let i = 0; i < 11; i++) registry.recordError("ok", `rota:GET /x${i}`, new Error(`falha ${i}`));
+    registry.recordError("ok", "rota:GET /longa", new Error("x".repeat(400)));
+    registry.recordError("ok", "rota:GET /segredo", new Error(`chave ghp_${"a".repeat(36)} vazou`));
+    const b = await (await call(api.token, "GET", "/api/modules")).json() as any;
+    const erros = b.modulos.find((m: any) => m.id === "ok").erros as Array<{ em: string; onde: string; mensagem: string }>;
+    expect(erros).toHaveLength(10);
+    expect(erros.at(-1)).toMatchObject({ onde: "rota:GET /segredo", mensagem: "[mensagem omitida: possível segredo]" });
+    expect(erros.at(-2)!.mensagem).toBe("x".repeat(300));
+    expect(erros[0]!.onde).toBe("rota:GET /x3");
+    expect(Object.keys(erros[0]!).sort()).toEqual(["em", "mensagem", "onde"]);
+    expect(JSON.stringify(b)).not.toContain("ghp_");
+  });
+
+  it("GET /api/serve identifica o processo e o vault sem segredo", async () => {
+    const r = await (await call(api.token, "GET", "/api/serve")).json();
+    expect(r).toEqual({ pid: process.pid, vault: vaultFingerprint(brain.vault.root) });
+    expect((await call(deskToken, "GET", "/api/serve")).status).toBe(403);
   });
 
   it("rodar tarefa exige sessão humana", async () => {

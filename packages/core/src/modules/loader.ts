@@ -10,7 +10,7 @@ import { AVISOS_NOOP, IA_INDISPONIVEL, createModuleContext, type AvisosSink } fr
 import { MODULE_ID_RE } from "./identity.js";
 import { ModuleRegistry, type LoadedModule, type ModuleStatus } from "./registry.js";
 import { validar } from "./schema.js";
-import { readServeInfo } from "./serve-info.js";
+import { serveVivo } from "./serve-info.js";
 import { modulesStateRoot } from "./state.js";
 
 /** Expande `~` e `$VAR`/`${VAR}` num caminho configurado. Variável ausente vira vazio. */
@@ -77,7 +77,7 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
   const timeout = o.iniciarTimeoutMs ?? 30_000;
   // execução interrompida pela queda do serve anterior vira erro do módulo; não mexe no marcador de outro serve vivo
   if (o.modo === "serve") {
-    const vivo = readServeInfo(modulesStateRoot(brain));
+    const vivo = await serveVivo(modulesStateRoot(brain), brain.vault);
     if (!vivo || vivo.pid === process.pid) reg.recuperarExecucoesInterrompidas();
   }
 

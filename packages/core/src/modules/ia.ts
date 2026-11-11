@@ -41,7 +41,8 @@ function gravar(arquivo: string, g: Gastos): void {
 
 /** Gasto de IA do módulo no dia local (de `<root>/_ia.json`), em US$. Para o doctor e a lista de módulos. */
 export function gastoIaDoDia(root: string, id: string, dia: Date = new Date()): number {
-  return ler(join(root, "_ia.json"))[id]?.[diaLocal(dia)] ?? 0;
+  const v: unknown = ler(join(root, "_ia.json"))[id]?.[diaLocal(dia)];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
 }
 
 const valido = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;

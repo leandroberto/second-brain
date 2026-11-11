@@ -1,38 +1,48 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, gastoIaDoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveAddress, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
+import type { EventEmitter } from "node:events";
+import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, gastoIaDoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveUrl, serveVivo, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
 
 /** Um módulo como `brain modules list` e o doctor mostram (do `serve` vivo ou do disco). */
 export interface ResumoModulo {
   id: string; nome: string; status: string; causa?: string; versao?: string;
-  tarefas: StatusTarefa[]; erros: ModuleError[]; iaHojeUsd: number;
+  tarefas: StatusTarefa[];
+  /** os mais recentes, em ordem cronológica, já truncados e sem possíveis segredos */
+  erros: ModuleError[];
+  iaHojeUsd: number;
 }
 export interface EstadoModulos { fonte: "serve" | "disco"; reiniciar: boolean; modulos: ResumoModulo[] }
 
 const lerToken = (b: Brain): string | undefined => { try { return readFileSync(b.vault.tokenPath, "utf8").trim() || undefined; } catch { return undefined; } };
-const enderecoDoServe = (b: Brain, port?: number) => serveAddress(modulesStateRoot(b), port ? { ...process.env, BRAIN_PORT: String(port) } : process.env).url;
+const ERROS_LISTADOS = 10;
 
 /**
- * Estado dos módulos: com o `serve` vivo, `GET /api/modules` com o api-token (status real e `reiniciar`); sem ele, monta pelo
- * disco (config + definições + `_scheduler.json`). Erros recentes (`_erros.jsonl`) e gasto de IA do dia (`_ia.json`) vêm sempre
- * do disco, que é da mesma máquina. `undefined` = nenhum módulo configurado.
+ * Estado dos módulos: com o `serve` no ar (o do `serve.json` confirmado, ou a porta de fallback), `GET /api/modules` com o
+ * api-token (status real, `reiniciar` e erros recentes); sem ele, monta pelo disco (config + definições + `_scheduler.json` +
+ * `_erros.jsonl`). Gasto de IA do dia (`_ia.json`) vem sempre do disco, que é da mesma máquina. `undefined` = nenhum módulo.
  */
 export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoModulos | undefined> {
   if (!Object.keys(b.config.modules).length) return undefined;
   const root = modulesStateRoot(b);
-  const erros = new ModuleRegistry(root);
-  const completar = (m: Omit<ResumoModulo, "erros" | "iaHojeUsd">): ResumoModulo => ({ ...m, erros: erros.errors(m.id).slice(-3), iaHojeUsd: gastoIaDoDia(root, m.id) });
+  const disco = new ModuleRegistry(root);
+  const ia = (id: string) => gastoIaDoDia(root, id);
 
   const token = lerToken(b);
   if (token) {
     try {
-      const r = await fetch(`${enderecoDoServe(b, port)}/api/modules`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2500) });
+      const url = await serveUrl(root, b.vault, port ? { ...process.env, BRAIN_PORT: String(port) } : process.env);
+      const r = await fetch(`${url}/api/modules`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2500) });
       if (r.ok) {
-        const j = await r.json() as { modulos?: Array<Omit<ResumoModulo, "erros" | "iaHojeUsd">>; reiniciar?: boolean };
-        if (Array.isArray(j.modulos)) return { fonte: "serve", reiniciar: j.reiniciar === true, modulos: j.modulos.map((m) => completar({ ...m, tarefas: m.tarefas ?? [] })) };
+        const j = await r.json() as { modulos?: Array<Omit<ResumoModulo, "iaHojeUsd"> & { erros?: ModuleError[] }>; reiniciar?: boolean };
+        if (Array.isArray(j.modulos)) {
+          return {
+            fonte: "serve", reiniciar: j.reiniciar === true,
+            modulos: j.modulos.map((m) => ({ ...m, tarefas: m.tarefas ?? [], erros: Array.isArray(m.erros) ? m.erros : disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id) })),
+          };
+        }
       }
     } catch { /* serve fora do ar (ou de outro vault): cai para o disco */ }
   }
@@ -44,7 +54,10 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
   const agenda = new Scheduler(leitura, root);
   return {
     fonte: "disco", reiniciar: false,
-    modulos: reg.list().map((m) => completar({ id: m.id, nome: m.def?.nome ?? m.id, status: m.status, causa: m.causa, versao: m.versao, tarefas: m.status === "ativo" ? agenda.status(m.id) : [] })),
+    modulos: reg.list().map((m) => ({
+      id: m.id, nome: m.def?.nome ?? m.id, status: m.status, causa: m.causa, versao: m.versao,
+      tarefas: m.status === "ativo" ? agenda.status(m.id) : [], erros: disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id),
+    })),
   };
 }
 
@@ -59,18 +72,29 @@ const quando = (iso?: string) => {
 const usd = (n: number) => `US$ ${n.toFixed(2)}`;
 const linhaTarefa = (t: StatusTarefa) =>
   `${t.tarefa} (${t.quando}): última ${quando(t.inicio)} ${t.resultado ?? "—"}${t.erro ? ` (${t.erro})` : ""} · próxima ${quando(t.proxima)}${t.suspensa ? " · SUSPENSA" : ""}`;
+const linhaErro = (x: ModuleError) => `erro ${quando(x.em)} ${x.onde}: ${x.mensagem}`;
+const ERROS_NO_DOCTOR = 3;
+const DIA_MS = 24 * 3600_000;
+const erroNasUltimas24h = (m: ResumoModulo, agora = Date.now()) => m.erros.some((x) => agora - Date.parse(x.em) < DIA_MS);
 
-/** Checks do doctor: um resumo (`modules`) e um por módulo. Sem módulos configurados, nenhum. */
+/**
+ * Checks do doctor: um resumo (`modules`) e um por módulo, com status, causa, versão, tarefas, gasto de IA do dia e os erros
+ * recentes. Módulo falho/ausente, tarefa com erro ou suspensa, ou erro registrado nas últimas 24 h: `warn` (nunca `fail`: o
+ * módulo é extensão opcional). Sem módulos configurados, nenhum check.
+ */
 export async function modulesChecks(b: Brain, port?: number): Promise<Check[]> {
   const e = await estadoDosModulos(b, port);
   if (!e) return [];
   const out: Check[] = [];
-  const problema = (m: ResumoModulo) => m.status === "falho" || m.status === "ausente" || m.tarefas.some((t) => t.suspensa || (t.resultado && t.resultado !== "ok"));
+  const problema = (m: ResumoModulo) => m.status === "falho" || m.status === "ausente" || erroNasUltimas24h(m) || m.tarefas.some((t) => t.suspensa || (t.resultado && t.resultado !== "ok"));
   const ativos = e.modulos.filter((m) => m.status === "ativo").length;
   const resumo = `${e.modulos.length} módulo(s), ${ativos} ativo(s) (${e.fonte === "serve" ? "estado do brain serve" : "brain serve fora do ar: estado em disco"})`;
   out.push({ id: "modules", name: "Módulos", status: e.reiniciar || e.modulos.some(problema) ? "warn" : "ok", detail: e.reiniciar ? `${resumo}; ${REINICIAR}` : resumo, ...(e.reiniciar ? { fix: "reinicie o brain serve" } : {}) });
   for (const m of e.modulos) {
-    const partes = [m.status + (m.causa ? `: ${m.causa}` : ""), m.versao ? `v${m.versao}` : undefined, ...m.tarefas.map(linhaTarefa), `IA hoje ${usd(m.iaHojeUsd)}`].filter(Boolean);
+    const partes = [
+      m.status + (m.causa ? `: ${m.causa}` : ""), m.versao ? `v${m.versao}` : undefined, ...m.tarefas.map(linhaTarefa), `IA hoje ${usd(m.iaHojeUsd)}`,
+      ...m.erros.slice(-ERROS_NO_DOCTOR).reverse().map(linhaErro),
+    ].filter(Boolean);
     out.push({ id: `module-${m.id}`, name: `Módulo ${m.id}`, status: problema(m) ? "warn" : "ok", detail: partes.join(" · "), ...(problema(m) ? { fix: `brain modules list (erros recentes de ${m.id})` } : {}) });
   }
   return out;
@@ -81,7 +105,7 @@ function imprimirLista(e: EstadoModulos): void {
   for (const m of e.modulos) {
     console.log(`  ${m.id.padEnd(20)} ${m.status.padEnd(8)} ${(m.versao ? `v${m.versao}` : "").padEnd(10)} IA hoje ${usd(m.iaHojeUsd)}${m.causa ? `  — ${m.causa}` : ""}`);
     for (const t of m.tarefas) console.log(`      tarefa ${linhaTarefa(t)}`);
-    for (const x of m.erros) console.log(`      erro ${quando(x.em)} ${x.onde}: ${x.mensagem}`);
+    for (const x of m.erros.slice(-ERROS_NO_DOCTOR)) console.log(`      ${linhaErro(x)}`);
   }
   if (e.reiniciar) console.log(`\n${REINICIAR}`);
 }
@@ -92,31 +116,74 @@ function ocorrenciaIso(v: string): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
 
+const NAO_RODANDO = "o brain serve não está rodando; a tarefa roda nele (suba com: brain serve)";
+const TIMEOUT_RUN_MS = 15 * 60_000;
+
+export interface DisparoTarefa {
+  /** URL do serve CONFIRMADO (`serveVivo`), nunca a porta de fallback: a requisição leva uma sessão humana */
+  url: string; id: string; tarefa: string; ocorrencia?: string;
+  emitir(): string;
+  revogar(sessao: string): void;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+  /** de onde vêm SIGINT/SIGTERM (padrão: `process`) e como sair depois de revogar (padrão: `process.exit`) */
+  sinais?: Pick<EventEmitter, "once" | "off">;
+  sair?: (codigo: number) => void;
+}
+
+/**
+ * Emite a sessão humana curta, faz o `POST .../_tarefas/<tarefa>/rodar` e revoga a sessão em TODOS os caminhos: fim normal,
+ * erro de rede, timeout, HTTP ≠ 2xx e Ctrl+C/SIGTERM (revoga e sai com 130).
+ */
+export async function dispararTarefa(o: DisparoTarefa): Promise<{ codigo: number; saida?: string; erro?: string }> {
+  const sinais = o.sinais ?? process;
+  const sessao = o.emitir();
+  let revogada = false;
+  const revogar = () => { if (revogada) return; revogada = true; try { o.revogar(sessao); } catch { /* a sessão expira em 5 min de qualquer jeito */ } };
+  const interromper = () => { revogar(); (o.sair ?? ((c: number) => process.exit(c)))(130); };
+  sinais.once("SIGINT", interromper); sinais.once("SIGTERM", interromper);
+  try {
+    let r: Response;
+    try {
+      r = await (o.fetch ?? fetch)(`${o.url}/api/modules/${encodeURIComponent(o.id)}/_tarefas/${encodeURIComponent(o.tarefa)}/rodar`, {
+        method: "POST", headers: { authorization: `Bearer ${sessao}`, "content-type": "application/json" },
+        body: JSON.stringify(o.ocorrencia ? { ocorrencia: o.ocorrencia } : {}), signal: AbortSignal.timeout(o.timeoutMs ?? TIMEOUT_RUN_MS),
+      });
+    } catch (e) {
+      const min = Math.round((o.timeoutMs ?? TIMEOUT_RUN_MS) / 60_000);
+      return { codigo: 1, erro: (e as Error)?.name === "TimeoutError" ? `o brain serve não respondeu em ${min} min (a tarefa pode seguir rodando nele; veja brain modules list)` : NAO_RODANDO };
+    }
+    const j = await r.json().catch(() => ({})) as { resultado?: string; erro?: string; message?: string };
+    if (!r.ok) return { codigo: 1, erro: `o brain serve recusou (${r.status}): ${j.message ?? "sem detalhe"}` };
+    return { codigo: j.resultado === "ok" ? 0 : 1, saida: `${o.id}/${o.tarefa}: ${j.resultado ?? "?"}${j.erro ? ` — ${j.erro}` : ""}` };
+  } finally {
+    sinais.off("SIGINT", interromper); sinais.off("SIGTERM", interromper);
+    revogar();
+  }
+}
+
 /**
  * `brain modules run`: dispara a tarefa NO SERVE com uma sessão humana curta (5 min), revogada no fim (spec §7.8). Exige
  * terminal interativo e a prova de humano (com frase-senha quando o vault exige), porque a tarefa pode causar ação externa.
+ * O serve precisa estar confirmado (`serveVivo`) ANTES de pedir a prova de humano e emitir a sessão.
  */
-async function rodarTarefa(b: Brain, id: string, tarefa: string, o: { ocorrencia?: string; port?: number }): Promise<number> {
+async function rodarTarefa(b: Brain, id: string, tarefa: string, o: { ocorrencia?: string }): Promise<number> {
   let ocorrencia: string | undefined;
   if (o.ocorrencia !== undefined) {
     ocorrencia = ocorrenciaIso(o.ocorrencia);
     if (!ocorrencia) { console.error(`--ocorrencia inválida: "${o.ocorrencia}" (use AAAA-MM-DD)`); return 2; }
   }
+  const vivo = await serveVivo(modulesStateRoot(b), b.vault);
+  if (!vivo) { console.error(NAO_RODANDO); return 1; }
   const who = await requireHuman(realIO(), "brain modules run", b);
-  const url = enderecoDoServe(b, o.port);
-  const sessao = issueHumanSession(b.vault.root, who, { ttlMinutes: 5, label: "brain modules run" });
-  try {
-    let r: Response;
-    try {
-      r = await fetch(`${url}/api/modules/${encodeURIComponent(id)}/_tarefas/${encodeURIComponent(tarefa)}/rodar`, {
-        method: "POST", headers: { authorization: `Bearer ${sessao}`, "content-type": "application/json" }, body: JSON.stringify(ocorrencia ? { ocorrencia } : {}),
-      });
-    } catch { console.error("o brain serve não está rodando; a tarefa roda nele (suba com: brain serve)"); return 1; }
-    const j = await r.json().catch(() => ({})) as { resultado?: string; erro?: string; message?: string };
-    if (!r.ok) { console.error(`o brain serve recusou (${r.status}): ${j.message ?? "sem detalhe"}`); return 1; }
-    console.log(`${id}/${tarefa}: ${j.resultado ?? "?"}${j.erro ? ` — ${j.erro}` : ""}`);
-    return j.resultado === "ok" ? 0 : 1;
-  } finally { revokeHumanSession(b.vault.root, sessao); }
+  const r = await dispararTarefa({
+    url: vivo.url, id, tarefa, ocorrencia,
+    emitir: () => issueHumanSession(b.vault.root, who, { ttlMinutes: 5, label: "brain modules run" }),
+    revogar: (t) => revokeHumanSession(b.vault.root, t),
+  });
+  if (r.saida) console.log(r.saida);
+  if (r.erro) console.error(r.erro);
+  return r.codigo;
 }
 
 /**
@@ -190,7 +257,7 @@ export async function modulesCommand(args: string[], o: { vault: string; port?: 
       // antes de abrir o vault: sem TTY a resposta é sempre não (a tarefa pode causar ação externa)
       if (!process.stdin.isTTY || !process.stdout.isTTY) { console.error("brain modules run exige um terminal interativo (a tarefa pode causar ação externa); agentes e scripts não disparam tarefas"); return 1; }
       const b = await Brain.open(o.vault);
-      try { return await rodarTarefa(b, id, tarefa, o); } finally { b.close(); }
+      try { return await rodarTarefa(b, id, tarefa, { ocorrencia: o.ocorrencia }); } finally { b.close(); }
     }
     case "list": {
       const b = await Brain.open(o.vault);

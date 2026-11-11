@@ -225,6 +225,8 @@ function resumo(o: ModulesApiOptions, m: LoadedModule, badge: number) {
     id: m.id, nome: m.def?.nome ?? m.id, icone: m.def?.icone, aba: !!m.def?.aba,
     badge, status: m.status, causa: m.causa, versao: m.versao,
     tarefas: o.scheduler?.status(m.id) ?? [],
+    // os 10 mais recentes, em ordem cronológica (o último é o mais novo)
+    erros: o.registry.errosRecentes(m.id, 10),
   };
 }
 
