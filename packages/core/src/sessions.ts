@@ -87,7 +87,19 @@ export function renewDesktopSession(vault: string, token: string, o: SessionStor
  */
 export function sessionScope(vault: string, token: string, o: SessionStoreOptions = {}): SessionScope | undefined {
   if (typeof token !== "string" || !token.startsWith("hs_") || token.length !== 67) return undefined;
-  const st = load<Store>(o.file ?? defaultSessionsFile(), {} as Store); const h = Buffer.from(sha(token)); const now = Date.now();
+  return sessionScopeByHash(vault, sha(token), o);
+}
+
+/** SHA-256 (hex) de uma credencial, no formato em que a sessão é guardada. Para quem precisa lembrar a sessão sem o segredo. */
+export const sessionHash = (token: string): string => sha(token);
+
+/**
+ * Como `sessionScope`, mas a partir do hash da sessão (`sessionHash`): quem guarda só o hash (o token de página de um módulo
+ * lembra a sessão que o emitiu) revalida a cada uso que ela ainda está viva, sem guardar o segredo.
+ */
+export function sessionScopeByHash(vault: string, hash: string, o: SessionStoreOptions = {}): SessionScope | undefined {
+  if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) return undefined;
+  const st = load<Store>(o.file ?? defaultSessionsFile(), {} as Store); const h = Buffer.from(hash); const now = Date.now();
   const e = (st[keyOf(vault)] ?? []).find((e) => Date.parse(e.expires_at) > now && e.hash.length === h.length && timingSafeEqual(Buffer.from(e.hash), h));
   if (!e) return undefined;
   const scope = e.scope ?? "full";

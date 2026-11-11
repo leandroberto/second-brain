@@ -59,6 +59,8 @@ armazenamento nem a sessão humana.
 Como `null` vale para qualquer origem opaca, **a segurança vem do token de página, não da origem**. O token é curto (12 h,
 só em memória do processo), emitido por módulo (`POST /api/modules/<id>/ui-token`) e só para a sessão humana `full`. Vale
 somente para as rotas do próprio módulo: não vale em `ui-token`, `_mcp` nem `_tarefas`. A checagem roda antes do roteamento.
+O token guarda o hash da sessão humana que o emitiu e, a cada uso, confere que ela ainda é uma sessão `full` viva: revogar as
+sessões (`brain admin revoke-sessions`) ou deixá-las expirar derruba na hora os tokens de página emitidos por elas (401).
 `Origin: null` só é aceito nos prefixos `/api/modules/<id>/*` e `/modules/<id>/*`; em qualquer outro caminho é 403.
 
 **Desvio deliberado do texto do spec:** a CSP do estático da aba inclui `sandbox allow-scripts allow-forms`. O spec previa

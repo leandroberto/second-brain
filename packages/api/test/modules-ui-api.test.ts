@@ -3,7 +3,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { AvisosStore, Brain, Scheduler, loadModules, modulesStateRoot, type ModuleRegistry } from "@brain/core";
+import { AvisosStore, Brain, Scheduler, loadModules, modulesStateRoot, revokeHumanSession, type ModuleRegistry } from "@brain/core";
 import type { Chamador, ModuleContext, Rota } from "@brain/module-sdk";
 import { issueHumanSession, startApi, type ApiHandle } from "../src/index.js";
 import { negarAntesDoRoteamento, podeChamar } from "../src/modules.js";
@@ -132,6 +132,29 @@ describe("token de página", () => {
     const semToken = await call("", "GET", "/api/modules/ok/eco", { origin: "null" });
     expect(semToken.status).toBe(401);
     expect(semToken.headers.get("access-control-allow-origin")).toBe("null");
+  });
+
+  it("token de página morre junto com a sessão humana que o emitiu (revogada ou expirada)", async () => {
+    const proof = await terminalHuman("alice", sessions());
+    const emissora = issueHumanSession(brain.vault.root, proof, sessions());
+    const t = ((await (await call(emissora, "POST", "/api/modules/ok/ui-token")).json()) as { token: string }).token;
+    expect((await call(t, "GET", "/api/modules/ok/eco")).status).toBe(200);
+    expect((await call(t, "POST", "/api/modules/ok/acao", { body: {} })).status).toBe(200);
+    revokeHumanSession(brain.vault.root, emissora, sessions()); // o que `brain admin revoke-sessions` faz, só com esta
+    expect((await call(t, "GET", "/api/modules/ok/eco")).status).toBe(401);
+    expect((await call(t, "POST", "/api/modules/ok/acao", { body: {} })).status).toBe(401);
+    expect((await call(t, "GET", "/api/modules/ok/eco", { origin: "null" })).status).toBe(401);
+    // o de outra sessão viva continua valendo
+    expect((await call(paginaOk, "GET", "/api/modules/ok/eco")).status).toBe(200);
+    // sessão expirada: idem
+    const curta = issueHumanSession(brain.vault.root, proof, { ...sessions(), ttlMinutes: 1 });
+    const t2 = ((await (await call(curta, "POST", "/api/modules/ok/ui-token")).json()) as { token: string }).token;
+    expect((await call(t2, "GET", "/api/modules/ok/eco")).status).toBe(200);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 2 * 60_000);
+      expect((await call(t2, "GET", "/api/modules/ok/eco")).status).toBe(401);
+    } finally { vi.useRealTimers(); }
   });
 
   it("token expirado é recusado", async () => {

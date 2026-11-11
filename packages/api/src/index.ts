@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, extname, join, normalize, sep } from "node:path";
-import { Brain, type Vault, principal, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
+import { Brain, type Vault, principal, sessionScopeByHash, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
@@ -60,7 +60,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   const emit = (ev: string, data: unknown = {}) => {
     for (const [c, tipo] of clients) if (tipo === "sessao" || !ev.startsWith("module.")) c.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-  const paginas = new TokensDePagina();
+  // o token de página vale enquanto a sessão humana `full` que o emitiu estiver viva (revogação e expiração valem na hora)
+  const paginas = new TokensDePagina((h) => sessionScopeByHash(brain.vault.root, h, opts.sessions) === "full");
   const pastaSdk = pastaEstaticaDoSdk();
   const pararAvisos = opts.modules?.avisos.aoMudar((ev, data) => emit(ev, data));
 
@@ -300,7 +301,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
       }
     }
     // rotas de módulo e avisos: depois das do core
-    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res })) return;
+    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res, token: hdr })) return;
     json(res, 404, { error: "not_found", message: `rota ${method} ${url.pathname}` });
   }
 

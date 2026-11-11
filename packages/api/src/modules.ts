@@ -132,7 +132,11 @@ function erroDoModulo(o: ModulesApiOptions, res: ServerResponse, id: string, ond
 /** Serializa dentro do `try` do módulo: valor não serializável é erro do módulo, não da API. */
 const serializar = (v: unknown): string | undefined => (v === undefined ? undefined : JSON.stringify(v));
 
-export interface ReqModulo { metodo: string; url: URL; body: unknown; cred: Credencial; paginas: TokensDePagina; res: ServerResponse }
+export interface ReqModulo {
+  metodo: string; url: URL; body: unknown; cred: Credencial; paginas: TokensDePagina; res: ServerResponse;
+  /** credencial apresentada (o `ui-token` guarda o hash da sessão emissora) */
+  token: string;
+}
 
 /**
  * Rotas de módulo e de avisos. Devolve `false` se o caminho não é delas (segue para o 404 do core). A matriz já foi aplicada.
@@ -172,7 +176,7 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
   if (segs[0] === "ui-token") {
     if (metodo !== "POST" || segs.length !== 1) throw new BrainError("not_found", `rota ${metodo} ${caminho}`);
     if (chamador.via !== "ui") throw new BrainError("forbidden", "o token de página só é emitido para a sessão humana da UI");
-    return responder(res, 200, r.paginas.emitir(id));
+    return responder(res, 200, r.paginas.emitir(id, r.token));
   }
   if (m.status !== "ativo" || !m.def || !m.ctx) return responder(res, 503, { error: "module_unavailable", message: m.causa ?? "módulo indisponível" });
   const ctx = m.ctx;
@@ -238,26 +242,29 @@ const hashDoToken = (t: string) => createHash("sha256").update(t).digest("hex");
 /**
  * Tokens de página em memória do processo (reiniciar o `serve` invalida todos). Guarda só o SHA-256: a busca é pelo hash
  * do que o cliente apresentou, então o segredo nunca é comparado byte a byte. Cada emissão gera um token novo.
+ * Cada token lembra o hash da sessão humana que o emitiu, e `sessaoViva` é consultada A CADA USO: sessão revogada
+ * (`brain admin revoke-sessions`) ou expirada derruba na hora os tokens de página que ela emitiu.
  */
 export class TokensDePagina {
-  private readonly porHash = new Map<string, { modulo: string; expira: number }>();
+  private readonly porHash = new Map<string, { modulo: string; expira: number; sessao: string }>();
+  constructor(private readonly sessaoViva: (hashDaSessao: string) => boolean) {}
 
-  emitir(modulo: string): { token: string; expira: string } {
+  emitir(modulo: string, sessaoEmissora: string): { token: string; expira: string } {
     const agora = Date.now();
     for (const [h, e] of this.porHash) if (e.expira <= agora) this.porHash.delete(h);
     const token = randomBytes(32).toString("base64url");
     const expira = agora + TTL_PAGINA_MS;
-    this.porHash.set(hashDoToken(token), { modulo, expira });
+    this.porHash.set(hashDoToken(token), { modulo, expira, sessao: hashDoToken(sessaoEmissora) });
     return { token, expira: new Date(expira).toISOString() };
   }
 
-  /** Id do módulo do token, ou `undefined` (desconhecido ou expirado; o expirado é descartado). */
+  /** Id do módulo do token, ou `undefined` (desconhecido, expirado ou de uma sessão que já não está viva; é descartado). */
   modulo(token: string): string | undefined {
     if (!token) return undefined;
     const h = hashDoToken(token);
     const e = this.porHash.get(h);
     if (!e) return undefined;
-    if (e.expira <= Date.now()) { this.porHash.delete(h); return undefined; }
+    if (e.expira <= Date.now() || !this.sessaoViva(e.sessao)) { this.porHash.delete(h); return undefined; }
     return e.modulo;
   }
 }

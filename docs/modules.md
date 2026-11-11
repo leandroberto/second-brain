@@ -152,7 +152,8 @@ no menu lateral, entre os itens do core e Configurações, com o contador (`badg
 A página roda num iframe com origem opaca (`sandbox="allow-scripts allow-forms"`, sem `allow-same-origin`):
 
 - ela **não** acessa a janela, o armazenamento nem a sessão do second-brain;
-- chama a API com um **token de página**, curto, só em memória e só para as rotas do próprio módulo;
+- chama a API com um **token de página**, curto, só em memória e só para as rotas do próprio módulo; ele morre junto com a
+  sessão humana que abriu a aba (revogada ou expirada);
 - a CSP não permite script inline: todo JavaScript fica em arquivo (`<script type="module" src="app.js">`);
 - renderize dado com `textContent`, nunca com `innerHTML`.
 
