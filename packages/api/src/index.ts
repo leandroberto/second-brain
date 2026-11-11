@@ -7,7 +7,7 @@ import { Brain, type Vault, principal, humanFromSession, renewDesktopSession, au
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
-import { negarAntesDoRoteamento, tipoCredencial, tratarModulos, type ModulesApiOptions } from "./modules.js";
+import { CORS_OPACO, CSP_DA_ABA, PREFLIGHT_OPACO, TokensDePagina, aceitaOrigemOpaca, arquivoDaAba, credencialDoPrincipal, negarAntesDoRoteamento, pastaEstaticaDoSdk, temSegmentoDePonto, tratarModulos, type Credencial, type ModulesApiOptions, type TipoCredencial } from "./modules.js";
 export { podeChamar, credencialDeModulo, type ModulesApiOptions } from "./modules.js";
 
 export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant; modules?: ModulesApiOptions }
@@ -16,6 +16,7 @@ export interface ApiHandle { url: string; token: string; port: number; close(): 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
   ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2", ".map": "application/json",
+  ".mjs": "text/javascript", ".txt": "text/plain; charset=utf-8", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".woff": "font/woff",
 };
 const STATUS_OF: Record<string, number> = {
   not_found: 404, invalid: 400, secret_detected: 422, too_large: 413, conflict_revision: 409, forbidden: 403,
@@ -51,11 +52,16 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     if (safeEq(tok, token)) return API_AGENT;
     return undefined;
   };
-  // EventSource não envia Authorization: em vez de pôr a sessão na URL, o cliente troca o token por um TICKET curto e de uso único
-  const tickets = new Map<string, number>();
-  const clients = new Set<ServerResponse>();
+  // EventSource não envia Authorization: em vez de pôr a sessão na URL, o cliente troca o token por um TICKET curto e de uso único.
+  // O ticket guarda o tipo da credencial: avisos de módulo (`module.*`) só vão à sessão humana, como `/api/notifications`.
+  const tickets = new Map<string, { expira: number; tipo: TipoCredencial }>();
+  const clients = new Map<ServerResponse, TipoCredencial>();
   let watching = false; let listenPort = 0;
-  const emit = (ev: string, data: unknown = {}) => { for (const c of clients) c.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`); };
+  const emit = (ev: string, data: unknown = {}) => {
+    for (const [c, tipo] of clients) if (tipo === "sessao" || !ev.startsWith("module.")) c.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+  const paginas = new TokensDePagina();
+  const pastaSdk = pastaEstaticaDoSdk();
   const pararAvisos = opts.modules?.avisos.aoMudar((ev, data) => emit(ev, data));
 
   const routes: Array<[string, RegExp, Handler]> = [];
@@ -227,48 +233,82 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     try { await handle(req, res); } catch (e) { send(res, e); }
   });
 
+  const origemDoSb = (o: string) => { try { return allowedHosts.has(new URL(o).host.toLowerCase()); } catch { return false; } };
+
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const hostHdr = (req.headers.host ?? "").toLowerCase();
     if (!allowedHosts.has(hostHdr)) return plain(res, 403, "host não permitido");
+    // segmento `.`/`..` cru (navegador nunca envia): a URL normalizaria e mudaria o alvo (ex.: sair de /modules/<id>/)
+    if (temSegmentoDePonto((req.url ?? "/").split("?")[0]!)) return plain(res, 404, "não encontrado");
     const url = new URL(req.url ?? "/", `http://${hostHdr}`);
     const method = req.method ?? "GET";
-    if (!url.pathname.startsWith("/api/")) return serveStatic(url.pathname, res);
+    const ehApi = url.pathname.startsWith("/api/");
+    const ehAba = url.pathname.startsWith("/modules/");
 
+    // Origin: `null` (iframe da aba, origem opaca) é tratado ANTES de qualquer `new URL` e só vale nos prefixos de módulo;
+    // origem malformada também é 403, nunca 500
     const origin = req.headers.origin;
-    if (origin && !allowedHosts.has(new URL(origin).host.toLowerCase())) return plain(res, 403, "origem não permitida");
+    const opaca = origin === "null";
+    if (opaca) {
+      if (!aceitaOrigemOpaca(url.pathname)) return plain(res, 403, "origem não permitida");
+      for (const [k, v] of Object.entries(CORS_OPACO)) res.setHeader(k, v); // vale para toda resposta, inclusive erro
+      if (method === "OPTIONS") { res.writeHead(204, PREFLIGHT_OPACO); return res.end(); } // preflight: sem token, nada executa
+    } else if (origin && (ehApi || ehAba) && !origemDoSb(origin)) return plain(res, 403, "origem não permitida");
+    if (ehAba) return serveAba(url.pathname, method, res);
+    if (!ehApi) return serveStatic(url.pathname, res);
+
     if (url.pathname === "/api/events") {
-      const t = url.searchParams.get("ticket") ?? ""; const exp = tickets.get(t); tickets.delete(t);
-      if (!exp || exp < Date.now()) return plain(res, 401, "ticket inválido ou expirado");
+      const t = url.searchParams.get("ticket") ?? ""; const tk = tickets.get(t); tickets.delete(t);
+      if (!tk || tk.expira < Date.now()) return plain(res, 401, "ticket inválido ou expirado");
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      res.write("retry: 3000\n\n"); clients.add(res);
+      res.write("retry: 3000\n\n"); clients.set(res, tk.tipo);
       const ping = setInterval(() => res.write(": ping\n\n"), 20000);
       req.on("close", () => { clients.delete(res); clearInterval(ping); });
       return;
     }
     const hdr = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-    const who = identify(hdr);
-    if (!who) return plain(res, 401, "token inválido");
-    // matriz de credenciais ANTES do roteamento (desktop: allowlist estrita; api-token: só _mcp e a lista de módulos), para que
-    // rota nova já nasça bloqueada
-    const tipo = tipoCredencial(who);
-    const negado = negarAntesDoRoteamento(tipo, method, url.pathname);
-    if (negado || !tipo) return json(res, 403, { error: "forbidden", message: negado });
+    // o token de página é identificado primeiro e nunca vira Principal: só a matriz de módulos o conhece
+    const paginaDe = paginas.modulo(hdr);
+    let who: Principal | undefined; let cred: Credencial | undefined;
+    if (paginaDe) cred = { tipo: "pagina", modulo: paginaDe };
+    else {
+      who = identify(hdr);
+      if (!who) return plain(res, 401, "token inválido");
+      cred = credencialDoPrincipal(who);
+    }
+    // matriz de credenciais ANTES do roteamento (desktop: allowlist estrita; api-token: só _mcp e a lista de módulos; página:
+    // só o próprio módulo), para que rota nova já nasça bloqueada
+    const negado = negarAntesDoRoteamento(cred, method, url.pathname);
+    if (negado || !cred) return json(res, 403, { error: "forbidden", message: negado });
+    // com origem opaca só o token de página vale: a sessão humana só vale sem Origin ou com a origem do próprio SB
+    if (opaca && cred.tipo !== "pagina") return json(res, 403, { error: "forbidden", message: "origem opaca exige o token de página" });
     if (url.pathname === "/api/events/ticket" && method === "POST") {
       const t = randomBytes(18).toString("hex"); const now = Date.now();
-      for (const [k, e] of tickets) if (e < now) tickets.delete(k);
-      tickets.set(t, now + 30_000); return json(res, 200, { ticket: t });
+      for (const [k, e] of tickets) if (e.expira < now) tickets.delete(k);
+      tickets.set(t, { expira: now + 30_000, tipo: cred.tipo }); return json(res, 200, { ticket: t });
     }
     const body = ["POST", "PUT", "PATCH"].includes(method) ? await readJson(req) : undefined;
-    for (const [m, re, h] of routes) {
-      if (m !== method) continue;
-      const mt = re.exec(url.pathname);
-      if (!mt) continue;
-      const data = await h({ brain, actor: who, url, body, params: mt.slice(1), emit, token: hdr });
-      return json(res, 200, data ?? { ok: true });
+    if (who) {
+      for (const [m, re, h] of routes) {
+        if (m !== method) continue;
+        const mt = re.exec(url.pathname);
+        if (!mt) continue;
+        const data = await h({ brain, actor: who, url, body, params: mt.slice(1), emit, token: hdr });
+        return json(res, 200, data ?? { ok: true });
+      }
     }
     // rotas de módulo e avisos: depois das do core
-    if (await tratarModulos(opts.modules, { metodo: method, url, body, tipo, res })) return;
+    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res })) return;
     json(res, 404, { error: "not_found", message: `rota ${method} ${url.pathname}` });
+  }
+
+  /** Estático da aba (§7.7): sem credencial (o iframe carrega), CSP própria e CORS para a origem opaca. */
+  function serveAba(pathname: string, method: string, res: ServerResponse) {
+    if (method !== "GET" && method !== "HEAD") return plain(res, 405, "método não permitido");
+    const arq = arquivoDaAba(opts.modules, pastaSdk, pathname);
+    if (!arq) return plain(res, 404, "não encontrado");
+    res.writeHead(200, { "content-type": MIME[extname(arq)] ?? "application/octet-stream", "cache-control": "no-cache", "x-content-type-options": "nosniff", "content-security-policy": CSP_DA_ABA, ...CORS_OPACO });
+    res.end(readFileSync(arq));
   }
 
   const webRoot = opts.webRoot;
@@ -278,7 +318,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     if (rel.split(sep).includes("..")) return plain(res, 400, "caminho inválido");
     let file = join(webRoot, rel);
     if (!rel || !existsSync(file) || !statSync(file).isFile()) file = join(webRoot, "index.html");
-    res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": file.endsWith("index.html") ? "no-cache" : "public, max-age=31536000, immutable", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" });
+    res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": file.endsWith("index.html") ? "no-cache" : "public, max-age=31536000, immutable", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'self'" });
     res.end(readFileSync(file));
   }
 
@@ -296,7 +336,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   for (const h of [host, "localhost", "127.0.0.1"]) allowedHosts.add(`${h}:${port}`);
   return {
     url: `http://${host}:${port}`, token, port,
-    close: () => new Promise<void>((res) => { pararAvisos?.(); vw.close(); pw?.close(); for (const c of clients) c.end(); server.close(() => res()); server.closeAllConnections?.(); }),
+    close: () => new Promise<void>((res) => { pararAvisos?.(); vw.close(); pw?.close(); for (const c of clients.keys()) c.end(); server.close(() => res()); server.closeAllConnections?.(); }),
   };
 }
 

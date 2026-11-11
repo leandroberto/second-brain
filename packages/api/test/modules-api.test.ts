@@ -159,7 +159,7 @@ describe("rotas de módulo", () => {
     const b = await (await call(uiToken, "GET", "/api/modules")).json() as any;
     expect(b.reiniciar).toBe(false);
     const por = Object.fromEntries(b.modulos.map((m: any) => [m.id, m]));
-    expect(por.ok).toMatchObject({ id: "ok", nome: "Ok", icone: "sino", aba: false, badge: 3, status: "ativo", versao: "1.2.3" });
+    expect(por.ok).toMatchObject({ id: "ok", nome: "Ok", icone: "sino", aba: true, badge: 3, status: "ativo", versao: "1.2.3" });
     expect(por.ok.tarefas).toEqual([expect.objectContaining({ tarefa: "diaria", quando: "0 9 * * *" })]);
     expect(por.lanca).toMatchObject({ status: "falho", badge: 0, tarefas: [] });
     expect(por.lanca.causa).toContain("iniciar falhou");

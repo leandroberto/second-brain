@@ -12,6 +12,7 @@ const entradaEco = {
 
 export default {
   sdk: 1, id: "ok", nome: "Ok", versao: "1.2.3", icone: "sino",
+  aba: { titulo: "Ok", pasta: "ui" },
   rotas: [
     { metodo: "GET", caminho: "/eco", async rodar(req) { return { chamador: req.chamador }; } },
     { metodo: "GET", caminho: "/itens/:id", async rodar(req) { return { id: req.params.id, q: req.query.get("q") }; } },
@@ -25,6 +26,11 @@ export default {
     nome: "eco", descricao: "devolve o texto", entrada: entradaEco,
     entradaJson: { type: "object", properties: { texto: { type: "string" } }, required: ["texto"] },
     async rodar(args) { return { eco: args.texto }; },
+  }, {
+    // schema que LANÇA (bug do módulo), diferente de devolver issues (entrada inválida)
+    nome: "quebra", descricao: "schema com defeito", entradaJson: { type: "object" },
+    entrada: { "~standard": { version: 1, vendor: "fixture", validate() { throw new Error("schema quebrado por dentro"); } } },
+    async rodar() { return { nunca: true }; },
   }],
   tarefas: [{
     id: "diaria", quando: "0 9 * * *",

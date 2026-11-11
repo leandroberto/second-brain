@@ -13,6 +13,8 @@ export default tseslint.config(
   },
   // scripts .mjs rodam em Node: globais padrão
   { files: ["scripts/**/*.mjs"], languageOptions: { globals: { process: "readonly", console: "readonly", setTimeout: "readonly", fetch: "readonly" } } },
+  // cliente da aba de módulo: ES module de navegador, sem dependências
+  { files: ["packages/module-sdk/static/**/*.js"], languageOptions: { globals: { window: "readonly", document: "readonly", fetch: "readonly", Headers: "readonly", console: "readonly" } } },
   // A UI só fala com a API local: nada de Core nem de APIs de Node.
   {
     files: ["apps/web/src/**"],

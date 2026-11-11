@@ -1,22 +1,25 @@
 import type { ServerResponse } from "node:http";
-import { MODULE_ID_RE, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
+import { createHash, randomBytes } from "node:crypto";
+import { statSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { MODULE_ID_RE, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
 import type { Chamador, Rota } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 
 /** Peças de módulos que o `serve` entrega à API (spec de módulos §7.6, §7.8, §7.9). */
 export interface ModulesApiOptions { registry: ModuleRegistry; scheduler?: Scheduler; avisos: AvisosStore }
 
-/**
- * Tipo de credencial de uma requisição. A Tarefa 7 acrescenta aqui o token de página (`{ via: "pagina" }`, só
- * `/api/modules/<id>/*` do próprio id), e a decisão continua concentrada em `negarAntesDoRoteamento`/`credencialDeModulo`.
- */
-export type TipoCredencial = "sessao" | "desktop" | "api-token";
+/** Tipo de credencial de uma requisição. A decisão fica concentrada em `negarAntesDoRoteamento`/`credencialDeModulo`. */
+export type TipoCredencial = "sessao" | "desktop" | "api-token" | "pagina";
+/** Credencial resolvida. O token de página (§7.7) carrega o id do módulo para o qual foi emitido. */
+export type Credencial = { tipo: Exclude<TipoCredencial, "pagina"> } | { tipo: "pagina"; modulo: string };
 
-/** `undefined` = credencial que não está na matriz (nega). */
-export function tipoCredencial(p: Principal): TipoCredencial | undefined {
-  if (p.kind === "human" && p.channel === "ui") return "sessao";
-  if (p.kind === "human" && p.channel === "desktop") return "desktop";
-  if (p.kind === "agent" && p.channel === "api") return "api-token";
+/** `undefined` = credencial que não está na matriz (nega). O token de página não é um `Principal`: vem de `TokensDePagina`. */
+export function credencialDoPrincipal(p: Principal): Credencial | undefined {
+  if (p.kind === "human" && p.channel === "ui") return { tipo: "sessao" };
+  if (p.kind === "human" && p.channel === "desktop") return { tipo: "desktop" };
+  if (p.kind === "agent" && p.channel === "api") return { tipo: "api-token" };
   return undefined;
 }
 
@@ -24,16 +27,33 @@ const PREFIXO = "/api/modules/";
 const MCP_RE = /^\/api\/modules\/[^/]+\/_mcp\/[^/]+$/;
 const ehMcp = (caminho: string) => MCP_RE.test(caminho);
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+/** Sub-rotas tratadas pelo SB antes das do módulo; a página (token de página ou origem opaca) nunca as alcança. */
+const RESERVADAS_DA_PAGINA = new Set(["ui-token", "_mcp", "_tarefas"]);
+
+/** `/api/modules/<id>/<sub>` que a página do módulo pode chamar → `<id>`; `undefined` fora disso. */
+export function moduloDaRotaDePagina(caminho: string): string | undefined {
+  if (!caminho.startsWith(PREFIXO)) return undefined;
+  const [id, ...segs] = caminho.slice(PREFIXO.length).split("/");
+  if (!id || !MODULE_ID_RE.test(id) || !segs.length || RESERVADAS_DA_PAGINA.has(segs[0]!)) return undefined;
+  return id;
+}
+
+const naoPrevista = (_c: never): undefined => undefined;
 
 /**
  * `chamador` de uma rota sob `/api/modules/<id>/...`, decidido só pela credencial e pelo caminho (nunca por cabeçalho do
  * cliente). `undefined` = negado. Ponto único da matriz para rotas de módulo (§7.6).
  */
-export function credencialDeModulo(tipo: TipoCredencial, metodo: string, caminho: string): Chamador | undefined {
-  if (tipo === "sessao") return ehMcp(caminho) ? undefined : { via: "ui", humano: true };
-  // o nome do agente não vem de cabeçalho: o api-token é sempre o agente fixo da API
-  if (tipo === "api-token") return metodo === "POST" && ehMcp(caminho) ? { via: "mcp", humano: false } : undefined;
-  return undefined; // desktop: nenhuma rota de módulo
+export function credencialDeModulo(cred: Credencial, metodo: string, caminho: string): Chamador | undefined {
+  switch (cred.tipo) {
+    case "sessao": return ehMcp(caminho) ? undefined : { via: "ui", humano: true };
+    // o nome do agente não vem de cabeçalho: o api-token é sempre o agente fixo da API
+    case "api-token": return metodo === "POST" && ehMcp(caminho) ? { via: "mcp", humano: false } : undefined;
+    // só o próprio módulo, fora de ui-token/_mcp/_tarefas (rodar tarefa exige a sessão humana, §7.8)
+    case "pagina": return moduloDaRotaDePagina(caminho) === cred.modulo ? { via: "pagina", humano: true } : undefined;
+    case "desktop": return undefined; // nenhuma rota de módulo
+    default: return naoPrevista(cred);
+  }
 }
 
 const DESKTOP_MSG = "credencial do desktop só acessa o assistente";
@@ -43,25 +63,35 @@ const ehDesktopPermitido = (metodo: string, caminho: string) =>
   || (metodo === "GET" && caminho === "/api/notifications")
   || (metodo === "POST" && /^\/api\/notifications\/[^/]+\/visto$/.test(caminho));
 
+const NAO_RECONHECIDA = "credencial não reconhecida";
+const PAGINA_MSG = "o token de página só vale nas rotas do próprio módulo";
+
 /**
- * Matriz de credenciais, aplicada ANTES do roteamento (rota nova nasce bloqueada para o desktop; o api-token nunca chega a
- * um lookup de módulo fora do `_mcp`). Devolve a mensagem do 403, ou `undefined` se a requisição segue.
+ * Matriz de credenciais, aplicada ANTES do roteamento (rota nova nasce bloqueada para o desktop e para a página; o api-token
+ * nunca chega a um lookup de módulo fora do `_mcp`). Devolve a mensagem do 403, ou `undefined` se a requisição segue.
+ * Tipo de credencial fora do `switch` nega (o `never` obriga a tratar um tipo novo aqui).
  */
-export function negarAntesDoRoteamento(tipo: TipoCredencial | undefined, metodo: string, caminho: string): string | undefined {
-  if (!tipo) return "credencial não reconhecida";
-  if (tipo === "desktop") return ehDesktopPermitido(metodo, caminho) ? undefined : DESKTOP_MSG;
-  if (caminho.startsWith("/api/notifications")) return tipo === "sessao" ? undefined : "avisos só para a sessão humana e o desktop";
-  if (caminho === "/api/modules") return tipo === "sessao" || metodo === "GET" ? undefined : "o api-token só lê a lista de módulos";
-  if (caminho.startsWith("/api/modules")) {
-    if (credencialDeModulo(tipo, metodo, caminho)) return undefined;
-    return tipo === "sessao" ? "_mcp é só para o api-token (processo MCP)" : "o api-token só acessa GET /api/modules e as ferramentas (_mcp) dos módulos";
+export function negarAntesDoRoteamento(cred: Credencial | undefined, metodo: string, caminho: string): string | undefined {
+  if (!cred) return NAO_RECONHECIDA;
+  switch (cred.tipo) {
+    case "desktop": return ehDesktopPermitido(metodo, caminho) ? undefined : DESKTOP_MSG;
+    case "pagina": return credencialDeModulo(cred, metodo, caminho) ? undefined : PAGINA_MSG;
+    case "sessao": case "api-token": {
+      if (caminho.startsWith("/api/notifications")) return cred.tipo === "sessao" ? undefined : "avisos só para a sessão humana e o desktop";
+      if (caminho === "/api/modules") return cred.tipo === "sessao" || metodo === "GET" ? undefined : "o api-token só lê a lista de módulos";
+      if (caminho.startsWith("/api/modules")) {
+        if (credencialDeModulo(cred, metodo, caminho)) return undefined;
+        return cred.tipo === "sessao" ? "_mcp é só para o api-token (processo MCP)" : "o api-token só acessa GET /api/modules e as ferramentas (_mcp) dos módulos";
+      }
+      return undefined; // rotas do core: inalteradas para a sessão e o api-token
+    }
+    default: return naoPrevista(cred) ?? NAO_RECONHECIDA;
   }
-  return undefined; // rotas do core: inalteradas
 }
 
-/** Única checagem de humano antes de todo handler de rota de módulo. */
+/** Única checagem de humano antes de todo handler de rota de módulo. `humano` não booleano mas verdadeiro também exige humano. */
 export function podeChamar(rota: Rota, chamador: Chamador): boolean {
-  return rota.humano !== true || chamador.humano === true;
+  return !rota.humano || chamador.humano === true;
 }
 
 const decodificar = (s: string): string => {
@@ -98,11 +128,11 @@ function erroDoModulo(o: ModulesApiOptions, res: ServerResponse, id: string, ond
 /** Serializa dentro do `try` do módulo: valor não serializável é erro do módulo, não da API. */
 const serializar = (v: unknown): string | undefined => (v === undefined ? undefined : JSON.stringify(v));
 
-export interface ReqModulo { metodo: string; url: URL; body: unknown; tipo: TipoCredencial; res: ServerResponse }
+export interface ReqModulo { metodo: string; url: URL; body: unknown; cred: Credencial; paginas: TokensDePagina; res: ServerResponse }
 
 /**
  * Rotas de módulo e de avisos. Devolve `false` se o caminho não é delas (segue para o 404 do core). A matriz já foi aplicada.
- * Ordem: módulo existe → módulo ativo → rota casa → `podeChamar` → handler.
+ * Ordem: módulo existe → (ui-token) → módulo ativo → rota casa → `podeChamar` → handler.
  */
 export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModulo): Promise<boolean> {
   const { metodo, url, body, res } = r;
@@ -130,11 +160,18 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
   if (!MODULE_ID_RE.test(id)) throw new BrainError("not_found", "módulo não encontrado");
   const m = o?.registry.get(id);
   if (!o || !m) throw new BrainError("not_found", `módulo "${id}" não encontrado`);
-  if (m.status !== "ativo" || !m.def || !m.ctx) return responder(res, 503, { error: "module_unavailable", message: m.causa ?? "módulo indisponível" });
-  const chamador = credencialDeModulo(r.tipo, metodo, caminho);
+  const chamador = credencialDeModulo(r.cred, metodo, caminho);
   if (!chamador) throw new BrainError("forbidden", "credencial sem acesso a esta rota de módulo");
-  const ctx = m.ctx;
   const segs = sub.split("/").slice(1);
+
+  // token da página (§7.7): só a sessão humana da UI, para um módulo que existe no registro
+  if (segs[0] === "ui-token") {
+    if (metodo !== "POST" || segs.length !== 1) throw new BrainError("not_found", `rota ${metodo} ${caminho}`);
+    if (chamador.via !== "ui") throw new BrainError("forbidden", "o token de página só é emitido para a sessão humana da UI");
+    return responder(res, 200, r.paginas.emitir(id));
+  }
+  if (m.status !== "ativo" || !m.def || !m.ctx) return responder(res, 503, { error: "module_unavailable", message: m.causa ?? "módulo indisponível" });
+  const ctx = m.ctx;
 
   // nomes reservados: tratados antes das rotas do módulo (uma rota declarada com eles nunca é alcançada)
   if (segs[0] === "_mcp") {
@@ -144,7 +181,8 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
     const ferramenta = (Array.isArray(m.def.ferramentasMcp) ? m.def.ferramentasMcp : []).find((f) => f?.nome === nome);
     if (!ferramenta) throw new BrainError("not_found", `ferramenta "${id}_${nome}" não encontrada`);
     const v = await validar(ferramenta.entrada, (body as { args?: unknown } | null | undefined)?.args);
-    if (!v.ok) return responder(res, 400, { error: "invalid", message: v.mensagem });
+    // schema que lança é defeito do módulo (500 + Saúde); issues são entrada inválida (400)
+    if (!v.ok) return v.lancou ? erroDoModulo(o, res, id, `mcp:${nome}`, v.erro) : responder(res, 400, { error: "invalid", message: v.mensagem });
     let texto: string | undefined;
     try { texto = serializar({ resultado: (await ferramenta.rodar(v.value, ctx)) ?? null, chamador }); }
     catch (e) { return erroDoModulo(o, res, id, `mcp:${nome}`, e); }
@@ -184,4 +222,82 @@ function resumo(o: ModulesApiOptions, m: LoadedModule, badge: number) {
     badge, status: m.status, causa: m.causa, versao: m.versao,
     tarefas: o.scheduler?.status(m.id) ?? [],
   };
+}
+
+// ---- Aba do módulo (§7.7): token de página, origem opaca e estático ----
+
+const TTL_PAGINA_MS = 12 * 3600_000;
+const hashDoToken = (t: string) => createHash("sha256").update(t).digest("hex");
+
+/**
+ * Tokens de página em memória do processo (reiniciar o `serve` invalida todos). Guarda só o SHA-256: a busca é pelo hash
+ * do que o cliente apresentou, então o segredo nunca é comparado byte a byte. Cada emissão gera um token novo.
+ */
+export class TokensDePagina {
+  private readonly porHash = new Map<string, { modulo: string; expira: number }>();
+
+  emitir(modulo: string): { token: string; expira: string } {
+    const agora = Date.now();
+    for (const [h, e] of this.porHash) if (e.expira <= agora) this.porHash.delete(h);
+    const token = randomBytes(32).toString("base64url");
+    const expira = agora + TTL_PAGINA_MS;
+    this.porHash.set(hashDoToken(token), { modulo, expira });
+    return { token, expira: new Date(expira).toISOString() };
+  }
+
+  /** Id do módulo do token, ou `undefined` (desconhecido ou expirado; o expirado é descartado). */
+  modulo(token: string): string | undefined {
+    if (!token) return undefined;
+    const h = hashDoToken(token);
+    const e = this.porHash.get(h);
+    if (!e) return undefined;
+    if (e.expira <= Date.now()) { this.porHash.delete(h); return undefined; }
+    return e.modulo;
+  }
+}
+
+/**
+ * Caminhos em que a origem opaca `null` (iframe da aba, sem `allow-same-origin`) é aceita: o estático `/modules/*` e
+ * `/api/modules/<id>/*` fora de ui-token/_mcp/_tarefas. A segurança vem do token de página, não da origem.
+ */
+export const aceitaOrigemOpaca = (caminho: string): boolean => caminho.startsWith("/modules/") || moduloDaRotaDePagina(caminho) !== undefined;
+export const CORS_OPACO = { "access-control-allow-origin": "null", vary: "Origin" } as const;
+export const PREFLIGHT_OPACO = {
+  ...CORS_OPACO, "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE", "access-control-max-age": "600",
+} as const;
+export const CSP_DA_ABA = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'";
+
+/** Caminho cru com segmento `.`/`..` (inclusive `%2e`, e `\` que a URL trata como `/`): a URL já normalizou, então recusa. */
+export const temSegmentoDePonto = (bruto: string): boolean =>
+  bruto.split(/[\\/]/).some((s) => { const d = s.replace(/%2e/gi, "."); return d === "." || d === ".."; });
+
+/** `packages/module-sdk/static`, localizado pelo pacote (não pelo layout do repositório). */
+export function pastaEstaticaDoSdk(): string | undefined {
+  try { return join(dirname(createRequire(import.meta.url).resolve("@brain/module-sdk/package.json")), "static"); } catch { return undefined; }
+}
+const ARQUIVOS_DO_SDK = new Set(["base.css", "brain-module-client.js"]);
+
+/**
+ * Arquivo de `/modules/<id>/<arquivo>` (dentro de `<dir>/<aba.pasta>`, via `safeResolve`) ou de `/modules/_sdk/<arquivo>`.
+ * `undefined` = 404: módulo inexistente, não ativo, sem aba, traversal, symlink para fora ou arquivo ausente.
+ * `_sdk` não colide com módulo: o id sempre começa com letra.
+ */
+export function arquivoDaAba(o: ModulesApiOptions | undefined, pastaSdk: string | undefined, caminho: string): string | undefined {
+  const resto = caminho.slice("/modules/".length);
+  const barra = resto.indexOf("/");
+  if (barra < 0) return undefined;
+  const id = resto.slice(0, barra);
+  let rel: string;
+  try { rel = decodeURIComponent(resto.slice(barra + 1)); } catch { return undefined; }
+  if (id === "_sdk") return pastaSdk && ARQUIVOS_DO_SDK.has(rel) ? join(pastaSdk, rel) : undefined;
+  if (!MODULE_ID_RE.test(id)) return undefined;
+  const m = o?.registry.get(id);
+  const pasta = m?.def?.aba?.pasta;
+  if (!m || m.status !== "ativo" || typeof pasta !== "string") return undefined;
+  if (rel === "" || rel.endsWith("/")) rel += "index.html";
+  try {
+    const raiz = safeResolve(m.dir, pasta); // a pasta declarada também não sai da raiz do módulo
+    const arq = safeResolve(raiz, rel);
+    return statSync(arq).isFile() ? arq : undefined;
+  } catch { return undefined; }
 }
