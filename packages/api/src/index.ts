@@ -7,8 +7,10 @@ import { Brain, type Vault, principal, humanFromSession, renewDesktopSession, au
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
+import { negarAntesDoRoteamento, tipoCredencial, tratarModulos, type ModulesApiOptions } from "./modules.js";
+export { podeChamar, credencialDeModulo, type ModulesApiOptions } from "./modules.js";
 
-export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant }
+export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant; modules?: ModulesApiOptions }
 export interface ApiHandle { url: string; token: string; port: number; close(): Promise<void> }
 
 const MIME: Record<string, string> = {
@@ -54,6 +56,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   const clients = new Set<ServerResponse>();
   let watching = false; let listenPort = 0;
   const emit = (ev: string, data: unknown = {}) => { for (const c of clients) c.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`); };
+  const pararAvisos = opts.modules?.avisos.aoMudar((ev, data) => emit(ev, data));
 
   const routes: Array<[string, RegExp, Handler]> = [];
   const r = (m: string, p: string, h: Handler) => routes.push([m, new RegExp(`^${p.replace(/:[a-z]+/g, "([^/]+)")}$`), h]);
@@ -245,9 +248,11 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     const hdr = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     const who = identify(hdr);
     if (!who) return plain(res, 401, "token inválido");
-    // credencial do desktop (30 dias, colada no app): ALLOWLIST estrita, antes do roteamento, para que rota nova já nasça bloqueada
-    if (who.channel === "desktop" && !(url.pathname.startsWith("/api/assistant/") || (url.pathname === "/api/health" && method === "GET")))
-      return json(res, 403, { error: "forbidden", message: "credencial do desktop só acessa o assistente" });
+    // matriz de credenciais ANTES do roteamento (desktop: allowlist estrita; api-token: só _mcp e a lista de módulos), para que
+    // rota nova já nasça bloqueada
+    const tipo = tipoCredencial(who);
+    const negado = negarAntesDoRoteamento(tipo, method, url.pathname);
+    if (negado || !tipo) return json(res, 403, { error: "forbidden", message: negado });
     if (url.pathname === "/api/events/ticket" && method === "POST") {
       const t = randomBytes(18).toString("hex"); const now = Date.now();
       for (const [k, e] of tickets) if (e < now) tickets.delete(k);
@@ -261,6 +266,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
       const data = await h({ brain, actor: who, url, body, params: mt.slice(1), emit, token: hdr });
       return json(res, 200, data ?? { ok: true });
     }
+    // rotas de módulo e avisos: depois das do core
+    if (await tratarModulos(opts.modules, { metodo: method, url, body, tipo, res })) return;
     json(res, 404, { error: "not_found", message: `rota ${method} ${url.pathname}` });
   }
 
@@ -289,7 +296,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   for (const h of [host, "localhost", "127.0.0.1"]) allowedHosts.add(`${h}:${port}`);
   return {
     url: `http://${host}:${port}`, token, port,
-    close: () => new Promise<void>((res) => { vw.close(); pw?.close(); for (const c of clients) c.end(); server.close(() => res()); server.closeAllConnections?.(); }),
+    close: () => new Promise<void>((res) => { pararAvisos?.(); vw.close(); pw?.close(); for (const c of clients) c.end(); server.close(() => res()); server.closeAllConnections?.(); }),
   };
 }
 

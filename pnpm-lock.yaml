@@ -78,6 +78,9 @@ importers:
       '@brain/core':
         specifier: workspace:*
         version: link:../core
+      '@brain/module-sdk':
+        specifier: workspace:*
+        version: link:../module-sdk
       '@brain/shared':
         specifier: workspace:*
         version: link:../shared
