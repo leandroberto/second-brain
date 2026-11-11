@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lembretes</title>
+  <link rel="stylesheet" href="/modules/_sdk/base.css">
+  <style>
+    body { padding: 20px 24px; }
+    ul { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+    li.card { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    li.card.destaque { border-color: var(--accent); }
+    li.card.feito .texto { text-decoration: line-through; color: var(--muted); }
+    .erro { color: var(--danger, #d33); }
+  </style>
+</head>
+<body>
+  <h1>Lembretes</h1>
+  <p class="muted" id="resumo">Carregando…</p>
+  <ul id="lista"></ul>
+  <p class="erro" id="erro" hidden></p>
+  <!-- a CSP do SB não permite script inline: tudo fica em app.js -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>

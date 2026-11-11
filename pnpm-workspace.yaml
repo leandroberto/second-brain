@@ -1,6 +1,7 @@
 packages:
   - "packages/*"
   - "apps/*"
+  - "examples/modules/*"
   - "!apps/desktop"   # Electron do Windows: instalado com npm no Windows (scripts/windows/desktop-install.ps1)
 onlyBuiltDependencies:
   - esbuild

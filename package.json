@@ -9,8 +9,8 @@
   },
   "packageManager": "pnpm@11.21.0",
   "scripts": {
-    "build": "pnpm -r --filter './packages/*' build && pnpm --filter @brain/web build",
-    "typecheck": "tsc -b packages/shared packages/module-sdk packages/core packages/mcp packages/api packages/cli && pnpm --filter @brain/web typecheck",
+    "build": "pnpm -r --filter './packages/*' build && pnpm --filter './examples/modules/*' build && pnpm --filter @brain/web build",
+    "typecheck": "tsc -b packages/shared packages/module-sdk packages/core packages/mcp packages/api packages/cli examples/modules/lembrete && pnpm --filter @brain/web typecheck",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
