@@ -90,11 +90,8 @@ export function sessionScope(vault: string, token: string, o: SessionStoreOption
   return sessionScopeByHash(vault, sha(token), o);
 }
 
-/** SHA-256 (hex) de uma credencial, no formato em que a sessão é guardada. Para quem precisa lembrar a sessão sem o segredo. */
-export const sessionHash = (token: string): string => sha(token);
-
 /**
- * Como `sessionScope`, mas a partir do hash da sessão (`sessionHash`): quem guarda só o hash (o token de página de um módulo
+ * Como `sessionScope`, mas a partir do hash da sessão (SHA-256 hex do token): quem guarda só o hash (o token de página de um módulo
  * lembra a sessão que o emitiu) revalida a cada uso que ela ainda está viva, sem guardar o segredo.
  */
 export function sessionScopeByHash(vault: string, hash: string, o: SessionStoreOptions = {}): SessionScope | undefined {
