@@ -6,7 +6,8 @@ import type { CaptureEntry } from "./captures.js";
  * implementa a mesma interface.
  */
 export type AssistantErrorKind = "auth" | "timeout" | "orcamento" | "erro";
-export type AssistantError = { ok: false; tipo: AssistantErrorKind; mensagem: string };
+/** `custoUsd`: custo informado pelo claude mesmo na falha (só o motor preenche; os modos atuais o ignoram). */
+export type AssistantError = { ok: false; tipo: AssistantErrorKind; mensagem: string; custoUsd?: number };
 
 export type CaptureAction = "criada" | "complementada" | "na_fila" | "ignorada";
 export const CAPTURE_ACTIONS: readonly CaptureAction[] = ["criada", "complementada", "na_fila", "ignorada"];

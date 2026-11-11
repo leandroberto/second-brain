@@ -115,4 +115,30 @@ describe("complete / createModuleIa", () => {
     expect(await ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "erro" });
     expect(existsSync(join(root, "_ia.json"))).toBe(false);
   });
+
+  it("orcamento e timeout contam o orçamento da chamada; erro com total_cost_usd conta o custo", async () => {
+    const estouro: SaidaProcesso = { codigo: 1, estourouTempo: false, stderr: "", stdout: JSON.stringify({ type: "result", subtype: "error_max_budget_usd", is_error: true }) };
+    const a = montar(() => estouro);
+    expect(await a.ia.completar({ prompt: "p", orcamentoUsd: 0.2 })).toMatchObject({ ok: false, tipo: "orcamento" });
+    expect(gasto(a.root).x![hoje()]).toBeCloseTo(0.2);
+
+    const b = montar(() => ({ codigo: null, estourouTempo: true, stderr: "", stdout: "" }));
+    expect(await b.ia.completar({ prompt: "p", orcamentoUsd: 0.3 })).toMatchObject({ ok: false, tipo: "timeout" });
+    expect(gasto(b.root).x![hoje()]).toBeCloseTo(0.3);
+
+    const c = montar(() => ({ codigo: 1, estourouTempo: false, stderr: "", stdout: JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "falhou", total_cost_usd: 0.07 }) }));
+    expect(await c.ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "erro", custoUsd: 0.07 });
+    expect(gasto(c.root).x![hoje()]).toBeCloseTo(0.07);
+
+    const d = montar(() => estouro, 0.2);
+    await d.ia.completar({ prompt: "p", orcamentoUsd: 0.2 });
+    expect(await d.ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "orcamento", mensagem: "teto diário de IA do módulo x atingido" });
+    expect(d.chamadas).toHaveLength(1);
+  });
+
+  it("timeoutS é limitado a 3600 s", async () => {
+    const { chamadas, ia } = montar(() => saida());
+    await ia.completar({ prompt: "p", timeoutS: 1e9 });
+    expect(chamadas[0]!.timeoutMs).toBe(3_600_000);
+  });
 });

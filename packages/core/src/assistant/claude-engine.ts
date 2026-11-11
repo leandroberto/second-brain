@@ -137,16 +137,16 @@ export function interpretarSaida<T>(s: SaidaProcesso, opcoes: { semSchema?: bool
     return { ok: false, tipo: PARECE_ORCAMENTO.test(detalhe) ? "orcamento" : "erro", mensagem: detalhe };
   }
 
+  const custoUsd = typeof obj.total_cost_usd === "number" && Number.isFinite(obj.total_cost_usd) ? { custoUsd: obj.total_cost_usd } : {};
   const errors = Array.isArray(obj.errors) ? obj.errors.filter((e): e is string => typeof e === "string").join("; ") : "";
   if (obj.subtype === "error_max_budget_usd" || PARECE_ORCAMENTO.test(obj.terminal_reason ?? "")) {
-    return { ok: false, tipo: "orcamento", mensagem: `O limite de gasto da chamada (assistant.max_budget_usd) estourou.${errors ? ` ${errors}` : ""}` };
+    return { ok: false, tipo: "orcamento", mensagem: `O limite de gasto da chamada (assistant.max_budget_usd) estourou.${errors ? ` ${errors}` : ""}`, ...custoUsd };
   }
   if (obj.is_error || s.codigo !== 0 || (obj.subtype && obj.subtype !== "success")) {
     const mensagem = (obj.result || errors || s.stderr || `saída ${s.codigo}`).trim();
     const tipo = PARECE_ORCAMENTO.test(mensagem) ? "orcamento" : PARECE_AUTH.test(mensagem) || PARECE_AUTH.test(s.stderr) ? "auth" : "erro";
-    return { ok: false, tipo, mensagem };
+    return { ok: false, tipo, mensagem, ...custoUsd };
   }
-  const custoUsd = typeof obj.total_cost_usd === "number" && Number.isFinite(obj.total_cost_usd) ? { custoUsd: obj.total_cost_usd } : {};
   if (opcoes.semSchema && (obj.structured_output === undefined || obj.structured_output === null)) {
     if (typeof obj.result !== "string") return { ok: false, tipo: "erro", mensagem: "O Claude respondeu sem texto." };
     return { ok: true, dados: obj.result as T, ...custoUsd };

@@ -8,6 +8,9 @@ import type { BrainConfig } from "../config.js";
 /** Quantos dias de gasto ficam gravados por módulo em `_ia.json`. */
 const DIAS_GUARDADOS = 31;
 
+/** Teto do timeout de uma chamada (setTimeout estoura acima de ~2.147.483 s). */
+const MAX_TIMEOUT_S = 3600;
+
 type Gastos = Record<string, Record<string, number>>;
 
 /** Data local AAAA-MM-DD (o teto diário vira com o dia do usuário, não com o UTC). */
@@ -52,7 +55,7 @@ export function createModuleIa(engine: AssistantEngine, cfg: BrainConfig, root: 
       if (p.orcamentoUsd !== undefined && !valido(p.orcamentoUsd)) return { ok: false, tipo: "erro", mensagem: "orcamentoUsd inválido (use um número maior que zero)" };
       if (p.timeoutS !== undefined && !valido(p.timeoutS)) return { ok: false, tipo: "erro", mensagem: "timeoutS inválido (use um número maior que zero)" };
       const orcamentoUsd = Math.min(p.orcamentoUsd ?? max, max);
-      const timeoutS = p.timeoutS ?? cfg.assistant.timeout_s;
+      const timeoutS = Math.min(p.timeoutS ?? cfg.assistant.timeout_s, MAX_TIMEOUT_S);
       const teto = cfg.modules[id]?.ia_max_usd_dia ?? 2;
       const dia = diaLocal();
 
@@ -79,8 +82,13 @@ export function createModuleIa(engine: AssistantEngine, cfg: BrainConfig, root: 
         r = { ok: false as const, tipo: "erro" as const, mensagem: (e as Error)?.message || String(e) };
       }
       // sem custo informado, conta o orçamento da chamada (teto conservador); falhas sem custo não contam
-      const custo = r.ok ? (r.custoUsd !== undefined && r.custoUsd >= 0 ? r.custoUsd : orcamentoUsd) : 0;
-      if (custo > 0) { try { await somar(custo); } catch { /* sem gravar o gasto, a chamada continua válida */ } }
+      // orcamento e timeout gastaram até o limite da chamada; auth e erro sem custo informado não contam
+      const informado = r.custoUsd !== undefined && Number.isFinite(r.custoUsd) && r.custoUsd >= 0 ? r.custoUsd : undefined;
+      const custo = informado ?? (r.ok || r.tipo === "orcamento" || r.tipo === "timeout" ? orcamentoUsd : 0);
+      if (custo > 0) {
+        try { await somar(custo); }
+        catch (e) { console.error(`[brain] módulo ${id}: não foi possível gravar o gasto de IA (${(e as Error)?.message || "erro"}); o teto diário não vale para esta chamada`); }
+      }
       return r;
     },
   };
