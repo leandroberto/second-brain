@@ -40,3 +40,9 @@ export function parseMensagemDoModulo(ev: { origin: string; source: unknown; dat
 export const mensagemInit = (token: string, tema: Tema, resto: string, apiBase: string) => ({ type: "brain:init" as const, token, apiBase, tema, resto });
 export const mensagemToken = (token: string) => ({ type: "brain:token" as const, token });
 export const mensagemTema = (tema: Tema) => ({ type: "brain:tema" as const, tema });
+
+/**
+ * Decide se a aba deve ser remontada: o `resto` da rota diferente do último que o próprio módulo enviou por
+ * `brain:navegar` (ou do inicial) significa mudança externa (link, menu, voltar). Mudança vinda do módulo não remonta.
+ */
+export const deveRemontar = (restoDaRota: string, ultimoDoModulo: string): boolean => restoDaRota !== ultimoDoModulo;

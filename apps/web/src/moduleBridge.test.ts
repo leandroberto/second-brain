@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { idModuloValido, mensagemInit, parseMensagemDoModulo, restoValido } from "./moduleBridge";
+import { deveRemontar, idModuloValido, mensagemInit, parseMensagemDoModulo, restoValido } from "./moduleBridge";
 
 const janela = {};
 const ev = (data: unknown, over: Partial<{ origin: string; source: unknown }> = {}) => ({ origin: "null", source: janela, data, ...over });
@@ -52,4 +52,9 @@ describe("validadores", () => {
     for (const id of ["", "a", "1abc", "Abc", "a/b", "a..b", "a".repeat(32), "../x"]) expect(idModuloValido(id)).toBe(false);
   });
   it("restoValido", () => { expect(restoValido("")).toBe(true); expect(restoValido("..")).toBe(false); });
+});
+
+describe("deveRemontar", () => {
+  it("não remonta quando a rota acompanha o último resto enviado pelo módulo", () => { expect(deveRemontar("a/b", "a/b")).toBe(false); expect(deveRemontar("", "")).toBe(false); });
+  it("remonta quando o resto muda por fora", () => { expect(deveRemontar("", "a/b")).toBe(true); expect(deveRemontar("x", "")).toBe(true); });
 });

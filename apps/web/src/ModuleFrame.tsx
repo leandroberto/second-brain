@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, BookOpen, Bot, CalendarDays, ChartBar, CircleCheck, Clock, Cloud, Database, FileText, Folder, Globe, Heart, Lightbulb, ListTodo, Mail, MessageSquare, Puzzle, Rocket, Sparkles, Star, StickyNote, Tag, Timer, Users, Wallet, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { api } from "./api";
 import { errMsg, go } from "./lib";
-import { idModuloValido, mensagemInit, mensagemTema, mensagemToken, parseMensagemDoModulo, restoValido, type Tema } from "./moduleBridge";
+import { idModuloValido, mensagemInit, mensagemTema, mensagemToken, parseMensagemDoModulo, restoValido, deveRemontar, type Tema } from "./moduleBridge";
 
 /** Ícones aceitos para `icone` do módulo (nome em kebab-case do lucide). Qualquer outro vira `Puzzle`. */
 const ICONES: Record<string, LucideIcon> = {
@@ -22,14 +22,23 @@ const ANTECEDENCIA_MS = 3600_000; // renova 1 h antes de expirar
 /** Aba de um módulo: iframe sandbox de origem opaca + ponte postMessage. O token de página fica só em memória. */
 export function ModuleFrame({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (id: string, n: number) => void }) {
   if (!idModuloValido(id)) return <div className="wrap"><h1>Módulo não encontrado</h1></div>;
-  return <Frame key={id} id={id} resto={restoValido(resto) ? resto : ""} onBadge={onBadge} />;
+  return <ModuleFrameValido id={id} resto={restoValido(resto) ? resto : ""} onBadge={onBadge} />;
 }
 
-function Frame({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (id: string, n: number) => void }) {
+function ModuleFrameValido({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (id: string, n: number) => void }) {
+  const ultimo = useRef(resto); // último resto conhecido do iframe (inicial ou enviado por brain:navegar)
+  const [geracao, setGeracao] = useState(0);
+  useEffect(() => { if (deveRemontar(resto, ultimo.current)) { ultimo.current = resto; setGeracao((g) => g + 1); } }, [resto]);
+  return <Frame key={`${id}#${geracao}`} id={id} resto={resto} onBadge={onBadge} onNavegou={(r) => { ultimo.current = r; }} />;
+}
+
+function Frame({ id, resto, onBadge, onNavegou }: { id: string; resto: string; onBadge?: (id: string, n: number) => void; onNavegou: (resto: string) => void }) {
+  const [src] = useState(() => `/modules/${id}/index.html#${resto}`); // congelado no mount: navegar não recarrega o iframe
   const iframe = useRef<HTMLIFrameElement>(null);
   const restoRef = useRef(resto); // resto inicial: `navegar` não recarrega o iframe
   const tokenRef = useRef<{ token: string; expira: number } | undefined>(undefined);
   const onBadgeRef = useRef(onBadge); onBadgeRef.current = onBadge;
+  const onNavegouRef = useRef(onNavegou); onNavegouRef.current = onNavegou;
   const [pronto, setPronto] = useState(false);
   const [erro, setErro] = useState<string>();
   const [expiraEm, setExpiraEm] = useState<number>();
@@ -72,7 +81,7 @@ function Frame({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (i
       const m = parseMensagemDoModulo(ev, iframe.current?.contentWindow);
       if (!m) return;
       if (m.type === "brain:pronto") { if (tokenRef.current) enviar(mensagemInit(tokenRef.current.token, temaAtual(), restoRef.current, apiBase)); }
-      else if (m.type === "brain:navegar") { restoRef.current = m.resto; history.replaceState(null, "", `#/m/${id}${m.resto ? "/" + m.resto.split("/").map(encodeURIComponent).join("/") : ""}`); }
+      else if (m.type === "brain:navegar") { restoRef.current = m.resto; onNavegouRef.current(m.resto); history.replaceState(null, "", `#/m/${id}${m.resto ? "/" + m.resto.split("/").map(encodeURIComponent).join("/") : ""}`); }
       else if (m.type === "brain:abrirNota") go(`note/${encodeURIComponent(m.id)}`);
       else onBadgeRef.current?.(id, m.n);
     };
@@ -89,7 +98,7 @@ function Frame({ id, resto, onBadge }: { id: string; resto: string; onBadge?: (i
   return (
     <div className="modframe">
       {erro && <div className="banner danger" role="alert"><span>Não foi possível obter o acesso da aba do módulo: {erro}</span><button className="btn sm" onClick={() => void renovar()}>Tentar de novo</button></div>}
-      {pronto && <iframe ref={iframe} title={`Módulo ${id}`} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={`/modules/${id}/index.html#${restoRef.current}`} />}
+      {pronto && <iframe ref={iframe} title={`Módulo ${id}`} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={src} />}
     </div>
   );
 }

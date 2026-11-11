@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, Bot, FileInput, FolderKanban, Home as HomeIcon, Inbox, Network, ScanSearch, Search, Settings as Cog, ListChecks } from "lucide-react";
 import { api, captureToken, type ModulosResp, getToken, setToken } from "./api";
 import { Palette, type Cmd } from "./Palette";
-import { go, href, ToastProvider, useData, useHotkey, useRoute, useToast, errMsg } from "./lib";
+import { Skeleton, go, href, ToastProvider, useData, useHotkey, useRoute, useToast, errMsg } from "./lib";
 import { AgentsPage, GraphPage, ProjectsPage, ReviewPage, TimelinePage } from "./pages2";
 import { Home, NotePage, SearchPage } from "./pages1";
 import { AddKnowledge, SettingsPage } from "./pages3";
@@ -21,10 +21,10 @@ function Shell() {
   const [pal, setPal] = useState(false); const [add, setAdd] = useState(false); const [asst, setAsst] = useState<AssistantTab>();
   const { data: rv } = useData<unknown[]>("/api/review", [], 15000);
   const { data: ib } = useData<unknown[]>("/api/inbox", [], 15000);
-  const { data: mods } = useData<ModulosResp>("/api/modules", [], 15000); // erro: mantém o último valor (ou nenhum módulo)
+  const { data: mods, error: modsErro } = useData<ModulosResp>("/api/modules", [], 15000); // erro: mantém o último valor (ou nenhum módulo)
   const [badgeLocal, setBadgeLocal] = useState<Record<string, number>>({});
   useEffect(() => { setBadgeLocal({}); }, [mods]); // brain:badge só vale até o próximo GET /api/modules
-  const abas = (mods?.modulos ?? []).filter((m) => m.aba && /^[a-z][a-z0-9-]{1,30}$/.test(m.id));
+  const abas = (mods?.modulos ?? []).filter((m) => m.aba && m.status === "ativo" && /^[a-z][a-z0-9-]{1,30}$/.test(m.id));
   useHotkey("k", () => setPal((p) => !p), { ctrl: true });
   useHotkey("/", () => setPal(true));
   const section = r.path[0] ?? "";
@@ -58,7 +58,11 @@ function Shell() {
     case "graph": page = <GraphPage />; break;
     case "import": page = <ImportPage />; break;
     case "settings": page = <SettingsPage />; break;
-    case "m": page = <ModuleFrame id={r.path[1] ?? ""} resto={r.path.slice(2).join("/")} onBadge={(id, n) => setBadgeLocal((b) => ({ ...b, [id]: n }))} />; break;
+    case "m": { const mid = r.path[1] ?? ""; const mod = mods?.modulos.find((m) => m.id === mid);
+      if (!mods && !modsErro && /^[a-z][a-z0-9-]{1,30}$/.test(mid)) { page = <div className="wrap"><Skeleton n={2} /></div>; break; }
+      if (mods && mod && mod.status !== "ativo") { page = <div className="wrap"><h1>{mod.nome}</h1><p className="sub">Este módulo não está ativo ({mod.status}).</p>{mod.causa && <div className="banner danger" role="alert">{mod.causa}</div>}<p><a href={href("settings")} style={{ textDecoration: "underline" }}>Ver a seção Módulos em Configurações</a></p></div>; break; }
+      if (mods && !mod) { page = <div className="wrap"><h1>Módulo não encontrado</h1></div>; break; }
+      page = <ModuleFrame id={r.path[1] ?? ""} resto={r.path.slice(2).join("/")} onBadge={(id, n) => setBadgeLocal((b) => ({ ...b, [id]: n }))} />; break; }
     default: page = <div className="wrap"><h1>Página não encontrada</h1></div>;
   }
   const counts: Record<string, number> = { review: rv?.length ?? 0, inbox: ib?.length ?? 0 };
