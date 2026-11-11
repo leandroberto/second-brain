@@ -1,7 +1,10 @@
 /**
  * Cliente fino da API local do second-brain. É a única porta do desktop para as notas: só chama as rotas que a
- * credencial de escopo `desktop` pode usar (`/api/assistant/*` e `GET /api/health`). Nunca lança: erro de rede,
- * de pareamento e de HTTP voltam como valores, para a janela decidir o que mostrar.
+ * credencial de escopo `desktop` pode usar (`/api/assistant/*`, `GET /api/health`, `GET /api/notifications` e
+ * `POST /api/notifications/<id>/visto`). As operações do assistente e a saúde nunca lançam: erro de rede, de pareamento
+ * e de HTTP voltam como valores, para a janela decidir o que mostrar. Os avisos de módulo (`avisos`, `marcarVisto`)
+ * lançam `Error` em qualquer falha: o vigia de avisos (`avisos-modulos.ts`) trata a exceção (a consulta tenta de novo no
+ * próximo intervalo; marcar como visto que falha é ignorado).
  */
 
 import { Agent } from 'undici';

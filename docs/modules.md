@@ -194,7 +194,9 @@ await sb.api(`/api/modules/lembrete/itens/${id}/feito`, { method: "POST" });
 - `recuperar: true`: se a máquina estava desligada na hora, a tarefa roda **uma vez** ao subir ou ao acordar da suspensão, não
   uma por ocorrência perdida. Na primeira subida sem histórico não há recuperação.
 - `ctx.ocorrencia` é a data/hora prevista a que a execução se refere. `ctx.sinal` é um `AbortSignal`: o timeout (`timeoutS`,
-  padrão 300) cancela por ele.
+  padrão 300) cancela por ele. **O timeout não mata o código:** a execução é dada como encerrada (resultado `timeout`), mas o
+  que a tarefa ainda estiver fazendo continua rodando no `serve` até terminar. Repasse `ctx.sinal` a `fetch` e a toda espera
+  longa, e confira `ctx.sinal.aborted` entre etapas, para parar de verdade.
 - Uma tarefa não começa se a anterior ainda roda. Cinco erros seguidos suspendem a tarefa até reiniciar o `serve` ou rodar
   manualmente.
 - **Uma ocorrência conta como atendida assim que a execução começa.** Falha, timeout ou queda do processo **não** geram nova
@@ -295,6 +297,9 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
 ## Isolamento de falhas
 
 - Erro no `import()` ou no `iniciar()`: o módulo fica `falho` com a causa, o `serve` sobe e os outros módulos funcionam.
+- `iniciar()` que estoura os 30 s também deixa o módulo `falho`, mas **o código dele continua rodando em segundo plano** (o
+  second-brain não consegue interrompê-lo) e `parar()` **não** é chamado, porque o módulo nunca ficou ativo. Não deixe
+  `iniciar` esperar por rede ou por tarefas longas: abra conexões sob demanda ou com timeout próprio.
 - Erro em rota, tarefa ou ferramenta: capturado e registrado (os últimos 50 por módulo); o módulo continua ativo.
 - Limite da abordagem: um **laço síncrono infinito** ou um **`process.exit`** no módulo derrubam o `serve`. Evite os dois.
 - Saúde (UI) e `brain doctor` mostram, por módulo: status, versão, `sdk`, pasta, tarefas (próxima e última execução), erros
