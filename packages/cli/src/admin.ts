@@ -44,19 +44,20 @@ export function hiddenInput(buf: string, chunk: string, pending = ""): HiddenInp
   return { buf };
 }
 
-export function realIO(): AdminIO {
+/** `promptTo`: onde saem avisos e prompts (stderr quando o stdout é só para um valor, como o token do `pair-desktop`). */
+export function realIO(promptTo: NodeJS.WriteStream = process.stdout): AdminIO {
   return {
     user: process.env.BRAIN_USER ?? process.env.USER ?? "user",
-    out: (l) => console.log(l),
+    out: (l) => { if (promptTo === process.stdout) console.log(l); else promptTo.write(`${l}\n`); },
     ask: (q, o) => new Promise((resolve) => {
-      if (!o?.hidden) { const rl = createInterface({ input: process.stdin, output: process.stdout }); rl.question(q, (a) => { rl.close(); resolve(a.trim()); }); return; }
+      if (!o?.hidden) { const rl = createInterface({ input: process.stdin, output: promptTo }); rl.question(q, (a) => { rl.close(); resolve(a.trim()); }); return; }
       // entrada oculta (frase-senha): modo raw, sem eco
-      process.stdout.write(q); const stdin = process.stdin; let st: HiddenInput = { buf: "" };
+      promptTo.write(q); const stdin = process.stdin; let st: HiddenInput = { buf: "" };
       stdin.setRawMode?.(true); stdin.resume(); stdin.setEncoding("utf8");
       const on = (chunk: string) => {
         st = hiddenInput(st.buf, chunk, st.pending);
-        if (st.abort) { stdin.setRawMode?.(false); process.stdout.write("\n"); process.exit(130); }
-        if (st.done) { stdin.setRawMode?.(false); stdin.pause(); stdin.off("data", on); process.stdout.write("\n"); resolve(st.buf); }
+        if (st.abort) { stdin.setRawMode?.(false); promptTo.write("\n"); process.exit(130); }
+        if (st.done) { stdin.setRawMode?.(false); stdin.pause(); stdin.off("data", on); promptTo.write("\n"); resolve(st.buf); }
       };
       stdin.on("data", on);
     }),

@@ -5,12 +5,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { Brain, loadConfig, auditTitles, importPath, importText, knowledgeAudit, reconcilePending, revalidateNotes, type ImportReport } from "@brain/core";
+import { Assistant, Brain, createClaudeEngine, bundleHistory, loadConfig, auditTitles, migrateFlat, importPath, importText, knowledgeAudit, reconcilePending, revalidateNotes, type ImportReport } from "@brain/core";
 import type { Freshness } from "@brain/shared";
 import { startApi } from "@brain/api";
-import { humanFromTerminal, issueHumanSession } from "@brain/core";
+import { humanFromTerminal, issueHumanSession, principal } from "@brain/core";
 import { runStdio } from "@brain/mcp";
-import { BrainError } from "@brain/shared";
+import { BrainError, NOTE_TYPES, type NoteType } from "@brain/shared";
 import { integrate, policyPlan } from "./integrate.js";
 import { printChecks, runDoctor } from "./doctor.js";
 import { seedDemo } from "./seed.js";
@@ -38,10 +38,12 @@ Uso: brain <comando> [opções]
   init [caminho]        cria um vault (Markdown+Git). Padrão: ~/second-brain
   mcp                   servidor MCP via stdio (Claude Code, Codex, ...)
   serve                 API local + UI web (http://127.0.0.1:3737); num terminal interativo já imprime a URL de revisão
+  pair-desktop          emite a credencial do atalho desktop (escopo restrito: só assistente) e imprime SÓ o token (terminal interativo)
   ui                    emite uma sessão HUMANA da UI e imprime a URL (só em terminal interativo)
   doctor                diagnóstico completo (vault, Git, SQLite, FTS, API, MCP, integrações)
   health                status de git/índice/embeddings
   search <texto>        busca no terminal
+  backup-history        grava o histórico git em .brain/backup/history.bundle (pula se não mudou)
   reindex               reconstrói o índice SQLite a partir do Markdown
   review                lista propostas pendentes (somente leitura)
   admin <ação>          AÇÕES PRIVILEGIADAS (terminal interativo + frase-senha do revisor, se definida + confirmação):
@@ -59,6 +61,9 @@ Uso: brain <comando> [opções]
   update-policy         atualiza AGENTS.md e a skill do vault a partir dos templates (e os blocos globais do Codex/Claude);
                         --dry-run mostra o que mudaria sem gravar
   seed [caminho]        cria um vault DEMO separado (dados fictícios)
+  migrate-flat <pasta>  migra um vault antigo (pastas por tema, cabeçalho titulo/tags/criado/atualizado) preservando o texto;
+                        dry-run por padrão (mostra a tabela e o type sugerido); --apply grava num único commit (só humano, em terminal);
+                        --type id=tipo corrige o tipo sugerido (repetível)
   integrate             dry-run da integração Claude Code/Codex; --apply aplica (com backup); --remove desfaz
 
 Opções globais: --vault <dir> (ou BRAIN_VAULT)  --agent <nome>  --port <n>
@@ -68,7 +73,7 @@ Governança: agentes (MCP, API com o api-token, CLI comum) leem e PROPÕEM; deci
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
-  options: { vault: { type: "string" }, agent: { type: "string" }, port: { type: "string" }, apply: { type: "boolean" }, remove: { type: "boolean" }, host: { type: "string" }, name: { type: "string" }, help: { type: "boolean", short: "h" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, max: { type: "string" }, "include-duplicates": { type: "boolean" }, "git-log": { type: "boolean" }, loose: { type: "boolean" }, "show-rejected": { type: "boolean" }, "show-evidence": { type: "boolean" }, project: { type: "string" }, eligible: { type: "boolean" }, note: { type: "string" } },
+  options: { vault: { type: "string" }, agent: { type: "string" }, port: { type: "string" }, apply: { type: "boolean" }, remove: { type: "boolean" }, host: { type: "string" }, name: { type: "string" }, help: { type: "boolean", short: "h" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, max: { type: "string" }, "include-duplicates": { type: "boolean" }, "git-log": { type: "boolean" }, loose: { type: "boolean" }, "show-rejected": { type: "boolean" }, "show-evidence": { type: "boolean" }, project: { type: "string" }, eligible: { type: "boolean" }, note: { type: "string" }, type: { type: "string", multiple: true } },
 });
 
 function vaultPath(explicit?: string): string {
@@ -118,13 +123,31 @@ async function main() {
     case "serve": {
       const b = await Brain.open(vaultPath());
       const webRoot = join(REPO_ROOT, "apps/web/dist");
-      const h = await startApi(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo() });
+      // assistente: o motor roda `claude -p` com o MCP deste mesmo cli (`brain mcp`) como única fonte de ferramentas
+      const assistant = new Assistant(b, createClaudeEngine(b, undefined, { command: process.execPath, args: [fileURLToPath(import.meta.url), "mcp"] }));
+      const h = await startApi(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo(), assistant });
       // só um humano num terminal recebe a URL de REVISÃO; iniciado por agente/script, a API sobe sem emitir sessão humana
       const io = realIO(); let reviewUrl: string | undefined;
       if (process.stdin.isTTY && process.stdout.isTTY) { try { const who = await requireHuman(io, "brain serve", b); reviewUrl = `${h.url}/#token=${issueHumanSession(b.vault.root, who, { label: "brain serve" })}`; } catch (e) { console.error(`(sem sessão de revisão: ${(e as Error).message})`); } }
       console.log(`Second Brain  ${reviewUrl ?? h.url}\nvault: ${b.vault.root}${reviewUrl ? "" : "\nPara revisar pela UI, rode num terminal: brain ui"}\n(Ctrl+C para sair — o MCP não depende deste processo)`);
+      // capturas que ficaram pendentes (claude deslogado, queda): reprocessa em segundo plano, sem atrasar o listen
+      assistant.retryPending().then(
+        (n) => { console.log(`assistente: ${n} captura(s) pendente(s) processada(s) na subida`); },
+        (e) => { console.error(`assistente: falha ao reprocessar capturas pendentes: ${(e as Error).message}`); },
+      );
       const stop = async () => { await h.close(); b.close(); process.exit(0); };
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
+      break;
+    }
+    case "pair-desktop": {
+      // stdout leva SÓ o token (para colar uma vez no desktop); avisos e prompts vão para stderr
+      const b = await Brain.open(vaultPath());
+      try {
+        const who = await requireHuman(realIO(process.stderr), "brain pair-desktop", b);
+        const token = issueHumanSession(b.vault.root, who, { label: "desktop", scope: "desktop" });
+        console.error("Credencial do desktop (válida por 30 dias; escopo restrito: capturar, perguntar e desfazer as próprias capturas). Cole-a uma vez no desktop e não a compartilhe:");
+        console.log(token);
+      } finally { b.close(); }
       break;
     }
     case "ui": { const b = await Brain.open(vaultPath()); process.exitCode = await adminCommand(b, ["ui"], { port: values.port ? Number(values.port) : undefined }, realIO()); b.close(); break; }
@@ -141,6 +164,7 @@ async function main() {
       if (!hits.length) console.log("nenhum resultado");
       b.close(); break;
     }
+    case "backup-history": { const b = await Brain.open(vaultPath()); const r = await bundleHistory(b); b.close(); console.log(r.skipped ? `backup do histórico: sem mudanças (${r.path})` : `backup do histórico gravado em ${r.path}`); break; }
     case "reindex": { const b = await Brain.open(vaultPath()); const r = await b.reindex(true); console.log(`reindexado: +${r.added.length} ~${r.changed.length} -${r.removed.length}, embeddings: ${r.embedded}`); b.close(); break; }
     case "review": {
       const b = await Brain.open(vaultPath());
@@ -205,6 +229,33 @@ async function main() {
       const b = await Brain.open(vaultPath()); const a = await knowledgeAudit(b);
       if (values.json) console.log(JSON.stringify(a, null, 2));
       else console.log([`notas: ${a.total} (${Object.entries(a.by_status).map(([k, v]) => `${k}=${v}`).join(" ")})`, `atuais: ${a.current} · históricas: ${a.historical} · substituídas: ${a.superseded} · temporais: ${a.temporal} · incertas/conflito/planejadas: ${a.uncertain}`, `verificação: ${Object.entries(a.verification).map(([k, v]) => `${k}=${v}`).join(" ")}`, `títulos genéricos: ${a.generic_titles.length} · sem projeto: ${a.without_project.length} · órfãs: ${a.orphans.length} · relações explícitas: ${a.explicit_relations}`, `possíveis duplicatas fortes: ${a.possible_duplicates.length}${a.possible_duplicates.slice(0, 5).map((d) => `\n  ${d.a} ≈ ${d.b} (${d.similarity})`).join("")}`, `manutenção pendente: ${JSON.stringify(a.pending_maintenance)}`].join("\n"));
+      b.close(); break;
+    }
+    case "migrate-flat": {
+      const src = rest[0];
+      if (!src) { console.error("uso: brain migrate-flat <pasta> [--apply] [--type id=tipo ...]"); process.exitCode = 2; break; }
+      const typeOverrides: Record<string, NoteType> = {};
+      for (const kv of values.type ?? []) {
+        const [id, t] = kv.split("=");
+        if (!id || !t || !(NOTE_TYPES as readonly string[]).includes(t)) { console.error(`--type inválido: "${kv}" (use id=tipo, com tipo em ${NOTE_TYPES.join(", ")})`); process.exitCode = 2; return; }
+        typeOverrides[id] = t as NoteType;
+      }
+      const apply = !!values.apply && !values["dry-run"];
+      const b = await Brain.open(vaultPath());
+      // o dry-run não grava nada: não exige humano. Aplicar escreve conhecimento direto e move os originais: só o revisor, num terminal
+      const who = apply ? await requireHuman(realIO(), "brain migrate-flat --apply", b) : undefined;
+      const plan = await migrateFlat(b, resolve(src), who ?? principal("system", "migrate-flat", "cli"), { apply, typeOverrides });
+      if (values.json) console.log(JSON.stringify(plan, null, 2));
+      else {
+        console.log(`${apply ? "" : "[DRY-RUN] "}Migração de ${resolve(src)} → ${b.vault.root}`);
+        console.log(`  ${"id".padEnd(28)} ${"tipo".padEnd(10)} ${"projeto".padEnd(14)} origem → destino`);
+        for (const it of plan.items) console.log(`  ${it.id.padEnd(28)} ${(it.type + (it.inferred ? "?" : "")).padEnd(10)} ${(it.project ?? "—").padEnd(14)} ${it.from} → ${it.to}  [${it.tags.join(", ")}]`);
+        console.log(`  capturas → .brain/captures/: ${plan.captures.join(", ") || "—"}`);
+        console.log(`  descartados (.desfazer): ${plan.discarded.join(", ") || "—"}`);
+        console.log(apply
+          ? `\n${plan.items.length} nota(s) migradas${plan.commit ? ` (commit ${plan.commit})` : ""}. Originais em _legado/ até você aprovar.`
+          : "\nNada foi gravado. Os tipos com ? são sugestões: corrija com --type id=tipo. Aplicar (num terminal, como revisor): --apply");
+      }
       b.close(); break;
     }
     case "integrate":

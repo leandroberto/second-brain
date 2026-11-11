@@ -4,6 +4,8 @@ Description=Second Brain (API + UI local)
 [Service]
 ExecStart=/usr/bin/env node %h/projetos/second-brain/packages/cli/dist/bin.js serve
 Restart=on-failure
+# o claude (e outros CLIs instalados por usuário) ficam em ~/.local/bin, fora do PATH padrão do systemd
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=BRAIN_VAULT=%h/second-brain
 [Install]
 WantedBy=default.target

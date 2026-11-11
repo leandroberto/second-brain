@@ -46,9 +46,10 @@ export type Actor = z.infer<typeof ActorSchema>;
 /**
  * Canal pelo qual a ação chegou ao Core. A IDENTIDADE confiável é ator + canal, e quem a define é o adapter (MCP, API, CLI),
  * nunca o cliente: um corpo HTTP com {kind:"human"} não vira humano. Só `ui` (sessão humana) e `cli-admin` (terminal interativo
- * com confirmação) são canais humanos de revisão.
+ * com confirmação) são canais humanos de revisão. `desktop` é o humano do atalho desktop (sessão com escopo restrito): anota,
+ * pergunta, reprocessa e desfaz as próprias capturas, mas não revisa.
  */
-export const CHANNELS = ["ui", "cli-admin", "cli", "mcp", "api", "importer", "maintenance", "seed", "internal"] as const;
+export const CHANNELS = ["ui", "cli-admin", "cli", "mcp", "api", "importer", "maintenance", "seed", "internal", "desktop"] as const;
 export type Channel = (typeof CHANNELS)[number];
 export interface Principal extends Actor { readonly channel: Channel }
 
@@ -211,6 +212,11 @@ export interface Proposal {
   decided?: { at: string; by: Actor; resolution: Resolution; target_id?: string; result_id?: string; commit?: string; note?: string };
 }
 
+/** O que a política `additive` (ADR 0014) gravou dentro do próprio propose: nota criada, alvo complementado ou duplicata ignorada. */
+export interface ProposeAuto { resolution: "create" | "complement" | "ignore"; note_id?: string; commit?: string }
+/** Retorno do propose: a proposta (pendente, ou já decidida quando `auto` está presente). */
+export type ProposeResult = Proposal & { auto?: ProposeAuto };
+
 export interface ActivityEntry {
   id: number; ts: string; actor_kind: Actor["kind"]; actor_name: string;
   action: string; target_id: string | null; detail: Record<string, unknown>;
@@ -224,6 +230,6 @@ export class BrainError extends Error {
 }
 export type BrainErrorCode =
   | "not_found" | "invalid" | "secret_detected" | "conflict_revision" | "forbidden"
-  | "duplicate_id" | "locked" | "git_error" | "path_escape" | "policy" | "too_large";
+  | "duplicate_id" | "locked" | "git_error" | "path_escape" | "policy" | "too_large" | "state_unavailable";
 
 export const todayISO = (d = new Date()): string => d.toISOString();

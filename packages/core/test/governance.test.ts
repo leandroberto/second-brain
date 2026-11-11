@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { BrainError } from "@brain/shared";
+import { mergeUpdate } from "../src/governance.js";
 import { cleanup, claude, codex, human, tempBrain } from "./helpers.js";
 
 afterAll(cleanup);
@@ -256,5 +257,71 @@ describe("editar proposta antes de decidir", () => {
     expect(r.note!.title).toBe("Pinguins dependem do gelo marinho");
     await expect(b.editProposal(p.id, { title: "x" }, human)).rejects.toMatchObject({ code: "invalid" });
     b.close();
+  });
+});
+
+describe("mergeUpdate com keepHistory", () => {
+  const stamp = "2026-11-10 (ana)";
+  it("mergeUpdate com keepHistory move a linha antiga para Histórico", () => {
+    const m = mergeUpdate("- Timeout: 30 s\n", "Timeout: 60 s", stamp, { keepHistory: true });
+    expect(m.body).toContain("- Timeout: 60 s");
+    expect(m.body).toContain("## Histórico");
+    expect(m.body).toContain("Timeout: 30 s (deixou de valer em 2026-11-10)");
+  });
+  it("mergeUpdate com Histórico existente acrescenta item", () => {
+    const existing = "- Timeout: 30 s\n\n## Histórico\n\n- Timeout: 10 s (deixou de valer em 2026-01-01)\n";
+    const m = mergeUpdate(existing, "Timeout: 60 s", stamp, { keepHistory: true });
+    expect(m.body.match(/## Histórico/g)).toHaveLength(1);
+    expect(m.body).toContain("Timeout: 10 s (deixou de valer em 2026-01-01)");
+    expect(m.body).toContain("- Timeout: 30 s (deixou de valer em 2026-11-10)");
+  });
+  it("Atualização vem antes de Histórico", () => {
+    const m = mergeUpdate("- Timeout: 30 s\n", "Timeout: 60 s\nRetry usa backoff exponencial agora", stamp, { keepHistory: true });
+    expect(m.body.indexOf("## Atualização")).toBeGreaterThan(-1);
+    expect(m.body.indexOf("## Atualização")).toBeLessThan(m.body.indexOf("## Histórico"));
+  });
+  it("sem keepHistory nada muda", () => {
+    const m = mergeUpdate("- Timeout: 30 s\n", "Timeout: 60 s", stamp);
+    expect(m.body).toBe("- Timeout: 60 s\n");
+    expect(mergeUpdate("- Timeout: 30 s\n", "Timeout: 60 s", stamp, { keepHistory: false }).body).toBe(m.body);
+  });
+});
+
+describe("mergeUpdate com keepHistory: Histórico existente é preservado literalmente", () => {
+  const stamp = "2026-11-10 (ana)";
+  const opts = { keepHistory: true };
+  const hist = "## Histórico\n\n- A (deixou de valer em 2026-01-01)\n\n- B (deixou de valer em 2026-02-01)\n  segunda linha\n\n  outro parágrafo\n\n```\ncódigo\n\nlinha\n```";
+  const existing = "- Timeout: 30 s\n\n" + hist + "\n";
+  it("update que só acrescenta sentença nova devolve o Histórico byte a byte", () => {
+    const m = mergeUpdate(existing, "Retry usa backoff exponencial agora", stamp, opts);
+    expect(m.replaced).toBe(0);
+    expect(m.body.endsWith(hist + "\n")).toBe(true);
+  });
+  it("Histórico vazio continua presente", () => {
+    const m = mergeUpdate("- Timeout: 30 s\n\n## Histórico\n", "Retry usa backoff exponencial agora", stamp, opts);
+    expect(m.body).toContain("## Histórico");
+  });
+  it("com item novo acrescenta só a linha nova ao bloco original", () => {
+    const m = mergeUpdate(existing, "Timeout: 60 s", stamp, opts);
+    expect(m.body.endsWith(hist + "\n- Timeout: 30 s (deixou de valer em 2026-11-10)\n")).toBe(true);
+  });
+  it("Histórico entre outras seções: ordem resultante fixa e sem perda", () => {
+    const e = "- Timeout: 30 s\n\n## Ver também\n\n- [[x]]\n\n## Histórico\n\n- A\n\n## Notas\n\nnota livre\n";
+    const m = mergeUpdate(e, "Timeout: 60 s", stamp, opts);
+    expect(m.body).toBe("- Timeout: 60 s\n\n## Ver também\n\n- [[x]]\n\n## Notas\n\nnota livre\n\n## Histórico\n\n- A\n- Timeout: 30 s (deixou de valer em 2026-11-10)\n");
+  });
+  it("caso padrão: Ver também, Atualização, Histórico", () => {
+    const e = "- Timeout: 30 s\n\n## Ver também\n\n- [[x]]\n\n## Histórico\n\n- A\n";
+    const m = mergeUpdate(e, "Timeout: 60 s\nRetry usa backoff exponencial agora", stamp, opts);
+    const i = (t: string) => m.body.indexOf(t);
+    expect(i("## Ver também")).toBeGreaterThan(-1);
+    expect(i("## Ver também")).toBeLessThan(i("## Atualização"));
+    expect(i("## Atualização")).toBeLessThan(i("## Histórico"));
+  });
+  it("fora a linha substituída e o Histórico, o corpo é idêntico", () => {
+    const e = "# Título\n\n- Timeout: 30 s\n- Outra linha\n\n## Ver também\n\n- [[x]]\n\n## Histórico\n\n- A\n\n## Notas\n\nnota livre\n";
+    const m = mergeUpdate(e, "Timeout: 60 s", stamp, opts);
+    const strip = (b: string) => b.replace(/^## Histórico\n[\s\S]*?(?=^## |(?![\s\S]))/m, "").replace(/\n{3,}/g, "\n\n").trimEnd();
+    expect(strip(m.body).replace("- Timeout: 60 s", "- Timeout: 30 s")).toBe(strip(e));
   });
 });

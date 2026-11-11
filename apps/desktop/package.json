@@ -1,0 +1,23 @@
+{
+  "name": "@brain/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Atalho F1 no Windows para anotar e perguntar: cliente fino da API local do second-brain.",
+  "main": "dist/main/main.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -p . && tsc -p tsconfig.renderer.json && node scripts/copiar-estaticos.js",
+    "test": "vitest run",
+    "postinstall": "npm run build",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "45.2.3",
+    "undici": "7.30.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

@@ -5,7 +5,7 @@ description: Use the shared Second Brain (Markdown+Git memory via the second-bra
 
 # Second Brain
 
-One memory shared by several agents and the human. Markdown files are the source of truth; you only use the MCP tools (same names in every client). You propose; the human decides.
+One memory shared by several agents and the human. Markdown files are the source of truth; you only use the MCP tools (same names in every client). You propose. Depending on the vault policy, additive captures are saved directly (see CAPTURE POLICY); everything else the human decides.
 
 ## WHEN TO SEARCH
 - Before substantial work on a project, and whenever the user refers to a past decision, preference or "how we do X".
@@ -40,6 +40,19 @@ Run `brain_similar {title, body, project, type}` and read `classification`:
 - `complement` → `brain_propose` with `intent: "complement"`, `target_id`, body = only the new information.
 - `update` → `intent: "update"`, `target_id`, body = the corrected statement (the changed value stands out in review).
 - the old note is wrong or obsolete → `brain_supersede {old_id, ...new note}` (old note is preserved as superseded).
+
+## CAPTURE POLICY
+Read it from the `brain_propose` result:
+- `auto` present (additive vault): the capture was already saved (`create`, `complement`) or ignored (`ignore`, duplicate). Do not call `brain_commit`. Note `auto.note_id`.
+- `auto` absent: the proposal is pending human review (never policy, a type marked for review, or an `update`/`replace`/`conflict`). Wait; do not re-propose.
+
+In additive mode nobody reviews before saving, so the filter is yours:
+1. Save only what is reusable and not obvious.
+2. Complement the existing note instead of creating another one: `brain_similar`, then `intent: "complement"` + `target_id`, body = only the new information.
+3. Do not save the progress of a work item (tickets, issues, status).
+4. Preserve text dictated by the user: procedures, commands and full SQL, complete and in order. Never summarize or reorder it.
+5. Never save secrets: a password or token becomes `[SENHA OMITIDA]`.
+6. At the end of the task, say in one line what you saved and where (ids), and which proposals are waiting for review.
 
 ## HOW TO HANDLE CONFLICT
 Never resolve a `conflict` yourself and never pick a side silently. Propose with the evidence in `reason` (what you observed, where) and let the human decide.

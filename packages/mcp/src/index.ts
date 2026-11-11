@@ -8,7 +8,7 @@ const VERSION = "0.1.0";
 
 export const INSTRUCTIONS = `Second Brain: base de conhecimento compartilhada (Markdown+Git), neutra de fornecedor.
 Antes de trabalho substancial: brain_context (projeto/tópico/tarefa) e, se preciso, brain_search + brain_get. Recupere só o relevante.
-Ao descobrir conhecimento DURÁVEL (decisão, preferência, aprendizado, regra, fato de projeto): brain_similar e depois brain_propose. Nunca sobrescreva em silêncio; propostas vão para revisão humana.
+Ao descobrir conhecimento DURÁVEL (decisão, preferência, aprendizado, regra, fato de projeto): brain_similar e depois brain_propose. Nunca sobrescreva em silêncio. Se o retorno do brain_propose trouxer o campo auto, o vault gravou direto (política additive); sem auto, a proposta aguarda revisão humana.
 Nunca envie segredos, tokens, logs grandes ou código copiado; prefira referências (repo/PR/commit/arquivo:linha).`;
 
 type Ok = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
@@ -37,11 +37,28 @@ const Draft = {
   }).optional().describe("Só para conhecimento TEMPORAL (verdade hoje, pode deixar de ser): ex. \"ainda não está em produção\", \"flag X desligada\""),
 };
 
+const AGENT_NAME = /^[a-z0-9/_-]{1,80}$/;
+
+/**
+ * Nome do agente definido por quem INICIA o processo MCP (o motor de assistente usa `assistant/<captureId>`), lido do
+ * ambiente e não de argumento de ferramenta. Ausente (ou vazio): `undefined`, e vale a identificação pelo cliente. Inválido:
+ * "claude-code", com aviso no stderr (stdout é do protocolo).
+ */
+export function agentNameFromEnv(env: NodeJS.ProcessEnv = process.env, warn: (m: string) => void = (m) => console.error(m)): string | undefined {
+  const raw = env.BRAIN_AGENT_NAME;
+  if (raw === undefined || raw === "") return undefined;
+  if (AGENT_NAME.test(raw)) return raw;
+  warn(`[brain] BRAIN_AGENT_NAME inválido (${JSON.stringify(raw.slice(0, 80))}); usando "claude-code"`);
+  return "claude-code";
+}
+
 /** Cria o servidor MCP. `brain` é compartilhado com nenhum outro processo: cada cliente (Claude, Codex) tem o seu, coordenados por lock de arquivo. */
 export function createServer(brain: Brain, opts: { agentOverride?: string } = {}): McpServer {
   const server = new McpServer({ name: "second-brain", version: VERSION }, { instructions: INSTRUCTIONS });
+  const fromEnv = agentNameFromEnv();
   // a identidade é do ADAPTER: todo cliente MCP é um agente (canal mcp); nenhum argumento de ferramenta muda isso
   const actor = (): Principal => {
+    if (fromEnv) return principal("agent", fromEnv, "mcp");
     const raw = (opts.agentOverride ?? server.server.getClientVersion()?.name ?? "unknown-agent").toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
     // nomes de cliente variam (ex.: "codex-mcp-client"); normaliza para a auditoria agrupar por agente
     const name = /^codex/.test(raw) ? "codex" : /^claude/.test(raw) ? "claude-code" : raw;
@@ -99,7 +116,7 @@ export function createServer(brain: Brain, opts: { agentOverride?: string } = {}
 
   server.registerTool("brain_propose", {
     title: "Propor conhecimento",
-    description: "Propõe conhecimento durável. NÃO persiste: cria uma proposta classificada (new/duplicate/complement/update/replace/conflict) que entra na Review Queue. Segredos e dumps são rejeitados.",
+    description: "Propõe conhecimento durável: cria uma proposta classificada (new/duplicate/complement/update/replace/conflict). Por padrão ela entra na Review Queue e nada é gravado. Se o vault usa a política additive, nota nova e complemento são gravados direto e duplicata é ignorada: o retorno traz o campo `auto` (resolution, note_id), e é por ele que você sabe que gravou. Atualização, substituição e conflito vão sempre para a fila. Segredos e dumps são rejeitados.",
     inputSchema: z.object({
       ...Draft,
       reason: z.string().optional().describe("Por que isto é durável e útil"),
@@ -109,12 +126,17 @@ export function createServer(brain: Brain, opts: { agentOverride?: string } = {}
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, guard(async (a) => {
     const p = await brain.propose(a, actor());
-    return { proposal_id: p.id, state: p.state, classification: p.analysis.classification, suggested_resolution: p.analysis.suggested_resolution, target_id: p.analysis.target_id, similar: p.analysis.matches.slice(0, 3).map((m) => ({ id: m.id, title: m.title, similarity: m.similarity })), warnings: p.analysis.warnings, next: "Aguardando revisão humana na Review Queue (a menos que a política permita brain_commit)." };
+    const AUTO_NEXT = { create: "nota criada", complement: "nota existente complementada", ignore: "duplicata ignorada, nenhuma nota nova" } as const;
+    return { proposal_id: p.id, state: p.state, classification: p.analysis.classification, suggested_resolution: p.analysis.suggested_resolution, target_id: p.analysis.target_id, similar: p.analysis.matches.slice(0, 3).map((m) => ({ id: m.id, title: m.title, similarity: m.similarity })), warnings: p.analysis.warnings,
+      ...(p.auto ? { auto: p.auto } : {}),
+      next: p.auto
+        ? `gravado direto (política additive): ${AUTO_NEXT[p.auto.resolution]}${p.auto.note_id ? ` (${p.auto.note_id})` : ""}. Não chame brain_commit.`
+        : "Aguardando revisão humana na Review Queue (a menos que a política permita brain_commit)." };
   }));
 
   server.registerTool("brain_commit", {
     title: "Persistir decisão",
-    description: "Persiste uma proposta com a resolução escolhida. Negado por padrão: a política é aplicada no Core para qualquer adapter (agentes só criam conhecimento \"new\" de tipos liberados explicitamente no vault; atualização, substituição, conflito e manutenção sempre exigem humano).",
+    description: "Persiste uma proposta com a resolução escolhida. Negado por padrão: a política é aplicada no Core para qualquer adapter (o Core reclassifica a proposta antes de autorizar. Sob a política additive, o agente só decide as próprias propostas aditivas (new, complement, duplicate); atualização, substituição, conflito e manutenção sempre exigem humano). Em vault com additive o brain_propose já grava direto, então brain_commit não é necessário.",
     inputSchema: z.object({ proposal_id: z.string(), resolution: z.enum(RESOLUTIONS), target_id: z.string().optional(), final_body: z.string().optional(), note: z.string().optional() }),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, guard(async (a) => {

@@ -6,6 +6,7 @@ export * from "./sessions.js";
 export * from "./config.js";
 export * from "./embeddings.js";
 export * from "./git.js";
+export * from "./backup.js";
 export * from "./governance.js";
 export * from "./markdown.js";
 export * from "./secrets.js";
@@ -21,3 +22,5 @@ export { extractCandidates, scanSource, importPath, importText, processCandidate
 export { reconcile, reconcileBatch, repoIndex, wantsHistory, sourceKindOf, clearRepoCache } from "./freshness/index.js";
 export type { Candidate } from "./importer/extract.js";
 export * from "./integration.js";
+export * from "./migrate-flat.js";
+export * from "./assistant/index.js";

@@ -1,0 +1,7 @@
+# systemd --user:  cp scripts/second-brain-backup.{service,timer} ~/.config/systemd/user/ && systemctl --user enable --now second-brain-backup.timer
+[Unit]
+Description=Second Brain (backup diário do histórico git em bundle)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env node %h/projetos/second-brain/packages/cli/dist/bin.js backup-history
+Environment=BRAIN_VAULT=%h/second-brain

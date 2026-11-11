@@ -15,8 +15,15 @@ export async function coreDoctor(b: Brain): Promise<Check[]> {
   out.push(v.exists() ? c("vault", "Vault", "ok", v.root) : c("vault", "Vault", "fail", `estrutura ausente em ${v.root}`, "brain init"));
   try { void b.config; out.push(c("config", "Config", "ok", `${v.configPath}`)); } catch (e) { out.push(c("config", "Config", "fail", (e as Error).message, "corrija .brain/config.yaml")); }
 
+  // estado externo: nada do "motor" pode existir dentro do vault
+  if (b.config.state.external) {
+    const strays = [".git", ".brain/index.db", ".brain/index.db-wal", ".brain/index.db-shm", ".brain/api-token", ".brain/lock.d"].filter((p) => existsSync(join(v.root, p)));
+    out.push(strays.length ? c("external-state", "Estado externo", "fail", `dentro do vault: ${strays.join(", ")} (state.external exige o estado fora dele)`, `mova/remova esses itens; estado em ${v.stateDir}`)
+      : c("external-state", "Estado externo", "ok", v.stateDir ?? ""));
+  }
+
   // Git
-  if (!(await b.git.isRepo())) out.push(c("git", "Git", "fail", "o vault não é um repositório Git", `git -C ${v.root} init`));
+  if (!(await b.git.isRepo())) out.push(c("git", "Git", "fail", "o vault não é um repositório Git", v.gitDir ? `git --git-dir=${v.gitDir} --work-tree=${v.root} init -b main` : v.gitDir ? `git --git-dir=${v.gitDir} --work-tree=${v.root} init -b main` : `git -C ${v.root} init`));
   else {
     const dirty = await b.git.dirty("knowledge"); const head = await b.git.head();
     out.push(!head ? c("git", "Git", "warn", "repositório sem commits", "brain commit")
@@ -26,8 +33,8 @@ export async function coreDoctor(b: Brain): Promise<Check[]> {
   // SQLite
   try {
     const q = (b.db.db.prepare("PRAGMA quick_check").get() as { quick_check: string }).quick_check;
-    out.push(q === "ok" ? c("sqlite", "SQLite", "ok", `schema v${b.db.getMeta("schema_version")}, WAL`) : c("sqlite", "SQLite", "fail", `quick_check: ${q}`, "apague .brain/index.db* e rode: brain reindex"));
-  } catch (e) { out.push(c("sqlite", "SQLite", "fail", (e as Error).message, "apague .brain/index.db* e rode: brain reindex")); }
+    out.push(q === "ok" ? c("sqlite", "SQLite", "ok", `schema v${b.db.getMeta("schema_version")}, WAL`) : c("sqlite", "SQLite", "fail", `quick_check: ${q}`, `apague ${v.dbPath}* e rode: brain reindex`));
+  } catch (e) { out.push(c("sqlite", "SQLite", "fail", (e as Error).message, `apague ${v.dbPath}* e rode: brain reindex`)); }
 
   // FTS
   try {

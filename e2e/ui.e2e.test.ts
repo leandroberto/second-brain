@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type Page } from "playwright-core";
-import { Brain } from "../packages/core/src/index.js";
+import { Brain, principal } from "../packages/core/src/index.js";
 import { issueHumanSession, startApi, type ApiHandle } from "../packages/api/src/index.js";
 import { terminalHuman } from "../packages/core/test/helpers.js";
 import { seedDemo } from "../packages/cli/src/seed.js";
@@ -134,6 +134,43 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     await vi.waitFor(async () => { await brain.sync(); expect(brain.db.rows("1=1", [], "id", 1000).length).toBeGreaterThan(before); }, { timeout: 10000 });
     await vi.waitFor(async () => expect((await brain.git.log(undefined, 1))[0]!.subject).toMatch(/bulk approve/), { timeout: 10000 });
     await page.waitForTimeout(600);
+  });
+
+  it("Home mostra Entrou recentemente e Desfazer remove a nota", async () => {
+    const errors: string[] = []; const onErr = (e: Error) => errors.push(String(e)); page.on("pageerror", onErr);
+    await brain.updateConfig({ agents: { commit_policy: "additive" } }, await terminalHuman("alice"));
+    const p = await brain.propose({ title: "Observação inédita sobre capivaras", type: "learning", body: "Capivaras dividem o território com garças, que pousam nas costas delas." }, principal("agent", "claude-code", "mcp"));
+    const id = p.auto!.note_id!;
+    expect(brain.db.getRow(id)).toBeTruthy();
+    await nav("#/"); await page.reload();
+    const card = page.getByRole("region", { name: "Entrou recentemente" });
+    const item = card.getByTestId("recent-write").filter({ hasText: "Observação inédita sobre capivaras" });
+    await item.waitFor({ timeout: 10000 });
+    expect(await item.innerText()).toMatch(/claude-code/);
+    expect(await item.getByRole("link", { name: /capivaras/ }).getAttribute("href")).toBe(`#/note/${id}`);
+    await item.getByRole("button", { name: /^Desfazer/ }).click();
+    await vi.waitFor(async () => { await brain.sync({ force: true }); expect(brain.db.getRow(id)).toBeUndefined(); }, { timeout: 10000 });
+    await item.waitFor({ state: "detached", timeout: 10000 });
+    // página própria
+    await nav("#/recent");
+    await page.getByRole("heading", { name: "Entrou recentemente" }).waitFor();
+    expect(await page.getByTestId("recent-write").filter({ hasText: "capivaras" }).count()).toBe(0);
+    page.off("pageerror", onErr); expect(errors).toEqual([]);
+  });
+
+  it("paleta Ctrl+K abre Anotar… e Perguntar…", async () => {
+    await nav("#/");
+    await page.keyboard.press("Control+k");
+    await page.getByPlaceholder(/Buscar conhecimento/).fill("Anotar");
+    await page.getByRole("option", { name: /^Anotar…/ }).click();
+    const dlg = page.getByRole("dialog", { name: "Anotar" }); await dlg.waitFor();
+    expect(await dlg.getByRole("tab", { name: "Anotar" }).getAttribute("aria-selected")).toBe("true");
+    await page.keyboard.press("Escape"); await dlg.waitFor({ state: "detached" });
+    await page.keyboard.press("Control+k");
+    await page.getByPlaceholder(/Buscar conhecimento/).fill("Perguntar");
+    await page.getByRole("option", { name: /^Perguntar…/ }).click();
+    expect(await page.getByRole("dialog", { name: "Perguntar" }).getByRole("tab", { name: "Perguntar" }).getAttribute("aria-selected")).toBe("true");
+    await page.keyboard.press("Escape");
   });
 
   it("criar conhecimento manualmente avisa sobre semelhantes", async () => {

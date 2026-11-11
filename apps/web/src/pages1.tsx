@@ -3,6 +3,8 @@ import { Link2, Sparkles } from "lucide-react";
 import { api, type Dashboard, type Integrations, type NoteDetail, type NoteSummary, type Proposal, type SearchHit } from "./api";
 import { ClassBadge, Empty, ErrorBox, Markdown, Skeleton, Snippet, StatusBadge, TypeBadge, errMsg, go, href, timeAgo, useData, useDebounced, useToast, TYPE_LABEL } from "./lib";
 import { REL_LABEL, RegisterRelation } from "./graphShared";
+import { RecentWritesCard } from "./RecentWrites";
+import { AssistantBox } from "./AssistantBox";
 
 const LocalGraph = lazy(() => import("./LocalGraph"));
 interface Suggestion { src: string; dst: string; dst_title: string; type: string; reason: string; snippet: string; weight: number }
@@ -26,8 +28,10 @@ export function Home() {
         <Stat n={d.totals.knowledge} l="Conhecimentos" /><Stat n={d.totals.projects} l="Projetos" />
         <Stat n={d.today.added} l="Adicionados hoje" /><Stat n={d.totals.pending} l="Precisam de revisão" warn={d.totals.pending > 0} href="review" />
       </div>
+      <section className="card" aria-label="Anotar ou perguntar" style={{ marginBottom: 16 }}><AssistantBox /></section>
       <div className="grid cols-2">
         <div className="grid">
+          <RecentWritesCard />
           <section className="card flush" aria-label="Fila de revisão">
             <div className="card-h" style={{ padding: "14px 18px 0" }}><h2>Precisa de revisão</h2><a className="btn sm ghost" href={href("review")}>Abrir fila</a></div>
             {review?.length ? review.slice(0, 5).map((p) => (
@@ -36,7 +40,7 @@ export function Home() {
                 <div className="grow"><div className="title">{p.draft.title}</div><div className="meta"><span>{p.proposed_by.name}</span><span>{timeAgo(p.created_at)}</span>{p.analysis.matches[0] && <span>≈ {Math.round(p.analysis.matches[0].similarity * 100)}% {p.analysis.matches[0].title}</span>}</div></div>
               </a>)) : <Empty title="Nada pendente" hint="Propostas dos agentes aparecem aqui." />}
             {d.health.git_dirty > 0 && <a className="row" href={href("settings")}><span className="badge info">Git</span><div className="grow muted">{d.health.git_dirty} edição(ões) manual(is) ainda sem commit (Obsidian?)</div></a>}
-            {(d.health.problems.notes_with_issues + d.health.problems.dangling_links + d.health.problems.duplicate_ids) > 0 && <a className="row" href={href("settings")}><span className="badge danger">Saúde</span><div className="grow muted">{d.health.problems.notes_with_issues} nota(s) com problema · {d.health.problems.dangling_links} link(s) quebrado(s) · {d.health.problems.duplicate_ids} id(s) duplicado(s)</div></a>}
+            {(d.health.problems.notes_with_issues + d.health.problems.dangling_links + d.health.problems.duplicate_ids + (d.health.problems.sync_conflict_copies ?? 0)) > 0 && <a className="row" href={href("settings")}><span className="badge danger">Saúde</span><div className="grow muted">{d.health.problems.notes_with_issues} nota(s) com problema · {d.health.problems.dangling_links} link(s) quebrado(s) · {d.health.problems.duplicate_ids} id(s) duplicado(s){d.health.problems.sync_conflict_copies ? ` · ${d.health.problems.sync_conflict_copies} cópia(s) de conflito do OneDrive` : ""}</div></a>}
             {d.needs_review.stale > 0 && <div className="row"><span className="badge warn">Antigo</span><div className="grow muted">{d.needs_review.stale} conhecimento(s) sem atualização há muito tempo: {d.needs_review.stale_items.slice(0, 2).map((s) => s.title).join(", ")}</div></div>}
           </section>
           <section className="card flush" aria-label="Conhecimento recente">

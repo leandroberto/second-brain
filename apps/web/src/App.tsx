@@ -7,6 +7,8 @@ import { AgentsPage, GraphPage, ProjectsPage, ReviewPage, TimelinePage } from ".
 import { Home, NotePage, SearchPage } from "./pages1";
 import { AddKnowledge, SettingsPage } from "./pages3";
 import { ImportPage } from "./ImportPage";
+import { RecentWritesPage } from "./RecentWrites";
+import { AssistantModal, type AssistantTab } from "./AssistantBox";
 
 captureToken();
 try { document.documentElement.dataset.theme = localStorage.getItem("theme") ?? "dark"; } catch { /* sem storage */ }
@@ -15,7 +17,7 @@ const NAV: Array<[string, string, typeof HomeIcon]> = [["", "Home", HomeIcon], [
 
 function Shell() {
   const r = useRoute(); const toast = useToast();
-  const [pal, setPal] = useState(false); const [add, setAdd] = useState(false);
+  const [pal, setPal] = useState(false); const [add, setAdd] = useState(false); const [asst, setAsst] = useState<AssistantTab>();
   const { data: rv } = useData<unknown[]>("/api/review", [], 15000);
   const { data: ib } = useData<unknown[]>("/api/inbox", [], 15000);
   useHotkey("k", () => setPal((p) => !p), { ctrl: true });
@@ -25,6 +27,8 @@ function Shell() {
   const { data: meta } = useData<{ can_review: boolean; principal: { kind: string; channel: string } }>("/api/meta");
   const commands: Cmd[] = useMemo(() => [
     { id: "search", label: "Buscar conhecimento", run: () => go("search") }, { id: "add", label: "Adicionar conhecimento", run: () => setAdd(true) }, { id: "import", label: "Importar conhecimento", run: () => go("import") },
+    { id: "capture", label: "Anotar…", run: () => setAsst("capture") }, { id: "ask", label: "Perguntar…", run: () => setAsst("ask") },
+    { id: "recentw", label: "Entrou recentemente", run: () => go("recent") },
     { id: "review", label: "Revisar propostas", run: () => go("review") }, { id: "inbox", label: "Abrir inbox", run: () => go("inbox") },
     { id: "recent", label: "Mostrar atividade recente", run: () => go("timeline") }, { id: "projects", label: "Ver projetos", run: () => go("projects") },
     { id: "newproj", label: "Criar projeto", run: () => go("projects") }, { id: "graph", label: "Abrir grafo", run: () => go("graph") }, { id: "agents", label: "Agentes", run: () => go("agents") },
@@ -40,6 +44,7 @@ function Shell() {
     case "": page = <Home />; break;
     case "search": page = <SearchPage initial={r.query.get("q") ?? ""} />; break;
     case "note": page = <NotePage id={r.path[1] ?? ""} />; break;
+    case "recent": page = <RecentWritesPage />; break;
     case "review": page = <ReviewPage id={r.path[1]} mode="review" />; break;
     case "inbox": page = <ReviewPage id={r.path[1]} mode="inbox" />; break;
     case "projects": page = <ProjectsPage id={r.path[1]} />; break;
@@ -64,6 +69,7 @@ function Shell() {
         <main className="page" id="main" tabIndex={-1}>{meta && !meta.can_review && <div className="banner" role="status" data-testid="readonly-banner"><span>Sessão sem permissão de revisão ({meta.principal.kind === "agent" ? "token de agente" : meta.principal.channel}): você pode ler e propor, mas aprovar/ignorar exige uma sessão humana. Num terminal, rode <code>brain ui</code> e abra o link.</span></div>}{page}</main>
       </div>
       {pal && <Palette commands={commands} onClose={() => setPal(false)} />}
+      {asst && <AssistantModal tab={asst} onClose={() => setAsst(undefined)} />}
       {add && <AddKnowledge onClose={() => setAdd(false)} project={section === "projects" ? r.path[1] : undefined} />}
     </div>
   );

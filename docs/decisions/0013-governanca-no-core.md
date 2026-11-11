@@ -14,7 +14,7 @@ A política desejada é simples: agentes **leem, buscam, pedem contexto e propõ
 ## Decisão
 
 - **Toda operação mutativa do Core chama `authorize(quem, operação, contexto)`** (`packages/core/src/authz.ts`):
-  - **Operações:** `propose`, `amend`, `decide`, `write`, `link`, `verify`, `admin`.
+  - **Operações:** `propose`, `amend`, `decide`, `write`, `link`, `verify`, `assist`, `admin`.
   - **Negado por padrão:** chamada sem identidade ou com objeto literal vindo de JSON/HTTP.
 - **Identidade = ator + canal, cunhada pelo adapter, nunca informada pelo cliente.**
   - `principal()` cria apenas agentes e sistema.
@@ -36,8 +36,12 @@ A política desejada é simples: agentes **leem, buscam, pedem contexto e propõ
   | aprovar em lote | não | sim | não |
   | escrever nota direto / relação / config / commit manual / revert | não² | sim | — |
   | anexar verificação de atualidade | não | sim | importador e manutenção |
+  | assistente (`assist`: capturar, perguntar, reprocessar, desfazer captura) | não | sim | não |
+  | **`desktop`** (credencial do atalho: humano no canal `desktop`) | — | só ler, propor e `assist`; desfaz só capturas feitas pelo desktop; nada além disso³ | — |
 
-  ¹ A política opcional por tipo (ADR 0011) continua existindo e desligada (`commit_policy: never`). Mesmo ligada, só cobre conhecimento **new** com `create`. Atualização, substituição, conflito, manutenção, `final_body` e lote são sempre humanos, em **todos** os adapters.
+  ³ O canal `desktop` só nasce de uma sessão com escopo `desktop` (`brain pair-desktop`); `principal()` o recusa. Não é canal de revisão: não decide, não aprova em lote, não escreve direto, não cria relação, não reverte e não muda config. Detalhes no ADR 0014, seção "Credencial do desktop".
+
+  ¹ A política opcional por tipo (ADR 0011) continua existindo e desligada (`commit_policy: never`). Mesmo ligada, só cobre conhecimento **new** com `create`. Atualização, substituição, conflito, manutenção, `final_body` e lote são sempre humanos, em **todos** os adapters. O ADR 0014 amplia esta nota com a política `additive`, que cobre também `complement` e `duplicate`.
 
   ² Relação de agente exige `can_link` **e** `commit_policy ≠ never`. `supersedes` nunca é aceito de agente (use `brain_supersede`).
 

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'" />
+    <title>Second Brain</title>
+    <link rel="stylesheet" href="estilo.css" />
+  </head>
+  <body>
+    <div id="painel">
+      <div id="abas">
+        <button type="button" data-modo="anotar" tabindex="-1">📝 Anotar</button>
+        <button type="button" data-modo="perguntar" tabindex="-1">💬 Perguntar</button>
+      </div>
+      <div id="aviso" hidden></div>
+      <textarea id="caixa" rows="1" spellcheck="false"></textarea>
+      <div id="dica"></div>
+      <div id="resposta" hidden></div>
+    </div>
+    <script type="module" src="renderer.js"></script>
+  </body>
+</html>

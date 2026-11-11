@@ -2,7 +2,7 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "**/node_modules/**", "seed/demo-vault/**", "coverage/**"] },
+  { ignores: ["**/dist/**", "**/node_modules/**", "seed/demo-vault/**", "coverage/**", "apps/desktop/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

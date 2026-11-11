@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 const p = (s: string) => fileURLToPath(new URL(s, import.meta.url));
 export default defineConfig({
@@ -8,5 +8,5 @@ export default defineConfig({
     "@brain/mcp": p("./packages/mcp/src/index.ts"),
     "@brain/api": p("./packages/api/src/index.ts"),
   } },
-  test: { globalSetup: ["./vitest.global.ts"], include: ["packages/*/test/**/*.test.ts", "e2e/**/*.test.ts"], testTimeout: 30000, pool: "forks" },
+  test: { exclude: [...configDefaults.exclude, "apps/desktop/**"], globalSetup: ["./vitest.global.ts"], include: ["packages/*/test/**/*.test.ts", "e2e/**/*.test.ts"], testTimeout: 30000, pool: "forks" },
 });

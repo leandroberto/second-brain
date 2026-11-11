@@ -2,13 +2,13 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { extname, join, normalize, sep } from "node:path";
-import { Brain, principal, humanFromSession, isHumanReviewer, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
+import { dirname, extname, join, normalize, sep } from "node:path";
+import { Brain, type Vault, principal, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
 
-export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string } }
+export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant }
 export interface ApiHandle { url: string; token: string; port: number; close(): Promise<void> }
 
 const MIME: Record<string, string> = {
@@ -17,17 +17,16 @@ const MIME: Record<string, string> = {
 };
 const STATUS_OF: Record<string, number> = {
   not_found: 404, invalid: 400, secret_detected: 422, too_large: 413, conflict_revision: 409, forbidden: 403,
-  duplicate_id: 409, locked: 503, git_error: 500, path_escape: 400, policy: 403,
+  duplicate_id: 409, locked: 503, git_error: 500, path_escape: 400, policy: 403, state_unavailable: 503,
 };
 
-type Ctx = { brain: Brain; actor: Principal; url: URL; body: any; params: string[]; emit: (ev: string, data?: unknown) => void };
+type Ctx = { brain: Brain; actor: Principal; url: URL; body: any; params: string[]; emit: (ev: string, data?: unknown) => void; /** credencial apresentada (só a renovação do desktop usa) */ token: string };
 type Handler = (c: Ctx) => Promise<unknown> | unknown;
 
-export function tokenPath(root: string) { return join(root, ".brain", "api-token"); }
-export function loadOrCreateToken(root: string): string {
-  const f = tokenPath(root);
+export function loadOrCreateToken(vault: Vault): string {
+  const f = vault.tokenPath;
   if (existsSync(f)) return readFileSync(f, "utf8").trim();
-  mkdirSync(join(root, ".brain"), { recursive: true });
+  mkdirSync(dirname(f), { recursive: true });
   const t = randomBytes(24).toString("hex");
   writeFileSync(f, t, { mode: 0o600 });
   return t;
@@ -35,7 +34,7 @@ export function loadOrCreateToken(root: string): string {
 
 export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<ApiHandle> {
   const host = opts.host ?? "127.0.0.1";
-  const token = loadOrCreateToken(brain.vault.root);
+  const token = loadOrCreateToken(brain.vault);
   const userName = opts.userName ?? process.env.BRAIN_USER ?? process.env.USER ?? "user";
   /**
    * Identidade por REQUISIÇÃO, decidida aqui (adapter) e nunca pelo corpo/cabeçalhos do cliente:
@@ -88,6 +87,46 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     if (!STATUSES.includes(body.status)) throw new BrainError("invalid", "status inválido");
     return brain.updateNote(decodeURIComponent(params[0]!), { status: body.status, expected_revision: body.expected_revision, reason: body.reason }, actor);
   });
+    // ---- Assistente (captura/pergunta): só humano (ui/desktop). Erro do motor volta 200 com o resultado tipado (a captura fica pendente) ----
+  const assistantFor = (brain: Brain, actor: Principal): Assistant => {
+    authorize(actor, "assist", { config: brain.config }); // agente (api-token) e sistema: 403, antes de qualquer outra coisa
+    if (!opts.assistant) throw new BrainError("state_unavailable", "assistente não configurado neste servidor (suba com `brain serve`)");
+    return opts.assistant;
+  };
+  r("POST", "/api/assistant/capture", async ({ brain, body, actor, emit }) => {
+    const a = assistantFor(brain, actor);
+    if (typeof body?.text !== "string" || !body.text.trim()) throw new BrainError("invalid", "texto da captura vazio");
+    const { capture, result } = await a.capture(body.text, actor.channel === "desktop" ? "desktop" : "ui");
+    emit("notes"); emit("proposals");
+    return { capture_id: capture.id, state: capture.state, result };
+  });
+  r("POST", "/api/assistant/ask", ({ brain, body, actor }) => {
+    const a = assistantFor(brain, actor);
+    if (typeof body?.question !== "string" || !body.question.trim()) throw new BrainError("invalid", "pergunta vazia");
+    if (body.conversation_id !== undefined && typeof body.conversation_id !== "string") throw new BrainError("invalid", "conversation_id inválido");
+    return a.ask(body.question, body.conversation_id);
+  });
+  r("POST", "/api/assistant/captures/retry", async ({ brain, actor, emit }) => {
+    const retried = await assistantFor(brain, actor).retryPending();
+    emit("notes"); emit("proposals"); return { retried };
+  });
+  r("POST", "/api/assistant/captures/:id/undo", async ({ brain, params, actor, emit }) => {
+    assistantFor(brain, actor);
+    const out = await brain.undoCapture(decodeURIComponent(params[0]!), actor);
+    emit("notes"); emit("proposals"); return out;
+  });
+  // renovação da credencial do desktop: só o canal desktop (a sessão ui e o agente recebem 403); o core valida que o token é
+  // uma sessão desktop viva, emite outro com o mesmo escopo e revoga o antigo
+  r("POST", "/api/assistant/session/renew", ({ brain, actor, token }) => {
+    if (actor.channel !== "desktop") throw new BrainError("forbidden", "só a credencial do desktop é renovada por aqui");
+    return { token: renewDesktopSession(brain.vault.root, token, opts.sessions) };
+  });
+  r("GET", "/api/assistant/captures", ({ brain, url, actor }) => {
+    const a = assistantFor(brain, actor);
+    const st = q(url, "state") ?? "pendente";
+    if (st !== "pendente") throw new BrainError("invalid", "só state=pendente é suportado");
+    return a.captures.pending();
+  });
   r("GET", "/api/projects", ({ brain }) => brain.projects());
   r("POST", "/api/projects", ({ brain, body, actor }) => brain.createProject(body.slug, body.title, body.summary ?? "", actor));
   r("GET", "/api/projects/:id", async ({ brain, params }) => {
@@ -99,6 +138,15 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     return { id, overview_id: overview?.id, notes: rows, pending, history: await brain.git.log(`knowledge/projects/${id}`, 15), graph: await brain.graph({ project: id }) };
   });
   r("GET", "/api/recent", ({ brain, url }) => brain.recent({ limit: Number(q(url, "limit") ?? 15), project: q(url, "project") }));
+  r("GET", "/api/recent-writes", ({ brain, url }) => {
+    const num = (k: string, min: number, max: number) => {
+      const raw = q(url, k); if (raw === undefined) return undefined;
+      const n = Number(raw);
+      if (raw.trim() === "" || !Number.isInteger(n) || n < min || n > max) throw new BrainError("invalid", `${k} inválido (${min} a ${max})`);
+      return n;
+    };
+    return brain.recentAgentWrites({ days: num("days", 0, 90), limit: num("limit", 1, 200) ?? 50, agent: q(url, "agent") });
+  });
   r("POST", "/api/analyze", ({ brain, body }) => brain.analyze(body));
   r("GET", "/api/proposals", ({ brain, url }) => brain.listProposals((q(url, "which") as never) ?? "pending"));
   r("GET", "/api/inbox", ({ brain }) => brain.inbox());
@@ -197,6 +245,9 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     const hdr = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
     const who = identify(hdr);
     if (!who) return plain(res, 401, "token inválido");
+    // credencial do desktop (30 dias, colada no app): ALLOWLIST estrita, antes do roteamento, para que rota nova já nasça bloqueada
+    if (who.channel === "desktop" && !(url.pathname.startsWith("/api/assistant/") || (url.pathname === "/api/health" && method === "GET")))
+      return json(res, 403, { error: "forbidden", message: "credencial do desktop só acessa o assistente" });
     if (url.pathname === "/api/events/ticket" && method === "POST") {
       const t = randomBytes(18).toString("hex"); const now = Date.now();
       for (const [k, e] of tickets) if (e < now) tickets.delete(k);
@@ -207,7 +258,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
       if (m !== method) continue;
       const mt = re.exec(url.pathname);
       if (!mt) continue;
-      const data = await h({ brain, actor: who, url, body, params: mt.slice(1), emit });
+      const data = await h({ brain, actor: who, url, body, params: mt.slice(1), emit, token: hdr });
       return json(res, 200, data ?? { ok: true });
     }
     json(res, 404, { error: "not_found", message: `rota ${method} ${url.pathname}` });

@@ -76,6 +76,10 @@ describe("CLI `brain` (processo real, HOME isolado)", () => {
     expect(readFileSync(join(vault, "AGENTS.md"), "utf8")).toBe(before);
   });
 
+  it("pair-desktop é privilegiado: fora de terminal interativo é negado e nenhum token sai", async () => {
+    await expect(brain(["pair-desktop"])).rejects.toMatchObject({ code: 1, stdout: "", stderr: expect.stringMatching(/terminal interativo/) });
+  });
+
   it("update-policy --dry-run mostra o que mudaria sem exigir terminal e sem gravar nada", async () => {
     const agents = join(vault, "AGENTS.md");
     const before = readFileSync(agents, "utf8");

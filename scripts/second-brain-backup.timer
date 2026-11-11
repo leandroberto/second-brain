@@ -1,0 +1,7 @@
+[Unit]
+Description=Second Brain (agenda do backup diário do histórico)
+[Timer]
+OnCalendar=daily
+Persistent=true
+[Install]
+WantedBy=timers.target

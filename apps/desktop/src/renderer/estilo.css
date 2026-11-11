@@ -1,0 +1,94 @@
+:root {
+  --fundo: #1f2430;
+  --caixa: #2b3140;
+  --borda: #3d4558;
+  --texto: #e6e6e6;
+  --suave: #8a93a6;
+  --ativo: #3a5bd9;
+  --link: #8fb0ff;
+  --aviso: #24304a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--fundo);
+  color: var(--texto);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}
+
+#painel { padding: 12px; }
+
+#abas { display: flex; gap: 6px; margin-bottom: 8px; }
+#abas button {
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 14px;
+  background: var(--caixa);
+  color: var(--suave);
+  font: inherit;
+  cursor: pointer;
+}
+#abas button.ativa { background: var(--ativo); color: #fff; }
+
+#aviso {
+  background: var(--aviso);
+  border-left: 3px solid var(--link);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+#caixa {
+  width: 100%;
+  resize: none;
+  background: var(--caixa);
+  color: #fff;
+  border: 1px solid var(--borda);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  outline: none;
+}
+#caixa:focus { border-color: var(--ativo); }
+#caixa:disabled { opacity: 0.6; }
+
+#dica { color: var(--suave); font-size: 11px; margin-top: 6px; }
+
+#resposta {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--caixa);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  max-height: 450px;
+  overflow-y: auto;
+}
+#resposta .fontes { margin-top: 8px; font-size: 12px; color: var(--suave); white-space: normal; }
+#resposta .fontes a { color: var(--link); margin-right: 10px; cursor: pointer; }
+#resposta.erro { border-left: 3px solid #e0566b; }
+
+#resposta .titulo { display: inline-block; margin-top: 6px; color: #fff; font-size: 15px; }
+#resposta code {
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 13px;
+  background: var(--fundo);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+#resposta pre {
+  font-family: Consolas, 'Cascadia Mono', monospace;
+  font-size: 13px;
+  background: var(--fundo);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+}

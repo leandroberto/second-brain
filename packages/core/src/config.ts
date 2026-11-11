@@ -17,12 +17,16 @@ export const ConfigSchema = z.object({
     duplicate_threshold: z.number().default(0.78),
     candidate_threshold: z.number().default(0.42),
     stale_days: z.number().int().default(180),
-  }).default({ duplicate_threshold: 0.78, candidate_threshold: 0.42, stale_days: 180 }),
+    /** Update aprovado move a linha antiga para "## Histórico" em vez de apagá-la (vault "nunca apague nada"). */
+    keep_history_section: z.boolean().default(false),
+  }).default({ duplicate_threshold: 0.78, candidate_threshold: 0.42, stale_days: 180, keep_history_section: false }),
   agents: z.object({
-    /** never | new_only (somente classificação "new") | all */
-    commit_policy: z.enum(["never", "new_only", "all"]).default("never"),
+    /** never | new_only (somente classificação "new") | additive (new/complement/duplicate gravados no próprio propose,
+     *  ADR 0014) | all */
+    commit_policy: z.enum(["never", "new_only", "additive", "all"]).default("never"),
     can_link: z.boolean().default(true),
-    /** Por tipo de conhecimento: "review" (padrão) ou "auto". "auto" só vale se commit_policy também permitir. */
+    /** Por tipo de conhecimento: "review" (padrão) ou "auto". "auto" só vale se commit_policy também permitir.
+     *  Sob `additive`, um tipo sem entrada vale "auto"; "review" explícito continua mandando para a fila. */
     per_type: z.partialRecord(z.enum(["decision", "learning", "fact", "preference", "pattern", "reference", "project", "concept", "open-question"]), z.enum(["review", "auto"])).default({}),
   }).default({ commit_policy: "never", can_link: true, per_type: {} }),
   git: z.object({
@@ -38,6 +42,16 @@ export const ConfigSchema = z.object({
   /** revisão humana: com `passphrase_required`, a prova de humano no terminal EXIGE a frase-senha do revisor — se o arquivo dela
    *  sumir (ou o processo apontar outro HOME/armazenamento), a ação é NEGADA em vez de cair para "só TTY" */
   review: z.object({ passphrase_required: z.boolean().default(false) }).default({ passphrase_required: false }),
+  /** `external`: SQLite, lock, fila pendente, api-token e git-dir ficam fora do vault (ver state.ts) */
+  state: z.object({ external: z.boolean().default(false) }).default({ external: false }),
+  /** motor de assistente (captura e pergunta, spec §7.4): `claude -p` só com as ferramentas brain_* do MCP do vault */
+  assistant: z.object({
+    engine: z.enum(["claude"]).default("claude"),
+    model: z.string().default("sonnet"),
+    max_budget_usd: z.number().default(0.5),
+    timeout_s: z.number().int().default(120),
+    claude_path: z.string().default("claude"),
+  }).default({ engine: "claude", model: "sonnet", max_budget_usd: 0.5, timeout_s: 120, claude_path: "claude" }),
 });
 export type BrainConfig = z.infer<typeof ConfigSchema>;
 

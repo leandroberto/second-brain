@@ -57,7 +57,7 @@ export interface Dashboard {
   needs_review: { duplicates: number; conflicts: number; pending: number; stale: number; stale_items: NoteSummary[] };
   most_used: Array<{ id: string; title: string; n: number }>;
   agents: Array<{ name: string; kind: string; n: number; last: string; reads: number; writes: number }>;
-  health: { ok: boolean; git_dirty: number; embeddings_ok: boolean; problems: { notes_with_issues: number; dangling_links: number; duplicate_ids: number }; provider: string };
+  health: { ok: boolean; git_dirty: number; embeddings_ok: boolean; problems: { notes_with_issues: number; dangling_links: number; duplicate_ids: number; sync_conflict_copies?: number }; provider: string };
 }
 export interface Integrations { vault: string; claude: { mcp: boolean; policy: boolean; skill: boolean }; codex: { mcp: boolean; policy: boolean; skill: boolean } }
 export interface NoteDetail {
@@ -67,3 +67,12 @@ export interface NoteDetail {
   similar: SimilarMatch[]; issues: string[];
   usage: { reads: number; last_read?: string }; activity: ActivityEntry[];
 }
+
+export interface RecentWrite { commit: string; date: string; agent: string; resolution: "create" | "complement"; note_id: string; title: string; capture_id?: string }
+export type AssistantErrorKind = "auth" | "timeout" | "orcamento" | "erro";
+export type CaptureAction = "criada" | "complementada" | "na_fila" | "ignorada";
+export type CaptureOutcome =
+  | { ok: true; notas: Array<{ id: string; acao: CaptureAction }>; segredo_omitido: boolean; texto_mascarado: string | null }
+  | { ok: false; tipo: AssistantErrorKind; mensagem: string };
+export interface CaptureResponse { capture_id: string; state: "pendente" | "processada" | "desfeita"; result: CaptureOutcome }
+export type AskOutcome = { ok: true; resposta: string; fontes: string[] } | { ok: false; tipo: AssistantErrorKind; mensagem: string };

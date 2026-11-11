@@ -43,12 +43,12 @@ export function scanSecrets(text: string): SecretFinding[] {
   return out;
 }
 
-/** Substitui trechos sensíveis por [REDACTED] (para logs/atividade e para o que é mostrado a agentes). */
-export function redactSecrets(text: string): string {
+/** Substitui trechos sensíveis por [REDACTED] (para logs/atividade e para o que é mostrado a agentes). `mask` troca o marcador. */
+export function redactSecrets(text: string, mask = "[REDACTED]"): string {
   let t = text;
   for (const [kind, re] of GLOBAL) {
     re.lastIndex = 0;
-    t = t.replace(re, (m) => (kind === "credential-assignment" && PLACEHOLDER.test(m) ? m : "[REDACTED]"));
+    t = t.replace(re, (m) => (kind === "credential-assignment" && PLACEHOLDER.test(m) ? m : mask));
   }
   return t;
 }

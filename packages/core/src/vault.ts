@@ -13,12 +13,15 @@ export const TYPE_DIR: Record<NoteType, string> = {
 
 export class Vault {
   readonly knowledgeDir: string;
-  constructor(readonly root: string) { this.knowledgeDir = join(root, "knowledge"); }
+  constructor(readonly root: string, readonly stateDir?: string) { this.knowledgeDir = join(root, "knowledge"); }
 
   get configPath() { return join(this.root, ".brain", "config.yaml"); }
-  get dbPath() { return join(this.root, ".brain", "index.db"); }
-  get lockPath() { return join(this.root, ".brain", "lock.d"); }
-  get pendingDir() { return join(this.root, ".brain", "proposals", "pending"); }
+  get dbPath() { return join(this.stateDir ?? join(this.root, ".brain"), "index.db"); }
+  get lockPath() { return join(this.stateDir ?? join(this.root, ".brain"), "lock.d"); }
+  get pendingDir() { return join(this.stateDir ?? join(this.root, ".brain"), "proposals", "pending"); }
+  get tokenPath() { return join(this.stateDir ?? join(this.root, ".brain"), "api-token"); }
+  /** git-dir externo (só com estado externo); `undefined` = repositório normal em <root>/.git */
+  get gitDir(): string | undefined { return this.stateDir ? join(this.stateDir, "git") : undefined; }
   get decidedDir() { return join(this.root, ".brain", "proposals", "decided"); }
 
   exists(): boolean { return existsSync(this.configPath) && existsSync(this.knowledgeDir); }
@@ -66,9 +69,10 @@ export class Vault {
 
   ensureDirs(): void {
     for (const d of ["knowledge/inbox", "knowledge/projects", "knowledge/decisions", "knowledge/learnings", "knowledge/patterns",
-      "knowledge/references", "knowledge/concepts", "knowledge/archive", ".brain/proposals/pending", ".brain/proposals/decided"]) {
+      "knowledge/references", "knowledge/concepts", "knowledge/archive", ".brain/proposals/decided"]) {
       mkdirSync(join(this.root, d), { recursive: true });
     }
+    mkdirSync(this.pendingDir, { recursive: true });
   }
   writeDefaultConfig(): void {
     if (!existsSync(this.configPath)) writeFileSync(this.configPath, dumpConfig(ConfigSchema.parse({})), "utf8");

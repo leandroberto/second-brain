@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BrainError, isValidId, slugify,
-  type Actor, type Analysis, type Confidence, type Freshness, type FreshnessState, type Note, type NoteStatus, type NoteType, type Principal, type Proposal,
+  type Actor, type Analysis, type Confidence, type Freshness, type FreshnessState, type Note, type NoteStatus, type NoteType, type Principal, type Proposal, type ProposeResult,
   type RelationType, type Resolution, type SearchHit, type Source, type Temporal,
 } from "@brain/shared";
-import { INTERNAL_READER, authorize, isHumanReviewer, isPrincipal, principal } from "./authz.js";
+import { ADDITIVE_RESOLUTION, INTERNAL_READER, authorize, isHumanReviewer, isPrincipal, principal } from "./authz.js";
 const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
@@ -13,6 +13,7 @@ import { ConfigSchema, dumpConfig, loadConfig, type BrainConfig } from "./config
 import { IndexDb } from "./db.js";
 import { HashEmbedder, OpenAICompatibleEmbedder, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
 import { VaultGit } from "./git.js";
+import { CAPTURE_ID, CaptureLog } from "./assistant/captures.js";
 import { classify, mergeUpdate } from "./governance.js";
 import { Indexer, type SyncResult } from "./indexer.js";
 import { withFileLock } from "./lock.js";
@@ -23,6 +24,7 @@ import { redactSecrets, scanBulk, scanSecrets } from "./secrets.js";
 import { jaccard, plain, tokenize } from "./text.js";
 import { projectLinks, projectName } from "./projects.js";
 import { Vault } from "./vault.js";
+import { resolveStateDir } from "./state.js";
 
 export interface DraftInput {
   title: string; type: NoteType; body: string; project?: string; tags?: string[];
@@ -46,8 +48,16 @@ export interface ResolveInput {
 export const HISTORICAL_STATES: FreshnessState[] = ["superseded", "reverted", "historical"];
 const isHistorical = (f?: Freshness) => !!f && (HISTORICAL_STATES.includes(f.state) || (!!f.stale_from && HISTORICAL_STATES.includes(f.stale_from)));
 
+/** Erros que o `resolve` levanta ANTES de qualquer escrita: na gravação automática, a proposta só fica na fila. */
+const PRE_WRITE_ERRORS: ReadonlySet<string> = new Set(["secret_detected", "duplicate_id", "conflict_revision", "not_found", "invalid"]);
+
 const now = () => new Date().toISOString();
 const day = () => now().slice(0, 10);
+/**
+ * Texto livre (título, nota da decisão) numa mensagem de commit vira UMA linha: uma quebra de linha permitiria forjar trailers
+ * (`Brain-Decided-By: …`), que o desfazer captura usa para achar os commits do agente.
+ */
+const oneLine = (s: string) => s.replace(/[\r\n]+/g, " ");
 
 export class Brain {
   readonly vault: Vault;
@@ -63,10 +73,11 @@ export class Brain {
   readonly defaultActor: Actor = INTERNAL_READER;
 
   private constructor(root: string) {
-    this.vault = new Vault(root);
-    this.config = loadConfig(this.vault.configPath);
+    // a config vive no vault: lê ANTES de construir Vault/IndexDb/VaultGit, que dependem do diretório de estado
+    this.config = loadConfig(new Vault(root).configPath);
+    this.vault = new Vault(root, resolveStateDir(root, this.config));
     this.db = new IndexDb(this.vault.dbPath);
-    this.git = new VaultGit(root);
+    this.git = new VaultGit(root, undefined, this.vault.gitDir);
     this._embedder = this.makeEmbedder();
     this.indexer = new Indexer(this.vault, this.db, () => this._embedder);
     this.searcher = new Searcher(this.db, () => this._embedder);
@@ -86,16 +97,17 @@ export class Brain {
 
   /** Cria (ou completa) a estrutura de um vault. Idempotente. */
   static async init(root: string, opts: { name?: string; agentsMd?: string; skillMd?: string; readme?: string } = {}): Promise<Brain> {
-    const v = new Vault(root);
-    mkdirSync(root, { recursive: true });
+    mkdirSync(join(root, ".brain"), { recursive: true });
+    new Vault(root).writeDefaultConfig();
+    const v = new Vault(root, resolveStateDir(root, loadConfig(new Vault(root).configPath)));
     v.ensureDirs();
-    v.writeDefaultConfig();
     const put = (rel: string, content?: string) => { const p = join(root, rel); if (content && !existsSync(p)) { mkdirSync(join(p, ".."), { recursive: true }); writeFileSync(p, content); } };
     put("AGENTS.md", opts.agentsMd); put("README.md", opts.readme); put("skills/second-brain/SKILL.md", opts.skillMd);
-    put(".gitignore", ".brain/index.db*\n.brain/api-token\n.brain/lock.d/\n.brain/proposals/pending/\n.obsidian/workspace*.json\n.obsidian/cache\n.trash/\n");
+    const engine = v.stateDir ? "" : ".brain/index.db*\n.brain/api-token\n.brain/lock.d/\n.brain/proposals/pending/\n";
+    put(".gitignore", `${engine}.brain/backup/\n.brain/assistant-cwd/\n.obsidian/workspace*.json\n.obsidian/cache\n.trash/\n`);
     put(".obsidian/app.json", JSON.stringify({ newFileLocation: "folder", newFileFolderPath: "knowledge/inbox", useMarkdownLinks: false, alwaysUpdateLinks: true }, null, 2));
     for (const d of ["inbox", "archive"]) put(`knowledge/${d}/.gitkeep`, "");
-    const git = new VaultGit(root);
+    const git = new VaultGit(root, undefined, v.gitDir);
     if (!(await git.isRepo())) await git.init();
     if (!(await git.head())) await git.commitPaths(["."], "brain: initialize vault");
     return Brain.open(root);
@@ -124,6 +136,12 @@ export class Brain {
   private async write<T>(fn: () => Promise<T>): Promise<T> {
     return withFileLock(this.vault.lockPath, async () => { this.reloadConfig(); await this.indexer.sync({ force: false }); return fn(); });
   }
+
+  /**
+   * O mesmo lock de escrita do vault, para módulos do core que gravam fora das propostas (registro de capturas). Não é
+   * reentrante: nunca chame métodos de escrita da Brain dentro de `fn`, nem segure o lock enquanto outro processo (MCP) grava.
+   */
+  withWriteLock<T>(fn: () => Promise<T>): Promise<T> { return this.write(fn); }
 
   /** Política/config podem ter sido alteradas por outro processo (UI, outro MCP): sempre reler sob o lock. */
   private reloadConfig(): void {
@@ -272,6 +290,38 @@ export class Brain {
     return this.db.rows(w.join(" AND "), p, "updated_at DESC", opts.limit ?? 15).map(rowSummary);
   }
 
+  /**
+   * Gravações automáticas de agentes (política `additive`) nos últimos `days` dias (padrão 7), das mais novas às mais antigas,
+   * no máximo `limit` (padrão 50), para a visão "Entrou recentemente". Só `create` e `complement` decididos por um agente.
+   * Some o que já não está no vault (nota apagada ou criação desfeita), notas arquivadas e as capturas do assistente marcadas
+   * como `desfeita`. Um `git revert` do commit da decisão leva o JSON junto, então o item também some. `capture_id` sai do
+   * nome `assistant/<id>` do agente; nesses itens não se consulta o git (o desfazer usa a captura, não o commit).
+   */
+  async recentAgentWrites(opts: { days?: number; agent?: string; limit?: number } = {}): Promise<Array<{ commit: string; date: string; agent: string; resolution: "create" | "complement"; note_id: string; title: string; capture_id?: string }>> {
+    await this.sync({ maxAgeMs: 1000 });
+    const since = new Date(Date.now() - (opts.days ?? 7) * 86_400_000).toISOString();
+    const limit = Math.max(1, opts.limit ?? 50);
+    const captures = new CaptureLog(this);
+    const found: Array<{ id: string; item: { commit: string; date: string; agent: string; resolution: "create" | "complement"; note_id: string; title: string; capture_id?: string } }> = [];
+    for (const p of this.proposals.list("decided")) {
+      const d = p.decided;
+      if (!d || d.by.kind !== "agent" || (d.resolution !== "create" && d.resolution !== "complement") || d.at < since) continue;
+      if (opts.agent && d.by.name !== opts.agent) continue;
+      const noteId = d.result_id ?? d.target_id;
+      const row = noteId ? this.db.getRow(noteId) : undefined;
+      if (!noteId || !row || row.status === "archived") continue;
+      const m = /^assistant\/(.+)$/.exec(d.by.name);
+      const captureId = m && CAPTURE_ID.test(m[1]!) ? m[1] : undefined;
+      if (captureId && captures.get(captureId)?.state === "desfeita") continue;
+      found.push({ id: p.id, item: { commit: d.commit ?? "", date: d.at, agent: d.by.name, resolution: d.resolution, note_id: noteId, title: row.title, ...(captureId ? { capture_id: captureId } : {}) } });
+    }
+    found.sort((x, y) => y.item.date.localeCompare(x.item.date));
+    const top = found.slice(0, limit);
+    // o commit não fica no JSON (nasce junto com ele): só para os itens devolvidos e sem capture_id, pelo histórico do arquivo da decisão
+    for (const t of top) if (!t.item.commit && !t.item.capture_id) t.item.commit = (await this.git.log(`.brain/proposals/decided/${t.id}.json`, 1).catch(() => []))[0]?.hash ?? "";
+    return top.map((t) => t.item);
+  }
+
   async projects() {
     await this.sync({ maxAgeMs: 1000 });
     const rows = this.db.db.prepare(`SELECT project, COUNT(*) n, MAX(updated_at) last FROM notes WHERE project IS NOT NULL AND status NOT IN ('archived') GROUP BY project ORDER BY last DESC`).all() as Array<{ project: string; n: number; last: string }>;
@@ -323,7 +373,8 @@ export class Brain {
       const r = this.db.getRow(d.target_id);
       if (r) matches.unshift({ id: r.id, title: r.title, type: r.type, status: r.status, project: r.project ?? undefined, similarity: 0, reasons: ["alvo indicado explicitamente"], revision: r.revision, updated_at: r.updated_at });
     }
-    const a = classify(d, matches, (id) => { const r = this.db.getRow(id); return r ? { title: r.title, body: r.body } : undefined; }, this.config.governance, { intent: d.intent, target_id: d.target_id });
+    // sob `additive` o agente grava sozinho o que é aditivo: a dica dele (intent/target_id) só pode escalar, nunca rebaixar (ADR 0014)
+    const a = classify(d, matches, (id) => { const r = this.db.getRow(id); return r ? { title: r.title, body: r.body } : undefined; }, this.config.governance, { intent: d.intent, target_id: d.target_id }, { trustHint: this.config.agents.commit_policy !== "additive" });
     if (a.matches.some((m) => m.status === "deprecated") && a.classification === "new") a.warnings.push("há conhecimento depreciado semelhante");
     return a;
   }
@@ -335,7 +386,12 @@ export class Brain {
   }
 
   // ---------- propostas ----------
-  async propose(input: ProposeInput, who: Principal): Promise<Proposal> {
+  /**
+   * Cria uma proposta classificada. Sob `commit_policy: additive` (ADR 0014), quando o autor é um AGENTE, o que é aditivo é
+   * decidido ali mesmo, dentro do mesmo lock e pelo mesmo caminho do `resolve` (autorização, trailers, decided/): `new` → create,
+   * `complement` → complement, `duplicate` → ignore. O resto (update, replace, conflict, tipos "review") fica pendente.
+   */
+  async propose(input: ProposeInput, who: Principal): Promise<ProposeResult> {
     const actor = authorize(who, "propose", { config: this.config });
     // veredito de atualidade e manutenção só vêm do sistema (importador/manutenção): ninguém injeta um "current" ou uma revalidação
     if (input.maintenance && !(actor.kind === "system" && actor.channel === "maintenance")) throw new BrainError("forbidden", "propostas de manutenção só são geradas pelo sistema");
@@ -369,8 +425,32 @@ export class Brain {
       };
       this.proposals.savePending(p);
       this.log(actor, "propose", p.id, { title: p.draft.title, classification: analysis.classification, target });
-      return p;
+      return this.autoResolve(p, actor);
     });
+  }
+
+  /**
+   * Política `additive`: aplica a resolução aditiva de uma proposta de AGENTE recém-criada. Roda DENTRO do `write()` do propose
+   * (o lock não é reentrante: chama `resolveLocked`, não `resolve`). Quem permite ou nega é `authorize(…, "decide", …)`, como em
+   * qualquer decisão: negada (tipo "review", alvo que não é o da análise…), a proposta simplesmente continua na fila. Uma
+   * validação que o `resolve` faz ANTES de escrever (segredo no corpo resultante, colisão de arquivo…) também deixa a proposta na
+   * fila, com aviso para o revisor; falha depois da escrita (git) é propagada, como no `resolve`.
+   */
+  private async autoResolve(p: Proposal, actor: Principal): Promise<ProposeResult> {
+    if (this.config.agents.commit_policy !== "additive" || actor.kind !== "agent") return p;
+    const resolution = ADDITIVE_RESOLUTION[p.analysis.classification];
+    if (!resolution) return p;
+    try {
+      const r = await this.resolveLocked(p, { resolution, ...(resolution === "complement" ? { target_id: p.analysis.target_id } : {}) }, actor, { freshAnalysis: true });
+      return { ...r.proposal, auto: { resolution, ...(r.note ? { note_id: r.note.id } : {}), ...(r.commit ? { commit: r.commit } : {}) } };
+    } catch (e) {
+      if (!(e instanceof BrainError)) throw e;
+      if (e.code === "forbidden") return p;
+      if (!PRE_WRITE_ERRORS.has(e.code)) throw e;
+      p.analysis.warnings.push(`gravação automática (política additive) não aplicada: ${e.message}`);
+      this.proposals.savePending(p);
+      return p;
+    }
   }
 
   /** Substituição explícita pedida por agente/usuário: vira proposta `replace` para revisão. */
@@ -449,7 +529,7 @@ export class Brain {
       const t = this.loadNote(tid);
       if (resolution === "complement") return { before: t.body, after: complementBody(t.body, p, isHistorical(p.freshness)), notes: [] };
       if (p.maintenance) { const same = p.draft.body.trim() === t.body.trim(); return { before: t.body, after: same ? t.body : p.draft.body, notes: [same ? `corpo mantido${p.maintenance.kind === "title" ? `; título: "${t.title}" → "${p.draft.title}"` : "; validade renovada na data do aceite"}` : "corpo substituído pelo rascunho editado"] }; }
-      const m = mergeUpdate(t.body, p.draft.body, `${day()} (${p.proposed_by.name})`);
+      const m = mergeUpdate(t.body, p.draft.body, `${day()} (${p.proposed_by.name})`, { keepHistory: this.config.governance.keep_history_section });
       return { before: t.body, after: m.body, notes: [`${m.replaced} linha(s) substituída(s), ${m.appended} sentença(s) nova(s) anexada(s)`] };
     }
     return { after: p.draft.body, notes: [] };
@@ -458,79 +538,93 @@ export class Brain {
   /** Aplica a decisão do revisor. Única porta de escrita para conhecimento vindo de propostas. */
   async resolve(id: string, input: ResolveInput, who: Principal): Promise<{ proposal: Proposal; note?: Note; commit?: string }> {
     if (!isPrincipal(who)) authorize(who, "decide", { config: this.config }); // falha cedo, antes do lock
-    return this.write(async () => {
-      const p = this.getProposal(id);
-      // a política vale para QUALQUER adapter: quem decide é a identidade (ator + canal), não um parâmetro do chamador
-      const actor = authorize(who, "decide", { config: this.config, proposal: p, resolution: input.resolution });
-      const via = actor.kind === "agent" ? "agent" : "review";
-      if (p.state === "accepted" || p.state === "ignored") throw new BrainError("invalid", "proposta já decidida");
-      if (input.note && scanSecrets(input.note).length) throw new BrainError("secret_detected", "a nota da decisão contém possível segredo");
-      // corpo final escrito à mão é edição do revisor: nunca de agente (complemento/atualização calculados só pelo Core)
-      if (input.final_body !== undefined && !isHumanReviewer(actor)) throw new BrainError("forbidden", "final_body é exclusivo do revisor humano");
-      const r = input.resolution;
-      const tid = input.target_id ?? p.target_id ?? p.analysis.target_id;
-      // conhecimento HISTÓRICO não pode reescrever/substituir conhecimento ATUAL sem o revisor declarar explicitamente que ele é atual
-      // (alvo já histórico/arquivado não tem o que proteger)
-      const targetActive = !!tid && this.db.getRow(tid)?.status === "active";
-      if ((r === "update" || r === "replace") && targetActive && (input.as_historical === true || (isHistorical(p.freshness) && input.as_historical !== false)))
-        throw new BrainError("invalid", `a verificação indica que esta proposta é histórica (${p.freshness?.stale_from ?? p.freshness?.state ?? "histórica"}): use "complementar" (anexa como Histórico) ou "criar" como histórico; para usá-la como estado atual, envie as_historical=false`);
-      const paths: string[] = [];
-      let result: Note | undefined; let msg: string;
-      if (r === "ignore") { msg = `brain: ignore proposal "${p.draft.title}"`; }
-      else {
-        if (["complement", "update", "replace"].includes(r)) {
-          if (!tid) throw new BrainError("invalid", `${r} requer target_id`);
-          const cur = this.db.getRow(tid);
-          if (!cur) throw new BrainError("not_found", `alvo ${tid} não existe`);
-          const expected = tid === p.target_id ? p.target_revision : p.analysis.matches.find((m) => m.id === tid)?.revision;
-          if (expected && expected !== cur.revision) {
-            p.state = "stale"; this.proposals.savePending(p);
-            throw new BrainError("conflict_revision", `"${tid}" mudou desde a análise (${expected} → ${cur.revision}); reanalise a proposta`, { expected, actual: cur.revision });
-          }
-        }
-        switch (r) {
-          case "create": case "keep_separate": {
-            const n = this.buildNote(p, actor, via, input.as_historical ?? isHistorical(p.freshness));
-            if (r === "keep_separate" && tid && this.db.getRow(tid)) n.relations = { related_to: [tid] };
-            paths.push(...this.persistNew(n)); result = n; msg = `brain: add ${n.type} "${n.title}"`; break;
-          }
-          case "complement": case "update": {
-            const t = this.loadNote(tid!);
-            // manutenção não faz merge heurístico: corpo igual = mantém; corpo editado pelo revisor ("Alterar") = substitui o corpo
-            const maint = !!p.maintenance && r === "update";
-            const body = input.final_body ?? (maint ? (p.draft.body.trim() === t.body.trim() ? t.body : p.draft.body) : r === "complement" ? complementBody(t.body, p, input.as_historical ?? isHistorical(p.freshness)) : mergeUpdate(t.body, p.draft.body, `${day()} (${p.proposed_by.name})`).body);
-            this.assertBodySafe(body);
-            const upd: Note = { ...t, body, tags: dedupe([...t.tags, ...p.draft.tags]), updated_at: now(), source: t.source ?? p.draft.source,
-              // manutenção: título melhor (mesmo id/arquivo) e revalidação do conhecimento temporal (nova data de validade)
-              ...(p.maintenance?.kind === "title" && r === "update" ? { title: p.draft.title } : {}),
-              // revalidação confirmada: a validade passa a ser a data do ACEITE (não a da proposta)
-              ...(p.draft.temporal && r === "update" ? { temporal: p.maintenance?.kind === "revalidate" ? { ...p.draft.temporal, as_of: day() } : p.draft.temporal } : {}) };
-            paths.push(...this.persistExisting(t, upd)); result = upd; msg = `brain: ${r} ${t.type} "${t.title}"`; break;
-          }
-          case "replace": {
-            const old = this.loadNote(tid!);
-            const n = this.buildNote(p, actor, via, false);
-            n.project = n.project ?? old.project; n.relations = { supersedes: [old.id] };
-            const upd: Note = { ...old, status: "superseded", updated_at: now(), relations: addRel(old.relations, "superseded_by", n.id) };
-            this.preflight(old, upd); // valida a nota antiga ANTES de gravar a nova (sem efeito parcial)
-            paths.push(...this.persistNew(n), ...this.persistExisting(old, upd));
-            result = n; msg = `brain: replace "${old.title}" with "${n.title}"`; break;
-          }
-          default: throw new BrainError("invalid", `resolução desconhecida: ${r as string}`);
+    return this.write(async () => this.resolveLocked(this.getProposal(id), input, who));
+  }
+
+  /**
+   * Miolo do `resolve`, para quem JÁ está dentro do `write()` (o lock não é reentrante). `freshAnalysis`: a análise de `p` acabou
+   * de ser feita sob a política atual (gravação automática do propose), então não precisa ser refeita para autorizar.
+   */
+  private async resolveLocked(p: Proposal, input: ResolveInput, who: Principal, opts: { freshAnalysis?: boolean } = {}): Promise<{ proposal: Proposal; note?: Note; commit?: string }> {
+    const tid = input.target_id ?? p.target_id ?? p.analysis.target_id;
+    const trow = tid ? this.db.getRow(tid) : undefined;
+    // `additive`: a decisão de um agente é autorizada contra uma classificação SEM confiança na dica, refeita agora. A análise
+    // gravada pode ser de quando o vault confiava na dica (ex.: sob `never`, `intent: complement` mascarava um valor divergente).
+    // Só a autorização usa a reclassificação: a proposta (e a revision registrada, que detecta mudança concorrente) fica intacta.
+    let authzView = p;
+    if (!opts.freshAnalysis && isPrincipal(who) && who.kind === "agent" && this.config.agents.commit_policy === "additive" && (p.state === "pending" || p.state === "stale")) {
+      authzView = { ...p, analysis: await this.analyze({ ...p.draft, intent: p.intent, target_id: p.target_id && this.db.getRow(p.target_id) ? p.target_id : undefined }) };
+    }
+    // a política vale para QUALQUER adapter: quem decide é a identidade (ator + canal), não um parâmetro do chamador
+    const actor = authorize(who, "decide", { config: this.config, proposal: authzView, resolution: input.resolution, ...(trow ? { target: { id: trow.id, type: trow.type } } : {}) });
+    const via = actor.kind === "agent" ? "agent" : "review";
+    if (p.state === "accepted" || p.state === "ignored") throw new BrainError("invalid", "proposta já decidida");
+    if (input.note && scanSecrets(input.note).length) throw new BrainError("secret_detected", "a nota da decisão contém possível segredo");
+    // corpo final escrito à mão é edição do revisor: nunca de agente (complemento/atualização calculados só pelo Core)
+    if (input.final_body !== undefined && !isHumanReviewer(actor)) throw new BrainError("forbidden", "final_body é exclusivo do revisor humano");
+    const r = input.resolution;
+    // conhecimento HISTÓRICO não pode reescrever/substituir conhecimento ATUAL sem o revisor declarar explicitamente que ele é atual
+    // (alvo já histórico/arquivado não tem o que proteger)
+    const targetActive = !!tid && this.db.getRow(tid)?.status === "active";
+    if ((r === "update" || r === "replace") && targetActive && (input.as_historical === true || (isHistorical(p.freshness) && input.as_historical !== false)))
+      throw new BrainError("invalid", `a verificação indica que esta proposta é histórica (${p.freshness?.stale_from ?? p.freshness?.state ?? "histórica"}): use "complementar" (anexa como Histórico) ou "criar" como histórico; para usá-la como estado atual, envie as_historical=false`);
+    const paths: string[] = [];
+    let result: Note | undefined; let msg: string;
+    if (r === "ignore") { msg = `brain: ignore proposal "${p.draft.title}"`; }
+    else {
+      if (["complement", "update", "replace"].includes(r)) {
+        if (!tid) throw new BrainError("invalid", `${r} requer target_id`);
+        const cur = this.db.getRow(tid);
+        if (!cur) throw new BrainError("not_found", `alvo ${tid} não existe`);
+        const expected = tid === p.target_id ? p.target_revision : p.analysis.matches.find((m) => m.id === tid)?.revision;
+        if (expected && expected !== cur.revision) {
+          p.state = "stale"; this.proposals.savePending(p);
+          throw new BrainError("conflict_revision", `"${tid}" mudou desde a análise (${expected} → ${cur.revision}); reanalise a proposta`, { expected, actual: cur.revision });
         }
       }
-      p.state = r === "ignore" ? "ignored" : "accepted";
-      p.decided = { at: now(), by: { kind: actor.kind, name: actor.name }, resolution: r, target_id: tid, result_id: result?.id, note: input.note };
-      paths.push(this.proposals.saveDecided(p));
-      const trailers = `\n\nBrain-Proposal: ${p.id}\nBrain-Proposed-By: ${p.proposed_by.kind}/${p.proposed_by.name}\nBrain-Decided-By: ${actor.kind}/${actor.name}\nBrain-Channel: ${actor.channel}\nBrain-Resolution: ${r}${input.note ? `\nBrain-Note: ${input.note}` : ""}`;
-      // o hash NÃO é regravado no JSON decidido: um commit não pode conter o próprio hash, e regravar deixava o arquivo sujo no
-      // vault depois de toda decisão. A UI obtém o commit pelo git log do arquivo (proposalView).
-      p.decided.commit = await this.commit(paths, msg! + trailers, actor);
-      for (const f of new Set(paths)) if (f.endsWith(".md") && this.vault.fileExists(f)) await this.indexer.indexPath(f);
-      this.log(actor, "resolve", result?.id ?? tid ?? p.id, { proposal: p.id, resolution: r, via, channel: actor.channel, commit: p.decided.commit });
-      if (result) await this.refreshPending(result, p.id);
-      return { proposal: p, note: result, commit: p.decided.commit };
-    });
+      switch (r) {
+        case "create": case "keep_separate": {
+          const n = this.buildNote(p, actor, via, input.as_historical ?? isHistorical(p.freshness));
+          if (r === "keep_separate" && tid && this.db.getRow(tid)) n.relations = { related_to: [tid] };
+          paths.push(...this.persistNew(n)); result = n; msg = `brain: add ${n.type} "${n.title}"`; break;
+        }
+        case "complement": case "update": {
+          const t = this.loadNote(tid!);
+          // manutenção não faz merge heurístico: corpo igual = mantém; corpo editado pelo revisor ("Alterar") = substitui o corpo
+          const maint = !!p.maintenance && r === "update";
+          const body = input.final_body ?? (maint ? (p.draft.body.trim() === t.body.trim() ? t.body : p.draft.body) : r === "complement" ? complementBody(t.body, p, input.as_historical ?? isHistorical(p.freshness)) : mergeUpdate(t.body, p.draft.body, `${day()} (${p.proposed_by.name})`, { keepHistory: this.config.governance.keep_history_section }).body);
+          this.assertBodySafe(body);
+          const upd: Note = { ...t, body, tags: dedupe([...t.tags, ...p.draft.tags]), updated_at: now(), source: t.source ?? p.draft.source,
+            // manutenção: título melhor (mesmo id/arquivo) e revalidação do conhecimento temporal (nova data de validade)
+            ...(p.maintenance?.kind === "title" && r === "update" ? { title: p.draft.title } : {}),
+            // revalidação confirmada: a validade passa a ser a data do ACEITE (não a da proposta)
+            ...(p.draft.temporal && r === "update" ? { temporal: p.maintenance?.kind === "revalidate" ? { ...p.draft.temporal, as_of: day() } : p.draft.temporal } : {}) };
+          paths.push(...this.persistExisting(t, upd)); result = upd; msg = `brain: ${r} ${t.type} "${t.title}"`; break;
+        }
+        case "replace": {
+          const old = this.loadNote(tid!);
+          const n = this.buildNote(p, actor, via, false);
+          n.project = n.project ?? old.project; n.relations = { supersedes: [old.id] };
+          const upd: Note = { ...old, status: "superseded", updated_at: now(), relations: addRel(old.relations, "superseded_by", n.id) };
+          this.preflight(old, upd); // valida a nota antiga ANTES de gravar a nova (sem efeito parcial)
+          paths.push(...this.persistNew(n), ...this.persistExisting(old, upd));
+          result = n; msg = `brain: replace "${old.title}" with "${n.title}"`; break;
+        }
+        default: throw new BrainError("invalid", `resolução desconhecida: ${r as string}`);
+      }
+    }
+    p.state = r === "ignore" ? "ignored" : "accepted";
+    p.decided = { at: now(), by: { kind: actor.kind, name: actor.name }, resolution: r, target_id: tid, result_id: result?.id, note: input.note };
+    paths.push(this.proposals.saveDecided(p));
+    // texto livre (título no assunto, nomes, nota) sempre em uma linha: não pode forjar trailers (ver oneLine)
+    const trailers = `\n\nBrain-Proposal: ${p.id}\nBrain-Proposed-By: ${p.proposed_by.kind}/${oneLine(p.proposed_by.name)}\nBrain-Decided-By: ${actor.kind}/${oneLine(actor.name)}\nBrain-Channel: ${actor.channel}\nBrain-Resolution: ${r}${input.note ? `\nBrain-Note: ${oneLine(input.note)}` : ""}`;
+    // o hash NÃO é regravado no JSON decidido: um commit não pode conter o próprio hash, e regravar deixava o arquivo sujo no
+    // vault depois de toda decisão. A UI obtém o commit pelo git log do arquivo (proposalView).
+    p.decided.commit = await this.commit(paths, oneLine(msg!) + trailers, actor);
+    for (const f of new Set(paths)) if (f.endsWith(".md") && this.vault.fileExists(f)) await this.indexer.indexPath(f);
+    this.log(actor, "resolve", result?.id ?? tid ?? p.id, { proposal: p.id, resolution: r, via, channel: actor.channel, commit: p.decided.commit });
+    if (result) await this.refreshPending(result, p.id);
+    return { proposal: p, note: result, commit: p.decided.commit };
   }
 
   /** Elegível para aprovação em lote: classe new + confiança alta + sem semelhantes. */
@@ -568,7 +662,7 @@ export class Brain {
         this.log(actor, "resolve", n.id, { proposal: p.id, resolution: "create", via: "bulk" });
       }
       } catch (e) { failure = e; } // o que já foi gravado precisa ser commitado/indexado mesmo assim (sem arquivos órfãos)
-      const commit = created.length ? await this.commit(paths, `brain: add ${created.length} note${created.length > 1 ? "s" : ""} (bulk approve)\n\n${created.map((c) => `- ${c.title}`).join("\n")}\n\nBrain-Decided-By: ${actor.kind}/${actor.name}\nBrain-Channel: ${actor.channel}\nBrain-Resolution: create`, actor) : undefined;
+      const commit = created.length ? await this.commit(paths, `brain: add ${created.length} note${created.length > 1 ? "s" : ""} (bulk approve)\n\n${created.map((c) => `- ${oneLine(c.title)}`).join("\n")}\n\nBrain-Decided-By: ${actor.kind}/${oneLine(actor.name)}\nBrain-Channel: ${actor.channel}\nBrain-Resolution: create`, actor) : undefined;
       if (failure) { skipped.push({ id: "(lote)", reason: `interrompido: ${(failure as Error).message}` }); }
       return { created, skipped, commit };
     });
@@ -587,7 +681,7 @@ export class Brain {
         paths.push(this.proposals.saveDecided(p)); n++;
         this.log(actor, "resolve", p.id, { proposal: p.id, resolution: "ignore", via: "bulk" });
       }
-      const commit = n ? await this.commit(paths, `brain: ignore ${n} proposal${n > 1 ? "s" : ""}\n\nBrain-Decided-By: ${actor.kind}/${actor.name}\nBrain-Channel: ${actor.channel}\nBrain-Resolution: ignore${note ? `\nBrain-Note: ${note}` : ""}`, actor) : undefined;
+      const commit = n ? await this.commit(paths, `brain: ignore ${n} proposal${n > 1 ? "s" : ""}\n\nBrain-Decided-By: ${actor.kind}/${oneLine(actor.name)}\nBrain-Channel: ${actor.channel}\nBrain-Resolution: ignore${note ? `\nBrain-Note: ${oneLine(note)}` : ""}`, actor) : undefined;
       return { ignored: n, commit };
     });
   }
@@ -667,7 +761,7 @@ export class Brain {
       const id = opts.id ? this.uniqueIdOrFail(opts.id) : this.idFor(d);
       const n: Note = { id, title: d.title.trim(), type: d.type, status: "active", project: d.project, tags: dedupe(d.tags ?? []), created_at: now(), updated_at: now(), source: d.source ?? { type: "manual" }, confidence: d.confidence, ...(d.temporal ? { temporal: d.temporal } : {}), created_by: { kind: actor.kind, name: actor.name }, relations: opts.relations ?? {}, body: d.body.trim() + "\n", path: "", revision: "" };
       const paths = this.persistNew(n);
-      const commit = await this.commit(paths, `brain: add ${n.type} "${n.title}"\n\nBrain-Actor: ${actor.kind}/${actor.name}`, actor);
+      const commit = await this.commit(paths, `brain: add ${n.type} "${oneLine(n.title)}"\n\nBrain-Actor: ${actor.kind}/${oneLine(actor.name)}`, actor);
       const saved = await this.indexer.indexPath(n.path);
       this.log(actor, "create", n.id, { commit });
       return saved;
@@ -694,7 +788,7 @@ export class Brain {
       if (patch.project === "") next.project = undefined;
       this.assertBodySafe(`${next.title}\n${next.body}`);
       const paths = this.persistExisting(cur, next);
-      const commit = await this.commit(paths, `brain: update ${next.type} "${next.title}"${patch.reason ? `\n\n${patch.reason}` : ""}\n\nBrain-Actor: ${actor.kind}/${actor.name}`, actor);
+      const commit = await this.commit(paths, `brain: update ${next.type} "${oneLine(next.title)}"${patch.reason ? `\n\n${patch.reason}` : ""}\n\nBrain-Actor: ${actor.kind}/${oneLine(actor.name)}`, actor);
       const saved = await this.indexer.indexPath(next.path);
       if (cur.path !== next.path) this.db.db.prepare("DELETE FROM notes WHERE path=? AND id!=?").run(cur.path, id);
       this.log(actor, "update", id, { commit, status: patch.status });
@@ -722,7 +816,8 @@ export class Brain {
       this.preflight(a, next); if (other) this.preflight(other.b, other.nb); // nada é gravado se qualquer lado falhar
       const paths = this.persistExisting(a, next);
       if (other) paths.push(...this.persistExisting(other.b, other.nb));
-      const commit = await this.commit(paths, `brain: link ${src} ${type} ${dst}\n\nBrain-Actor: ${actor.kind}/${actor.name}`, actor);
+      // o desfazer captura acha este commit pelo autor + primeiro `Brain-Actor` do bloco final: nenhum texto livre em várias linhas
+      const commit = await this.commit(paths, `${oneLine(`brain: link ${src} ${type} ${dst}`)}\n\nBrain-Actor: ${actor.kind}/${oneLine(actor.name)}`, actor);
       for (const p of paths) await this.indexer.indexPath(p);
       this.log(actor, "link", src, { dst, type, commit });
       return this.loadNote(src);
@@ -779,9 +874,85 @@ export class Brain {
     return this.write(async () => { const c = await this.git.revert(rev); await this.indexer.sync({ force: true }); this.log(actor, "git_revert", null, { rev, commit: c }); return c; });
   }
 
+  /**
+   * Desfaz uma captura do assistente: reverte (do mais novo para o mais antigo, como uma operação só) os commits das decisões
+   * automáticas do agente da captura, achados pelo trailer `Brain-Decided-By: agent/assistant/<id>` que o `resolve` grava, e
+   * as relações que ele criou com `brain_link` (trailer `Brain-Actor: agent/assistant/<id>`), e marca a entrada como `desfeita`. O humano do desktop (canal `desktop`) só desfaz capturas feitas pelo desktop; o revisor,
+   * qualquer uma. Propostas da captura que ficaram na fila NÃO são apagadas aqui (seguem para a revisão). Se uma nota foi
+   * alterada depois da captura, nada é revertido e a captura continua como estava.
+   */
+  async undoCapture(captureId: string, who: Principal): Promise<{ reverted: string[] }> {
+    const actor = authorize(who, "assist", { config: this.config });
+    if (typeof captureId !== "string" || !CAPTURE_ID.test(captureId)) throw new BrainError("not_found", `captura ${String(captureId)} não existe`);
+    const captures = new CaptureLog(this);
+    return this.write(async () => {
+      const entry = captures.get(captureId);
+      if (!entry) throw new BrainError("not_found", `captura ${captureId} não existe`);
+      if (actor.channel === "desktop" && entry.origin !== "desktop") throw new BrainError("forbidden", "o atalho desktop só desfaz capturas feitas pelo desktop; esta veio da UI (desfaça pela revisão)");
+      if (entry.state === "desfeita") return { reverted: [] };
+      // `pendente` = o motor ainda pode estar gravando (ou vai reprocessar): reverter agora disputaria com ele
+      if (entry.state === "pendente") throw new BrainError("locked", "captura ainda em processamento; tente de novo em instantes");
+      // sem commits automáticos não há o que reverter, e marcar `desfeita` mentiria: as notas continuariam no vault
+      if (!this.config.git.auto_commit) throw new BrainError("invalid", "desfazer captura exige git.auto_commit ligado (o desfazer reverte os commits da captura)");
+      // só commits cujo AUTOR é o agente da captura (o `commit()` grava o nome do principal cunhado como autor) e cujo trailer
+      // verdadeiro (o primeiro do bloco final) é o dele; texto livre na mensagem não basta
+      const agent = `assistant/${captureId}`;
+      // decisões automáticas (`Brain-Decided-By`) e relações criadas com brain_link (`Brain-Actor`): um só log, do mais novo ao mais antigo
+      const commits = await this.git.commitsByTrailer([["Brain-Decided-By", `agent/${agent}`], ["Brain-Actor", `agent/${agent}`]], agent);
+      try { await this.git.revertAll(commits); }
+      catch (e) {
+        const conflicted = ((e as BrainError).details as { conflicted?: string[] } | undefined)?.conflicted ?? [];
+        if (!conflicted.length) throw new BrainError("git_error", `não foi possível desfazer a captura ${captureId}: ${(e as Error).message}`);
+        const names = conflicted.map((p) => (p.startsWith("knowledge/") && p.endsWith(".md") ? p.slice(p.lastIndexOf("/") + 1, -3) : p));
+        throw new BrainError("conflict_revision", names.length > 1
+          ? `as notas ${names.join(", ")} foram alteradas depois; desfaça pela revisão`
+          : `a nota ${names[0]} foi alterada depois; desfaça pela revisão`, { conflicted });
+      }
+      if (commits.length) await this.indexer.sync({ force: true });
+      await captures.markLocked(captureId, "desfeita");
+      this.log(actor, "capture_undo", null, { capture: captureId, reverted: commits, channel: actor.channel });
+      return { reverted: commits };
+    });
+  }
+
   async reindex(force = true) { const r = await this.indexer.sync({ force }); this.log(this.defaultActor, "reindex", null, { ...counts(r) }); return r; }
 
   // ---------- visões agregadas ----------
+  /**
+   * Cópias de conflito do OneDrive: `<base>-<SUFIXO>.md` ao lado de `<base>.md` (sufixo só de dígitos é colisão de id, não
+   * conflito). Um id que estende outro (`fact-timeout-do-lote-noturno` ao lado de `fact-timeout-do-lote`) é nota legítima: só é
+   * acusada (a) a cópia com o MESMO `id` no frontmatter que a original (é o que o OneDrive copia), ou (b) o arquivo cujo nome
+   * não é o próprio id e cujo sufixo tem letra maiúscula (nome de máquina; um id válido nunca tem maiúscula).
+   */
+  private syncConflictCopies(): Array<{ kind: "sync_conflict_copy"; path: string; original: string; message: string }> {
+    const files = this.vault.listFiles();
+    const byLower = new Map(files.map((f) => [f.toLowerCase(), f]));
+    const ids = new Map<string, string | undefined>();
+    const idOf = (path: string) => {
+      if (!ids.has(path)) { let id: string | undefined; try { id = frontmatterId(this.vault.readRaw(path)); } catch { /* sumiu */ } ids.set(path, id); }
+      return ids.get(path);
+    };
+    const out: Array<{ kind: "sync_conflict_copy"; path: string; original: string; message: string }> = [];
+    for (const path of files) {
+      const slash = path.lastIndexOf("/");
+      const dir = path.slice(0, slash + 1);
+      const name = path.slice(slash + 1, -3);
+      for (let i = name.lastIndexOf("-"); i > 0; i = name.lastIndexOf("-", i - 1)) {
+        const suffix = name.slice(i + 1);
+        if (!/^[A-Za-z0-9_-]{2,40}$/.test(suffix) || /^[0-9]+$/.test(suffix)) continue;
+        const original = byLower.get(`${dir}${name.slice(0, i)}.md`.toLowerCase());
+        if (!original) continue;
+        const own = idOf(path);
+        const sameId = own !== undefined && own === idOf(original);
+        const machine = own !== name && /[A-Z]/.test(suffix);
+        if (!sameId && !machine) continue;
+        out.push({ kind: "sync_conflict_copy", path, original, message: `cópia de conflito do OneDrive: junte em ${original} (proponha um complemento)` });
+        break;
+      }
+    }
+    return out;
+  }
+
   async health() {
     await this.sync({ maxAgeMs: 1000 });
     const total = (this.db.db.prepare("SELECT COUNT(*) n FROM notes").get() as { n: number }).n;
@@ -791,13 +962,14 @@ export class Brain {
     const dupes = this.db.db.prepare("SELECT path,id FROM dupes").all() as Array<{ path: string; id: string }>;
     const repo = await this.git.isRepo();
     const dirty = repo ? await this.git.dirty("knowledge") : [];
+    const conflictCopies = this.syncConflictCopies();
     return {
       vault: this.vault.root, git: { repo, head: repo ? await this.git.head() : undefined, dirty_files: dirty.length, auto_commit: this.config.git.auto_commit },
       index: { notes: total, db: this.vault.dbPath, schema: this.db.getMeta("schema_version") },
       embeddings: { provider: this._embedder.id, external: this._embedder.external, covered: withEmb, total, ok: withEmb >= total },
       search: { fts5: true, semantic: withEmb > 0 },
-      problems: { notes_with_issues: issues.length, dangling_links: dangling.length, duplicate_ids: dupes.length },
-      details: { issues: issues.slice(0, 50), dangling: dangling.slice(0, 50), duplicate_ids: dupes },
+      problems: { notes_with_issues: issues.length, dangling_links: dangling.length, duplicate_ids: dupes.length, sync_conflict_copies: conflictCopies.length },
+      details: { issues: issues.slice(0, 50), dangling: dangling.slice(0, 50), duplicate_ids: dupes, sync_conflict_copies: conflictCopies.slice(0, 50) },
       pending_proposals: this.proposals.list("pending").length,
       ok: repo && dupes.length === 0,
     };
@@ -837,7 +1009,7 @@ export class Brain {
   private async healthSummary() {
     const h = await this.health();
     const p = h.problems;
-    return { ok: h.ok && p.notes_with_issues + p.dangling_links + p.duplicate_ids === 0, git_dirty: h.git.dirty_files, embeddings_ok: h.embeddings.ok, problems: p, provider: h.embeddings.provider };
+    return { ok: h.ok && p.notes_with_issues + p.dangling_links + p.duplicate_ids + p.sync_conflict_copies === 0, git_dirty: h.git.dirty_files, embeddings_ok: h.embeddings.ok, problems: p, provider: h.embeddings.provider };
   }
 
   timeline(opts: { limit?: number; since?: string; actor?: string } = {}) {
@@ -967,6 +1139,12 @@ function deepMerge(a: Record<string, unknown>, b: Record<string, unknown>): Reco
   return out;
 }
 function dedupe(a: string[]): string[] { return [...new Set(a.map((x) => x.trim()).filter(Boolean))]; }
+/** `id:` do frontmatter (sem parse completo: basta para comparar cópias), ou undefined. */
+function frontmatterId(raw: string): string | undefined {
+  const fm = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1];
+  const id = fm && /^id:[ \t]*(.*?)[ \t]*$/m.exec(fm)?.[1]?.replace(/^(["'])(.*)\1$/, "$2");
+  return id || undefined;
+}
 function omitUndef<T extends object>(o: T): Partial<T> { return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>; }
 function addRel(r: Note["relations"], t: RelationType, id: string): Note["relations"] { return { ...r, [t]: [...new Set([...(r[t] ?? []), id])] }; }
 function counts(r: SyncResult) { return { added: r.added.length, changed: r.changed.length, removed: r.removed.length }; }

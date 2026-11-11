@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { Brain } from "@brain/core";
+import { BRAIN_TOOLS, Brain } from "@brain/core";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const human = await terminalHuman("t");
@@ -14,9 +14,9 @@ const BIN = fileURLToPath(new URL("../../cli/dist/bin.js", import.meta.url));
 let dir: string; let vault: string;
 const clients: Client[] = [];
 
-async function connect(name: string): Promise<Client> {
+async function connect(name: string, at = vault): Promise<Client> {
   const c = new Client({ name, version: "1.0.0" });
-  await c.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, "mcp"], env: { ...(process.env as Record<string, string>), BRAIN_VAULT: vault } }));
+  await c.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, "mcp"], env: { ...(process.env as Record<string, string>), BRAIN_VAULT: at } }));
   clients.push(c);
   return c;
 }
@@ -42,6 +42,8 @@ describe("MCP stdio (Claude Code e Codex compartilhando o mesmo cérebro)", () =
     const c = await connect("claude-code");
     const names = (await c.listTools()).tools.map((t) => t.name).sort();
     expect(names).toEqual(["brain_amend", "brain_commit", "brain_context", "brain_get", "brain_health", "brain_link", "brain_projects", "brain_propose", "brain_recent", "brain_search", "brain_similar", "brain_supersede"]);
+    // o motor de assistente nega tudo o que não libera a partir desta lista: ferramenta nova precisa entrar nela
+    expect(names).toEqual([...BRAIN_TOOLS].sort());
   });
 
   it("dois clientes enxergam a mesma base e propostas um do outro", async () => {
@@ -121,5 +123,25 @@ describe("MCP stdio (Claude Code e Codex compartilhando o mesmo cérebro)", () =
     expect(s1.data.some((x: { id: string }) => x.id === old.id)).toBe(false);
     const s2 = await call(c, "brain_search", { query: "outbox Redis notificações", project: "promo-watcher", include_inactive: true });
     expect(s2.data.find((x: { id: string }) => x.id === old.id)?.status).toBe("superseded");
+  });
+});
+
+describe("MCP com a política additive (ADR 0014)", () => {
+  it("brain_propose grava direto o que é aditivo e devolve auto; o resto segue na fila", async () => {
+    const av = join(dir, "vault-additive");
+    const b = await Brain.init(av);
+    await b.updateConfig({ agents: { commit_policy: "additive" } }, human);
+    const n = await b.createNote({ title: "Timeout do lote", type: "fact", project: "pagamentos-demo", body: "Timeout do lote é 30 s." }, human);
+    b.close();
+    const c = await connect("claude-code", av);
+    const created = await call(c, "brain_propose", { title: "Observação inédita sobre zebras", type: "learning", body: "Zebras listradas confundem moscas hematófagas com o padrão das listras." });
+    expect(created.isError).toBeFalsy();
+    expect(created.data.auto.resolution).toBe("create");
+    expect(created.data.auto.note_id).toBeTruthy();
+    expect(created.data.next).toContain("gravado direto (política additive)");
+    const queued = await call(c, "brain_propose", { title: "Timeout do lote", type: "fact", project: "pagamentos-demo", body: "Timeout do lote é 60 s.", intent: "complement", target_id: n.id });
+    expect(queued.data.auto).toBeUndefined();
+    expect(queued.data.classification).toBe("update");
+    expect(queued.data.next).toContain("Aguardando revisão humana");
   });
 });

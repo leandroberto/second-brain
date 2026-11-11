@@ -7,8 +7,7 @@ import { Brain, coreDoctor, hasReviewerPassphrase, integrationChecks, type Check
 
 const c = (id: string, name: string, status: Check["status"], detail: string, fix?: string): Check => ({ id, name, status, detail, ...(fix ? { fix } : {}) });
 
-async function apiCheck(vault: string, port: number, repoRoot: string): Promise<Check[]> {
-  const tokenFile = join(vault, ".brain", "api-token");
+async function apiCheck(vault: string, port: number, repoRoot: string, tokenFile: string): Promise<Check[]> {
   try {
     const r = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: { authorization: `Bearer ${existsSync(tokenFile) ? readFileSync(tokenFile, "utf8").trim() : ""}` }, signal: AbortSignal.timeout(2500) });
     if (r.status === 401) return [c("api", "API local", "warn", `porta ${port} responde mas recusou o token (outro vault/processo?)`, `brain serve --vault ${vault}`)];
@@ -42,8 +41,9 @@ export async function runDoctor(vault: string, repoRoot: string, port: number): 
   const checks: Check[] = [];
   if (!existsSync(join(vault, ".brain", "config.yaml"))) return [c("vault", "Vault", "fail", `não encontrado em ${vault}`, "brain init")];
   const b = await Brain.open(vault);
+  const tokenFile = b.vault.tokenPath;
   try { checks.push(...(await coreDoctor(b))); } finally { b.close(); }
-  checks.push(...(await apiCheck(vault, port, repoRoot)));
+  checks.push(...(await apiCheck(vault, port, repoRoot, tokenFile)));
   // governança: quem pode decidir e quão forte é a prova de "humano"
   {
     const bb = await Brain.open(vault); const ag = bb.config.agents; bb.close();

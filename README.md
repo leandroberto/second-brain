@@ -55,7 +55,9 @@ Política em `~/.codex/AGENTS.md` (bloco gerenciado) e skill em `~/.agents/skill
 
 ## Windows + WSL
 
-Core/API/MCP/Git/SQLite no WSL; navegador do Windows acessa `http://localhost:3737` (validado do PowerShell). A GUI nunca toca arquivos do WSL. `scripts/windows/second-brain.cmd` inicia tudo e abre o navegador.
+Core/API/MCP/Git/SQLite no WSL; navegador do Windows acessa `http://localhost:3737` (validado do PowerShell). A GUI nunca toca arquivos do WSL. `scripts/windows/second-brain.cmd` inicia tudo e abre o navegador: usa a distro padrão do WSL (ou `SECOND_BRAIN_DISTRO`) e o clone em `~/projetos/second-brain` (ou `SECOND_BRAIN_REPO`).
+
+Vault em pasta sincronizada (OneDrive, Dropbox…) com o motor no WSL: [`docs/vault-sincronizado.md`](docs/vault-sincronizado.md).
 
 ## Comandos
 
@@ -84,7 +86,7 @@ packages/shared  tipos/schemas        packages/mcp  adaptador MCP (stdio)
 packages/core    regra de negócio     packages/api  adaptador HTTP/SSE + serve a UI
 packages/cli     comando `brain`      apps/web      React + Vite (só fala com a API)
 templates/       AGENTS.md, SKILL.md, README do vault (copiados no `brain init`)
-docs/            architecture · knowledge-model · mcp · windows-wsl · gui · backup · FUTURE · decisions/ (ADRs)
+docs/            architecture · knowledge-model · mcp · windows-wsl · vault-sincronizado · gui · backup · FUTURE · decisions/ (ADRs)
 e2e/             testes de browser (Playwright)      scripts/  start/dev/backup/windows/systemd
 ```
 
