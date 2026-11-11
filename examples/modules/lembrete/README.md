@@ -11,6 +11,9 @@ com recuperação, estado próprio, ferramenta MCP, aviso e contador, e uso opci
 - `GET /api/modules/lembrete/itens` lista os lembretes. `POST /api/modules/lembrete/itens/:id/feito` marca como feito e só
   aceita humano (`humano: true`).
 - Ferramenta MCP `lembrete_listar`.
+- IA opcional, **desligada por padrão**. Com `config: { ia: true }`, a tarefa usa a assinatura do `claude` da máquina uma vez
+  por dia para escrever o corpo do aviso (os valores em US$ são estimativa; o teto diário é `ia_max_usd_dia`). Se a IA falhar,
+  o aviso sai sem corpo.
 - Aba "Lembretes": lista os itens e tem o botão "feito" (`ui/index.html` + `ui/app.js`, JS puro, sem bundler).
 
 ## Instalar

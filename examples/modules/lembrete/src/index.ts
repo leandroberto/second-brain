@@ -8,6 +8,8 @@ const ARQUIVO = "itens.json";
 
 const configSchema = z.object({
   horario: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "horario deve estar no formato HH:MM"),
+  /** desligado por padrão: ligado, a tarefa usa a assinatura do Claude uma vez por dia para escrever o corpo do aviso */
+  ia: z.boolean().default(false),
 });
 
 /** AAAA-MM-DD no fuso da máquina: é o "dia" da ocorrência, a chave de idempotência da tarefa. */
@@ -64,7 +66,8 @@ export default defineModule({
         const id = `dia-${dia}`;
         const { itens, criou } = await ctx.estado.lock(ARQUIVO, async () => {
           const atuais = ctx.estado.lerJson<Item[]>(ARQUIVO) ?? [];
-          // idempotente por ocorrência: rodar de novo para o mesmo dia não cria nem avisa de novo
+          // idempotente por ocorrência (o item gravado é a prova): rodar de novo para o mesmo dia não cria nem avisa de novo.
+          // Se o processo cair entre gravar o item e `avisar`, a reexecução não reavisa: a ocorrência já foi atendida ao começar
           if (atuais.some((i) => i.id === id)) return { itens: atuais, criou: false };
           const horario = (ctx.config as z.infer<typeof configSchema>).horario;
           const proximos = [...atuais, { id, dia, texto: `Lembrete de ${dia} (${horario})`, feito: false, criado: new Date().toISOString() }];
@@ -72,9 +75,12 @@ export default defineModule({
           return { itens: proximos, criou: true };
         });
         if (criou) {
-          // IA é opcional: sem motor, sem login do Claude ou acima do teto diário, o aviso sai sem corpo
-          const ia = await ctx.ia.completar({ prompt: `Escreva uma frase curta de incentivo para o dia ${dia}.`, timeoutS: 30 });
-          const corpo = ia.ok && typeof ia.dados === "string" ? ia.dados : undefined;
+          // IA só com `config.ia === true`; se falhar (sem motor, sem login, acima do teto diário), o aviso sai sem corpo
+          let corpo: string | undefined;
+          if ((ctx.config as z.infer<typeof configSchema>).ia === true) {
+            const ia = await ctx.ia.completar({ prompt: `Escreva uma frase curta de incentivo para o dia ${dia}.`, timeoutS: 30 });
+            corpo = ia.ok && typeof ia.dados === "string" ? ia.dados : undefined;
+          }
           await ctx.avisar({ titulo: "Lembrete do dia", corpo, link: `item/${id}`, chave: `dia-${dia}` });
         }
         ctx.badge(pendentes(itens));

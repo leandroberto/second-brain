@@ -130,7 +130,7 @@ devolve `{ ok: false, erro }` para um item inexistente).
 | Sessão humana da UI | todas, exceto `_mcp` | `{ via: "ui", humano: true }` |
 | Token de página (emitido só para sessão humana) | só as rotas do próprio módulo, exceto `ui-token`, `_mcp` e `_tarefas` | `{ via: "pagina", humano: true }` |
 | api-token do vault (agentes, scripts, processo MCP) | só `POST .../_mcp/<ferramenta>` e `GET /api/modules` | `{ via: "mcp", humano: false }` |
-| Credencial do desktop | nenhuma (só avisos e assistente) | n/a |
+| Credencial do desktop | nenhuma rota de módulo (só o assistente, `GET /api/health`, `GET /api/notifications` e `POST /api/notifications/<id>/visto`) | n/a |
 
 "api-token" é sempre o token **local** do second-brain (`<stateDir>/api-token`), usado por processos da máquina para falar com
 o `serve`. Não tem relação com a Anthropic.
@@ -256,7 +256,9 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
   freio de consumo da cota, não como cobrança.
 - Há um teto por chamada (`assistant.max_budget_usd`) e um **teto diário por módulo**, `modules.<id>.ia_max_usd_dia` (padrão
   2). Acima dele a chamada volta `{ ok: false, tipo: "orcamento" }`. O gasto do dia aparece em Saúde.
-- Trate a IA como opcional: sem motor, sem login ou acima do teto, `ok` é `false`. O `lembrete` só deixa o aviso sem corpo.
+- Trate a IA como opcional: sem motor, sem login ou acima do teto, `ok` é `false`. O `lembrete` a deixa **desligada por padrão**
+  (`config: { ia: true }` a liga): ligada, usa a assinatura do `claude` uma vez por dia, e se falhar o aviso sai sem corpo. Gaste a
+  cota do dono só com o que ele ligou.
 
 ## Ferramentas MCP
 
@@ -298,23 +300,24 @@ módulo no vault e a cada mudança de contrato.
 
 ## Distribuir o SDK
 
-O `@brain/module-sdk` não está publicado. O módulo de fora o usa só para os tipos e `defineModule`, e há duas formas de trazê-lo:
+O `@brain/module-sdk` não está publicado. O módulo de fora o usa só para os tipos e `defineModule`. Três formas de trazê-lo, nesta
+ordem de preferência:
 
-- **Dependência git com subcaminho** (o pacote mora em `packages/module-sdk` deste repositório):
+1. **`file:` para um clone local** do second-brain. Rode `pnpm install && pnpm build` no clone antes, para existir o `dist/`:
 
-  ```json
-  { "dependencies": { "@brain/module-sdk": "git+https://<repositório do second-brain>.git#path:/packages/module-sdk" } }
-  ```
+   ```json
+   { "dependencies": { "@brain/module-sdk": "file:../second-brain/packages/module-sdk" } }
+   ```
 
-  O `dist/` não é versionado e o pacote não tem script de build no `install`. Depois do `install`, gere o `dist/` do SDK
-  (`pnpm build` na pasta instalada) ou use uma tag que o inclua. Sem `dist/`, o TypeScript não acha os tipos.
-- **`file:` para um clone local**:
+2. **Dependência git com subcaminho**, só a partir de uma tag ou commit que inclua o `dist/` já gerado. A sintaxe `#path:` é do
+   pnpm (o npm não a entende). O `dist/` não é versionado neste repositório e o pacote não compila sozinho fora do clone (o
+   `tsconfig` estende o `tsconfig.base.json` da raiz e não há `typescript` nas dependências dele), então sem esse `dist/`
+   o TypeScript não acha os tipos:
 
-  ```json
-  { "dependencies": { "@brain/module-sdk": "file:../second-brain/packages/module-sdk" } }
-  ```
+   ```json
+   { "dependencies": { "@brain/module-sdk": "git+https://<repositório do second-brain>.git#<tag>&path:/packages/module-sdk" } }
+   ```
 
-  Rode `pnpm build` no clone antes.
+3. **Copiar os tipos** para o módulo. O SDK quase não tem runtime (só `SDK_VERSION` e `defineModule`), então é aceitável.
 
-Como o SDK quase não tem código de runtime, copiar os tipos para o módulo também é aceitável. Dentro deste repositório, o
-exemplo usa `workspace:*`.
+Dentro deste repositório, o exemplo usa `workspace:*`.

@@ -45,7 +45,7 @@ roda na própria máquina.
 | Sessão humana da UI | todas, fora de `_mcp` | `{ via: "ui", humano: true }` |
 | Token de página (só sessão humana `full`) | só `/api/modules/<id>/*` do próprio módulo, fora de `ui-token`, `_mcp` e `_tarefas` | `{ via: "pagina", humano: true }` |
 | api-token do vault (agentes, MCP) | só `_mcp` e `GET /api/modules` | `{ via: "mcp", humano: false }` |
-| Credencial do desktop | nenhuma (só avisos) | — |
+| Credencial do desktop | nenhuma rota de módulo (só o assistente, `GET /api/health`, `GET /api/notifications` e `POST /api/notifications/<id>/visto`) | — |
 
 `chamador.humano` é a única prova de humano que o módulo deve usar. Rotas com `humano: true` recusam (403) quem não é
 humano antes de chamar o handler. O `_mcp` não repassa nome de agente por cabeçalho: `chamador` traz só `via: "mcp"`.

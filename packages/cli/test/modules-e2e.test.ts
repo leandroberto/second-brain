@@ -118,3 +118,31 @@ describe("módulo de exemplo lembrete, ponta a ponta", () => {
     expect(app.status).toBe(200);
   });
 });
+
+describe("lembrete: IA opcional", () => {
+  // a tarefa isolada, com um ctx falso que conta as chamadas à IA
+  const rodar = async (config: unknown) => {
+    const mod = (await import(resolve(LEMBRETE, "dist/index.js"))).default;
+    let chamadas = 0; const avisosGravados: Array<{ corpo?: string }> = []; let gravado: unknown;
+    const ctx = {
+      config, ocorrencia: new Date(2026, 10, 11, 10), sinal: new AbortController().signal,
+      estado: { lerJson: () => gravado, gravarJson: (_n: string, v: unknown) => { gravado = v; }, lock: <T>(_n: string, fn: () => Promise<T>) => fn() },
+      ia: { completar: async () => { chamadas++; return { ok: true, dados: "vamos" }; } },
+      avisar: async (a: { corpo?: string }) => { avisosGravados.push(a); }, badge: () => {},
+    };
+    await mod.tarefas[0].rodar(ctx);
+    return { chamadas, avisosGravados };
+  };
+  it("sem ia: true o motor não é chamado", async () => {
+    for (const config of [{ horario: "10:00" }, { horario: "10:00", ia: false }]) {
+      const r = await rodar(config);
+      expect(r.chamadas).toBe(0);
+      expect(r.avisosGravados[0]?.corpo).toBeUndefined();
+    }
+  });
+  it("com ia: true o corpo do aviso vem da IA", async () => {
+    const r = await rodar({ horario: "10:00", ia: true });
+    expect(r.chamadas).toBe(1);
+    expect(r.avisosGravados[0]?.corpo).toBe("vamos");
+  });
+});
