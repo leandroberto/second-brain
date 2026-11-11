@@ -288,8 +288,9 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
 - Erro no `import()` ou no `iniciar()`: o módulo fica `falho` com a causa, o `serve` sobe e os outros módulos funcionam.
 - Erro em rota, tarefa ou ferramenta: capturado e registrado (os últimos 50 por módulo); o módulo continua ativo.
 - Limite da abordagem: um **laço síncrono infinito** ou um **`process.exit`** no módulo derrubam o `serve`. Evite os dois.
-- Saúde (UI) e `brain doctor` mostram, por módulo: status, versão, tarefas (próxima e última execução), erros recentes e gasto de
-  IA do dia. `brain modules list` mostra o mesmo no terminal.
+- Saúde (UI) e `brain doctor` mostram, por módulo: status, versão, `sdk`, pasta, tarefas (próxima e última execução), erros
+  recentes e gasto de IA do dia. `brain modules list` mostra o resumo no terminal (status, versão, gasto de IA, tarefas e
+  erros).
 
 ## Verificar: `brain modules check`
 

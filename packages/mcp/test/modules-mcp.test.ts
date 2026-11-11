@@ -133,7 +133,7 @@ describe("ferramentas MCP de módulo", () => {
     const b = await Brain.open(vault);
     const avisos = new AvisosStore(root);
     const registry = await loadModules(b, { modo: "serve", deps: { avisos } });
-    const api: ApiHandle = await startApi(b, { port: 0, sessions: { file: join(dir, "sessions.json") }, modules: { registry, avisos } });
+    const api: ApiHandle = await startApi(b, { port: 0, sessions: { file: join(dir, "sessions.json") }, modules: { registry, avisos, root } });
     writeServeInfo(root, { url: api.url, pid: process.pid, iniciado: new Date().toISOString() });
     try {
       const c = await connect();

@@ -32,7 +32,7 @@ beforeAll(async () => {
   avisos = new AvisosStore(root);
   registry = await loadModules(brain, { modo: "serve", deps: { avisos } });
   const scheduler = new Scheduler(registry, root);
-  api = await startApi(brain, { port: 0, sessions: sessions(), modules: { registry, scheduler, avisos } });
+  api = await startApi(brain, { port: 0, sessions: sessions(), modules: { registry, scheduler, avisos, root } });
   semModulos = await startApi(brain, { port: 0, sessions: sessions() });
   const proof = await terminalHuman("alice", sessions());
   uiToken = issueHumanSession(brain.vault.root, proof, sessions());
@@ -165,6 +165,21 @@ describe("rotas de módulo", () => {
     expect(por.lanca.causa).toContain("iniciar falhou");
     expect(por.sumido).toMatchObject({ id: "sumido", nome: "sumido", status: "ausente", aba: false });
     okCtx().badge(0);
+  });
+
+  it("GET /api/modules traz sdk, pasta e o gasto de IA do dia (Saúde, §7.13)", async () => {
+    const d = new Date(); const hoje = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    writeFileSync(join(modulesStateRoot(brain), "_ia.json"), JSON.stringify({ ok: { [hoje]: 0.37, "2000-01-01": 9 } }));
+    try {
+      for (const t of [uiToken, api.token]) {
+        const b = await (await call(t, "GET", "/api/modules")).json() as any;
+        const por = Object.fromEntries(b.modulos.map((m: any) => [m.id, m]));
+        expect(por.ok).toMatchObject({ sdk: 1, pasta: join(FIX, "ok"), iaHojeUsd: 0.37 });
+        expect(por.lanca).toMatchObject({ pasta: join(FIX, "lanca"), iaHojeUsd: 0 });
+        expect(por.sumido).toMatchObject({ pasta: join(FIX, "nao-existe"), iaHojeUsd: 0 });
+        expect(por.sumido.sdk).toBeUndefined();
+      }
+    } finally { rmSync(join(modulesStateRoot(brain), "_ia.json"), { force: true }); }
   });
 
   it("GET /api/modules traz os 10 erros mais recentes, truncados e sem possível segredo", async () => {

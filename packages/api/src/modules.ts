@@ -3,13 +3,15 @@ import { createHash, randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { MODULE_ID_RE, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
+import { MODULE_ID_RE, gastoIaDoDia, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
 import type { Chamador, Rota } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 
 /** Peças de módulos que o `serve` entrega à API (spec de módulos §7.6, §7.8, §7.9). */
 export interface ModulesApiOptions {
   registry: ModuleRegistry; scheduler?: Scheduler; avisos: AvisosStore;
+  /** raiz do estado dos módulos (`modulesStateRoot`): de onde sai o gasto de IA do dia (`_ia.json`) */
+  root: string;
   /** `true` quando o bloco `modules` do `config.yaml` em disco mudou desde a subida (o `serve` precisa reiniciar) */
   reiniciar?: () => boolean;
 }
@@ -224,10 +226,15 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
   throw new BrainError("not_found", `rota ${metodo} ${caminho}`);
 }
 
+/**
+ * Item de `GET /api/modules` (Saúde, §7.13). `pasta` é o caminho local do módulo: a rota só responde à sessão humana e ao
+ * api-token (processos da própria máquina), nunca à página nem ao desktop.
+ */
 function resumo(o: ModulesApiOptions, m: LoadedModule, badge: number) {
   return {
     id: m.id, nome: m.def?.nome ?? m.id, icone: m.def?.icone, aba: !!m.def?.aba,
-    badge, status: m.status, causa: m.causa, versao: m.versao,
+    badge, status: m.status, causa: m.causa, versao: m.versao, sdk: m.def?.sdk, pasta: m.dir,
+    iaHojeUsd: gastoIaDoDia(o.root, m.id),
     tarefas: o.scheduler?.status(m.id) ?? [],
     // os 10 mais recentes, em ordem cronológica (o último é o mais novo)
     erros: o.registry.errosRecentes(m.id, 10),

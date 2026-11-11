@@ -319,6 +319,9 @@ describe("doctor: erros recentes dos módulos", () => {
     const ok = checks.find((c) => c.id === "module-ok")!;
     expect(ok.status).toBe("warn");
     expect(ok.detail).toContain("tarefa:diaria: o serve caiu enquanto ok executava tarefa:diaria");
+    // §7.13: sdk, pasta e gasto de IA do dia também com o serve fora do ar
+    expect(ok.detail).toContain(`sdk 1 · pasta ${join(API_FIX, "ok")}`);
+    expect(ok.detail).toContain("IA hoje US$ 0.00");
     expect(checks.find((c) => c.id === "modules")!.status).toBe("warn");
   });
 
@@ -328,6 +331,7 @@ describe("doctor: erros recentes dos módulos", () => {
       s.registry.recordError("ok", "mcp:eco", new Error("falha registrada pelo serve"));
       const ok = (await modulesChecks(brain)).find((c) => c.id === "module-ok")!;
       expect(ok.detail).toContain("mcp:eco: falha registrada pelo serve");
+      expect(ok.detail).toContain(`sdk 1 · pasta ${join(API_FIX, "ok")}`);
       expect(ok.status).toBe("warn");
     } finally { await s.close(); }
   });

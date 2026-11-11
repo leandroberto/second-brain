@@ -70,7 +70,7 @@ beforeAll(async () => {
   registry = await loadModules(brain, { modo: "serve", deps: { avisos } });
   const webRoot = join(dir, "web");
   mkdirSync(webRoot); writeFileSync(join(webRoot, "index.html"), "<!doctype html><title>SB</title>", "utf8");
-  api = await startApi(brain, { port: 0, sessions: sessions(), webRoot, modules: { registry, scheduler: new Scheduler(registry, root), avisos } });
+  api = await startApi(brain, { port: 0, sessions: sessions(), webRoot, modules: { registry, scheduler: new Scheduler(registry, root), avisos, root } });
   const proof = await terminalHuman("alice", sessions());
   uiToken = issueHumanSession(brain.vault.root, proof, sessions());
   deskToken = issueHumanSession(brain.vault.root, proof, { ...sessions(), scope: "desktop", label: "desktop" });

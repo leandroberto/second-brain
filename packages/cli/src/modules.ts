@@ -9,6 +9,8 @@ import { realIO, requireHuman } from "./admin.js";
 /** Um módulo como `brain modules list` e o doctor mostram (do `serve` vivo ou do disco). */
 export interface ResumoModulo {
   id: string; nome: string; status: string; causa?: string; versao?: string;
+  /** `sdk` declarado pelo módulo (ausente se nem importou) e a pasta resolvida */
+  sdk?: unknown; pasta?: string;
   tarefas: StatusTarefa[];
   /** os mais recentes, em ordem cronológica, já truncados e sem possíveis segredos */
   erros: ModuleError[];
@@ -58,7 +60,7 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
   return {
     fonte: "disco", reiniciar: false,
     modulos: reg.list().map((m) => ({
-      id: m.id, nome: m.def?.nome ?? m.id, status: m.status, causa: m.causa, versao: m.versao,
+      id: m.id, nome: m.def?.nome ?? m.id, status: m.status, causa: m.causa, versao: m.versao, sdk: m.def?.sdk, pasta: m.dir || undefined,
       tarefas: m.status === "ativo" ? agenda.status(m.id) : [], erros: disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id),
     })),
   };
@@ -95,7 +97,8 @@ export async function modulesChecks(b: Brain, port?: number): Promise<Check[]> {
   out.push({ id: "modules", name: "Módulos", status: e.reiniciar || e.modulos.some(problema) ? "warn" : "ok", detail: e.reiniciar ? `${resumo}; ${REINICIAR}` : resumo, ...(e.reiniciar ? { fix: "reinicie o brain serve" } : {}) });
   for (const m of e.modulos) {
     const partes = [
-      m.status + (m.causa ? `: ${m.causa}` : ""), m.versao ? `v${m.versao}` : undefined, ...m.tarefas.map(linhaTarefa), `IA hoje ${usd(m.iaHojeUsd)}`,
+      m.status + (m.causa ? `: ${m.causa}` : ""), m.versao ? `v${m.versao}` : undefined, m.sdk !== undefined ? `sdk ${String(m.sdk)}` : undefined,
+      m.pasta ? `pasta ${m.pasta}` : undefined, ...m.tarefas.map(linhaTarefa), `IA hoje ${usd(m.iaHojeUsd)}`,
       ...m.erros.slice(-ERROS_NO_DOCTOR).reverse().map(linhaErro),
     ].filter(Boolean);
     out.push({ id: `module-${m.id}`, name: `Módulo ${m.id}`, status: problema(m) ? "warn" : "ok", detail: partes.join(" · "), ...(problema(m) ? { fix: `brain modules list (erros recentes de ${m.id})` } : {}) });

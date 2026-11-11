@@ -97,6 +97,7 @@ function ModulesSection() {
       {data.modulos.map((m) => { const [cls, lbl] = STATUS_MODULO[m.status] ?? ["", m.status]; return (
         <div key={m.id} style={{ padding: "10px 0", borderTop: "1px solid var(--line)" }}>
           <div><b>{m.nome}</b> <code className="mono small">{m.id}</code> <span className={`badge ${cls}`}>{lbl}</span> {m.versao && <span className="muted small">v{m.versao}</span>}</div>
+          <div className="small muted" style={{ marginTop: 2 }}>{m.sdk !== undefined && <>sdk {m.sdk} · </>}IA hoje: US$ {(m.iaHojeUsd ?? 0).toFixed(2)}{m.pasta && <> · <code className="mono" title="pasta do módulo">{m.pasta}</code></>}</div>
           {m.causa && <div className="small" style={{ color: "var(--danger)", marginTop: 2 }}>{m.causa}</div>}
           {m.tarefas.map((t) => { const k = `${m.id}/${t.tarefa}`; const res = resultados[k]; return (
             <div key={t.tarefa} className="small" style={{ marginTop: 8, paddingLeft: 10, borderLeft: "2px solid var(--line)" }}>

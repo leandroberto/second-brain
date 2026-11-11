@@ -53,7 +53,7 @@ async function montar(b: Brain, o: ServeOptions, root: string, lock: { liberar()
 
   let api;
   try {
-    api = await startApi(b, { port: o.port, host: o.host, webRoot: o.webRoot, build: o.build, assistant: o.assistant, sessions: o.sessions, modules: { registry, scheduler, avisos, reiniciar } });
+    api = await startApi(b, { port: o.port, host: o.host, webRoot: o.webRoot, build: o.build, assistant: o.assistant, sessions: o.sessions, modules: { registry, scheduler, avisos, reiniciar, root } });
   } catch (e) {
     await scheduler.stop(); await stopModules(registry); registry.encerrarExecucoes();
     throw e;
