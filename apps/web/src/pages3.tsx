@@ -80,6 +80,9 @@ const quando = (iso?: string) => { if (!iso) return "—"; const d = new Date(is
 
 function ModulesSection() {
   const { data, reload } = useData<ModulosResp>("/api/modules", [], 15000);
+  // "rodar agora" exige a sessão humana `full` da UI (canal ui); api-token e outras credenciais recebem 403, então nem mostra
+  const { data: meta } = useData<{ principal: { kind: string; channel: string } }>("/api/meta");
+  const podeRodar = meta?.principal.kind === "human" && meta.principal.channel === "ui";
   const toast = useToast();
   const [rodando, setRodando] = useState(""); const [resultados, setResultados] = useState<Record<string, string>>({});
   if (!data || (data.modulos.length === 0 && !data.reiniciar)) return null;
@@ -102,7 +105,7 @@ function ModulesSection() {
           {m.tarefas.map((t) => { const k = `${m.id}/${t.tarefa}`; const res = resultados[k]; return (
             <div key={t.tarefa} className="small" style={{ marginTop: 8, paddingLeft: 10, borderLeft: "2px solid var(--line)" }}>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><b>{t.tarefa}</b> <code className="mono">{t.quando}</code>{t.suspensa && <span className="badge warn" title={`${t.errosSeguidos} erros seguidos`}>suspensa</span>}
-                <button className="btn sm" style={{ marginLeft: "auto" }} disabled={!!rodando} onClick={() => rodar(m, t.tarefa)}>{rodando === k ? "Rodando…" : "Rodar agora"}</button></div>
+                {podeRodar && <button className="btn sm" style={{ marginLeft: "auto" }} disabled={!!rodando} onClick={() => rodar(m, t.tarefa)}>{rodando === k ? "Rodando…" : "Rodar agora"}</button>}</div>
               <div className="muted">próxima: {quando(t.proxima)} · última: {t.fim || t.inicio ? `${quando(t.fim ?? t.inicio)} (${timeAgo(t.fim ?? t.inicio)})` : "nunca"} {t.resultado && <span className={`badge ${t.resultado === "ok" ? "ok" : "danger"}`}>{t.resultado}</span>}</div>
               {t.erro && <div style={{ color: "var(--danger)" }}>{t.erro}</div>}
               {res && <div role="status">resultado agora: {res}</div>}
