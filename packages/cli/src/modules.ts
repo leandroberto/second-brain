@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { EventEmitter } from "node:events";
-import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, gastoIaDoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveUrl, serveVivo, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
+import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, gastoIaDoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
 
@@ -33,7 +33,10 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
   const token = lerToken(b);
   if (token) {
     try {
-      const url = await serveUrl(root, b.vault, port ? { ...process.env, BRAIN_PORT: String(port) } : process.env);
+      // vivo → ele; morto/sem serve.json → porta de fallback; anunciado mas sem resposta → direto para o disco
+      const e = await serveEstado(root, b.vault);
+      if (e.estado === "indeterminado") throw new Error(e.motivo);
+      const url = e.estado === "vivo" ? e.url : serveFallbackUrl(port ? { ...process.env, BRAIN_PORT: String(port) } : process.env);
       const r = await fetch(`${url}/api/modules`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2500) });
       if (r.ok) {
         const j = await r.json() as { modulos?: Array<Omit<ResumoModulo, "iaHojeUsd"> & { erros?: ModuleError[] }>; reiniciar?: boolean };
@@ -120,7 +123,7 @@ const NAO_RODANDO = "o brain serve não está rodando; a tarefa roda nele (suba 
 const TIMEOUT_RUN_MS = 15 * 60_000;
 
 export interface DisparoTarefa {
-  /** URL do serve CONFIRMADO (`serveVivo`), nunca a porta de fallback: a requisição leva uma sessão humana */
+  /** URL do serve CONFIRMADO (`serveEstado` = `vivo`), nunca a porta de fallback: a requisição leva uma sessão humana */
   url: string; id: string; tarefa: string; ocorrencia?: string;
   emitir(): string;
   revogar(sessao: string): void;
@@ -151,7 +154,10 @@ export async function dispararTarefa(o: DisparoTarefa): Promise<{ codigo: number
       });
     } catch (e) {
       const min = Math.round((o.timeoutMs ?? TIMEOUT_RUN_MS) / 60_000);
-      return { codigo: 1, erro: (e as Error)?.name === "TimeoutError" ? `o brain serve não respondeu em ${min} min (a tarefa pode seguir rodando nele; veja brain modules list)` : NAO_RODANDO };
+      if ((e as Error)?.name === "TimeoutError") return { codigo: 1, erro: `o brain serve não respondeu em ${min} min (a tarefa pode seguir rodando nele; veja brain modules list)` };
+      // conexão recusada: a requisição nem saiu. Qualquer outro erro de rede pode ter acontecido com a tarefa já começada
+      if ((e as { cause?: { code?: unknown } })?.cause?.code === "ECONNREFUSED") return { codigo: 1, erro: NAO_RODANDO };
+      return { codigo: 1, erro: "a conexão com o brain serve caiu durante a execução; confira o resultado em brain modules list" };
     }
     const j = await r.json().catch(() => ({})) as { resultado?: string; erro?: string; message?: string };
     if (!r.ok) return { codigo: 1, erro: `o brain serve recusou (${r.status}): ${j.message ?? "sem detalhe"}` };
@@ -165,7 +171,7 @@ export async function dispararTarefa(o: DisparoTarefa): Promise<{ codigo: number
 /**
  * `brain modules run`: dispara a tarefa NO SERVE com uma sessão humana curta (5 min), revogada no fim (spec §7.8). Exige
  * terminal interativo e a prova de humano (com frase-senha quando o vault exige), porque a tarefa pode causar ação externa.
- * O serve precisa estar confirmado (`serveVivo`) ANTES de pedir a prova de humano e emitir a sessão.
+ * O serve precisa estar confirmado (`serveEstado` = `vivo`) ANTES de pedir a prova de humano e emitir a sessão.
  */
 async function rodarTarefa(b: Brain, id: string, tarefa: string, o: { ocorrencia?: string }): Promise<number> {
   let ocorrencia: string | undefined;
@@ -173,8 +179,9 @@ async function rodarTarefa(b: Brain, id: string, tarefa: string, o: { ocorrencia
     ocorrencia = ocorrenciaIso(o.ocorrencia);
     if (!ocorrencia) { console.error(`--ocorrencia inválida: "${o.ocorrencia}" (use AAAA-MM-DD)`); return 2; }
   }
-  const vivo = await serveVivo(modulesStateRoot(b), b.vault);
-  if (!vivo) { console.error(NAO_RODANDO); return 1; }
+  const vivo = await serveEstado(modulesStateRoot(b), b.vault);
+  if (vivo.estado === "morto") { console.error(NAO_RODANDO); return 1; }
+  if (vivo.estado === "indeterminado") { console.error(`o brain serve em ${vivo.url} (pid ${vivo.pid}) não respondeu (${vivo.motivo}); tente de novo ou reinicie-o`); return 1; }
   const who = await requireHuman(realIO(), "brain modules run", b);
   const r = await dispararTarefa({
     url: vivo.url, id, tarefa, ocorrencia,

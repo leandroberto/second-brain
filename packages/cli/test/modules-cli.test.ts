@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -6,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveVivo, writeServeInfo } from "@brain/core";
+import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, serveVivo, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
 import { dispararTarefa, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
@@ -17,7 +18,7 @@ const API_FIX = resolve(import.meta.dirname, "../../api/test/fixtures/modules");
 const CORE_FIX = resolve(import.meta.dirname, "../../core/test/fixtures/modules");
 const savedState = process.env.BRAIN_STATE_DIR;
 
-let dir: string; let brain: Brain; let root: string;
+let dir: string; let brain: Brain; let root: string; let semServe: string;
 const sessions = () => ({ file: join(dir, "sessions.json") });
 const env = () => ({ ...process.env, HOME: dir, BRAIN_VAULT: "", BRAIN_STATE_DIR: join(dir, "state"), BRAIN_SESSIONS_FILE: sessions().file });
 const brainCli = (args: string[]) => run(process.execPath, [BIN, ...args, "--vault", brain.vault.root], { env: env(), timeout: 60_000 });
@@ -35,6 +36,9 @@ beforeAll(async () => {
   brain = await Brain.init(join(dir, "vault"));
   gravarModulos({ ok: { path: join(API_FIX, "ok"), config: { cor: "azul" } } });
   root = modulesStateRoot(brain);
+  // URL de uma porta onde ninguém escuta (conexão recusada)
+  const s = createServer(); await new Promise<void>((ok) => s.listen(0, "127.0.0.1", () => ok()));
+  semServe = `http://127.0.0.1:${(s.address() as { port: number }).port}`; await new Promise<void>((ok) => s.close(() => ok()));
 });
 afterAll(() => {
   brain.close(); rmSync(dir, { recursive: true, force: true });
@@ -94,8 +98,9 @@ describe("serve com módulos", () => {
 describe("liveness do serve e serve duplicado", () => {
   it("pid vivo alheio com URL sem serve conta como morto e o marcador é recuperado", async () => {
     // pid que existe (o processo pai do teste) mas não é um serve: só o kill(pid, 0) diria "vivo"
-    writeServeInfo(root, { url: "http://127.0.0.1:1", pid: process.ppid, iniciado: new Date().toISOString() });
-    expect(readServeInfo(root)).toEqual({ url: "http://127.0.0.1:1", pid: process.ppid });
+    writeServeInfo(root, { url: semServe, pid: process.ppid, iniciado: new Date().toISOString() });
+    expect(readServeInfo(root)).toEqual({ url: semServe, pid: process.ppid });
+    expect(await serveEstado(root, brain.vault)).toEqual({ estado: "morto" });
     expect(await serveVivo(root, brain.vault)).toBeUndefined();
     writeFileSync(join(root, "_executando.json"), JSON.stringify([{ id: "ok", onde: "rota:GET /eco", desde: new Date().toISOString() }]));
     const reg = await loadModules(brain, { modo: "serve" });
@@ -116,6 +121,44 @@ describe("liveness do serve e serve duplicado", () => {
       expect(existsSync(join(root, "_executando.json"))).toBe(true);
       rmSync(join(root, "_executando.json"));
     } finally { await s.close(); }
+  });
+});
+
+describe("serve que não responde e lock do serve", () => {
+  it("serve anunciado que aceita a conexão e nunca responde: indeterminado, nada destrutivo acontece", async () => {
+    const mudo = createServer(() => { /* nunca responde: event loop do serve travado */ });
+    const porta = await new Promise<number>((ok) => mudo.listen(0, "127.0.0.1", () => ok((mudo.address() as { port: number }).port)));
+    // pid vivo de verdade e diferente deste processo (o pai do teste), como o de um serve travado
+    writeServeInfo(root, { url: `http://127.0.0.1:${porta}`, pid: process.ppid, iniciado: new Date().toISOString() });
+    const marcador = JSON.stringify([{ id: "ok", onde: "tarefa:diaria", desde: new Date().toISOString() }]);
+    try {
+      expect(await serveEstado(root, brain.vault)).toMatchObject({ estado: "indeterminado", pid: process.ppid });
+      await expect(startServe(brain, { port: 0, sessions: sessions() })).rejects.toThrow(/não respondeu.*encerre-o/);
+      expect(existsSync(join(root, "..", "serve.lock"))).toBe(false); // a recusa libera o lock
+      writeFileSync(join(root, "_executando.json"), marcador);
+      const antes = new ModuleRegistry(root).errors("ok").length;
+      await loadModules(brain, { modo: "serve" });
+      expect(readFileSync(join(root, "_executando.json"), "utf8")).toBe(marcador); // não recuperou nem apagou (nem o iniciar mexeu)
+      expect(new ModuleRegistry(root).errors("ok")).toHaveLength(antes);
+    } finally {
+      rmSync(join(root, "_executando.json"), { force: true }); rmSync(join(root, "..", "serve.json"), { force: true });
+      await new Promise<void>((ok) => { mudo.close(() => ok()); mudo.closeAllConnections(); });
+    }
+  });
+
+  it("dois startServe concorrentes: um recusa; lock de pid morto é retomado", async () => {
+    const r = await Promise.allSettled([startServe(brain, { port: 0, sessions: sessions() }), startServe(brain, { port: 0, sessions: sessions() })]);
+    const ok = r.filter((x) => x.status === "fulfilled");
+    const recusado = r.filter((x): x is PromiseRejectedResult => x.status === "rejected");
+    expect(ok).toHaveLength(1);
+    expect(recusado).toHaveLength(1);
+    expect(String(recusado[0]!.reason)).toMatch(/já há um brain serve/);
+    await (ok[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof startServe>>>).value.close();
+    expect(existsSync(join(root, "..", "serve.lock"))).toBe(false);
+    writeFileSync(join(root, "..", "serve.lock"), JSON.stringify({ pid: 2 ** 22 + 54321, nonce: "x", desde: new Date().toISOString() }));
+    const s = await startServe(brain, { port: 0, sessions: sessions() });
+    await s.close();
+    expect(existsSync(join(root, "..", "serve.lock"))).toBe(false);
   });
 });
 
@@ -148,11 +191,13 @@ describe("brain modules run: a sessão curta é sempre revogada", () => {
   };
   const resposta = (status: number, corpo: unknown) => (async () => new Response(JSON.stringify(corpo), { status })) as unknown as typeof fetch;
 
-  it("erro de rede", async () => {
+  const falhaDeRede = (code: string) => (async () => { throw Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) }); }) as unknown as typeof fetch;
+
+  it("erro de rede: conexão recusada (nada saiu) e conexão caída (a tarefa pode ter começado)", async () => {
     const t = base();
-    const r = await dispararTarefa({ ...t.o, fetch: (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch });
-    expect(r).toMatchObject({ codigo: 1, erro: expect.stringContaining("não está rodando") });
-    expect(t.revogadas).toEqual(["hs_sessao"]);
+    expect(await dispararTarefa({ ...t.o, fetch: falhaDeRede("ECONNREFUSED") })).toMatchObject({ codigo: 1, erro: expect.stringContaining("não está rodando") });
+    expect(await dispararTarefa({ ...t.o, fetch: falhaDeRede("ECONNRESET") })).toEqual({ codigo: 1, erro: "a conexão com o brain serve caiu durante a execução; confira o resultado em brain modules list" });
+    expect(t.revogadas).toEqual(["hs_sessao", "hs_sessao"]);
   });
 
   it("HTTP ≠ 2xx", async () => {

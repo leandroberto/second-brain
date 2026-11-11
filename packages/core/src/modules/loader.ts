@@ -10,7 +10,7 @@ import { AVISOS_NOOP, IA_INDISPONIVEL, createModuleContext, type AvisosSink } fr
 import { MODULE_ID_RE } from "./identity.js";
 import { ModuleRegistry, type LoadedModule, type ModuleStatus } from "./registry.js";
 import { validar } from "./schema.js";
-import { serveVivo } from "./serve-info.js";
+import { serveEstado } from "./serve-info.js";
 import { modulesStateRoot } from "./state.js";
 
 /** Expande `~` e `$VAR`/`${VAR}` num caminho configurado. Variável ausente vira vazio. */
@@ -75,10 +75,12 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
   const host = o.hostname ?? osHostname();
   const avisos = o.deps?.avisos ?? AVISOS_NOOP;
   const timeout = o.iniciarTimeoutMs ?? 30_000;
-  // execução interrompida pela queda do serve anterior vira erro do módulo; não mexe no marcador de outro serve vivo
+  // execução interrompida pela queda do serve anterior vira erro do módulo. Só com o anterior comprovadamente morto: um serve
+  // vivo ou que não respondeu (event loop travado) ainda é dono do marcador
   if (o.modo === "serve") {
-    const vivo = await serveVivo(modulesStateRoot(brain), brain.vault);
-    if (!vivo || vivo.pid === process.pid) reg.recuperarExecucoesInterrompidas();
+    const e = await serveEstado(modulesStateRoot(brain), brain.vault);
+    if (e.estado === "morto" || e.pid === process.pid) reg.recuperarExecucoesInterrompidas();
+    else reg.desligarMarcador();
   }
 
   for (const [id, entry] of Object.entries(brain.config.modules)) {

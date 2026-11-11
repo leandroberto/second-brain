@@ -1,6 +1,7 @@
-import { chmodSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
+import { BrainError } from "@brain/shared";
 
 /**
  * Endereço do `brain serve` vivo (spec de módulos §7.10): `<stateDir>/serve.json` (`{ url, pid, iniciado }`), ao lado da pasta
@@ -55,33 +56,102 @@ export function vaultFingerprint(vaultRoot: string): string {
 }
 
 /**
- * O `serve` anunciado no `serve.json` está vivo E é deste vault? Pré-filtro pelo pid; confirmação por HTTP
- * (`GET <url>/api/serve` com o api-token, timeout curto): responde com o mesmo pid do arquivo e a impressão do mesmo vault.
- * Pid reusado, porta sem ninguém, token recusado ou outro vault: `undefined` (tratado como morto).
+ * Estado do `serve` anunciado no `serve.json`, para este vault:
+ * - `vivo`: `GET <url>/api/serve` com o api-token respondeu 200 com o MESMO pid do arquivo e a impressão do MESMO vault;
+ * - `morto`: sem `serve.json`, pid inexistente (ESRCH), conexão recusada, token recusado (401/403) ou resposta de outro pid/vault;
+ * - `indeterminado`: o pid existe mas não deu para confirmar (timeout, outro erro de rede, 5xx, sem api-token). Um serve com o
+ *   event loop travado (laço síncrono de módulo, indexação pesada) cai aqui.
+ * Quem DESTRÓI estado (recusar um segundo serve, recuperar o marcador) trata `indeterminado` como vivo; quem ENVIA credencial
+ * trata como não confirmado.
  */
-export async function serveVivo(root: string, vault: { root: string; tokenPath: string }, o: { timeoutMs?: number } = {}): Promise<{ url: string; pid: number } | undefined> {
+export type EstadoServe =
+  | { estado: "vivo"; url: string; pid: number }
+  | { estado: "indeterminado"; url: string; pid: number; motivo: string }
+  | { estado: "morto" };
+
+const codigoDeRede = (e: unknown): string | undefined => {
+  const c = (e as { cause?: { code?: unknown } } | undefined)?.cause?.code;
+  return typeof c === "string" ? c : undefined;
+};
+
+export async function serveEstado(root: string, vault: { root: string; tokenPath: string }, o: { timeoutMs?: number } = {}): Promise<EstadoServe> {
   const i = readServeInfo(root);
-  if (!i) return undefined;
-  let token: string;
-  try { token = readFileSync(vault.tokenPath, "utf8").trim(); } catch { return undefined; }
-  if (!token) return undefined;
+  if (!i) return { estado: "morto" };
+  const indeterminado = (motivo: string): EstadoServe => ({ estado: "indeterminado", url: i.url, pid: i.pid, motivo });
+  let token = "";
+  try { token = readFileSync(vault.tokenPath, "utf8").trim(); } catch { /* sem token */ }
+  if (!token) return indeterminado("sem api-token para confirmar");
+  const ms = o.timeoutMs ?? 1500;
+  let r: Response;
   try {
-    const r = await fetch(`${i.url}/api/serve`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(o.timeoutMs ?? 1500) });
-    if (!r.ok) return undefined;
-    const j = await r.json() as { vault?: unknown; pid?: unknown };
-    return j.pid === i.pid && j.vault === vaultFingerprint(vault.root) ? i : undefined;
-  } catch { return undefined; }
+    r = await fetch(`${i.url}/api/serve`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(ms) });
+  } catch (e) {
+    if (codigoDeRede(e) === "ECONNREFUSED") return { estado: "morto" };
+    return indeterminado((e as Error)?.name === "TimeoutError" ? `não respondeu em ${ms} ms` : `erro de rede (${codigoDeRede(e) ?? (e as Error)?.message ?? "desconhecido"})`);
+  }
+  if (r.status === 401 || r.status === 403) return { estado: "morto" };
+  if (!r.ok) return indeterminado(`respondeu HTTP ${r.status}`);
+  let j: { vault?: unknown; pid?: unknown };
+  try { j = await r.json() as typeof j; } catch { return indeterminado("resposta ilegível"); }
+  return j.pid === i.pid && j.vault === vaultFingerprint(vault.root) ? { estado: "vivo", url: i.url, pid: i.pid } : { estado: "morto" };
 }
 
-/**
- * Onde chamar o `serve` para LEITURA ou ferramenta com o api-token (§7.10): o do `serve.json` confirmado por `serveVivo` ou, na
- * falta dele, `http://127.0.0.1:<BRAIN_PORT ou 3737>`. Nunca use o fallback para enviar uma sessão humana.
- */
-export async function serveUrl(root: string, vault: { root: string; tokenPath: string }, env: NodeJS.ProcessEnv = process.env): Promise<string> {
-  const vivo = await serveVivo(root, vault);
-  if (vivo) return vivo.url;
+/** `{ url, pid }` só quando o serve está CONFIRMADO vivo (`serveEstado` = `vivo`). */
+export async function serveVivo(root: string, vault: { root: string; tokenPath: string }, o: { timeoutMs?: number } = {}): Promise<{ url: string; pid: number } | undefined> {
+  const e = await serveEstado(root, vault, o);
+  return e.estado === "vivo" ? { url: e.url, pid: e.pid } : undefined;
+}
+
+/** Fallback de §7.10 quando não há `serve.json`: `http://127.0.0.1:<BRAIN_PORT ou 3737>`. Nunca para enviar sessão humana. */
+export function serveFallbackUrl(env: NodeJS.ProcessEnv = process.env): string {
   const porta = Number(env.BRAIN_PORT);
   return `http://127.0.0.1:${Number.isInteger(porta) && porta > 0 ? porta : 3737}`;
+}
+
+// ---- lock exclusivo do serve: a recusa de um segundo serve é atômica ----
+
+const arquivoLock = (root: string) => join(dirname(root), "serve.lock");
+/** Lock de pid vivo mas sem serve anunciado por esse pid há mais que isso: pid reusado (reboot), retomado. */
+const LOCK_VELHO_MS = 10 * 60_000;
+
+const pidExiste = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
+};
+
+/**
+ * Lock exclusivo `<stateDir>/serve.lock` (`{ pid, nonce, desde }`, criado com `wx`), adquirido no começo do `startServe`, antes
+ * de carregar qualquer coisa. Ocupado por pid vivo (inclusive outro `startServe` deste mesmo processo): `BrainError("locked")`.
+ * Pid inexistente, ou pid vivo sem `serve.json` dele e lock com mais de 10 min: lock velho, retomado. `liberar()` só apaga o
+ * lock se ele ainda for desta aquisição.
+ */
+export function acquireServeLock(root: string): { liberar(): void } {
+  const alvo = arquivoLock(root);
+  const nonce = randomBytes(8).toString("hex");
+  for (let tentativa = 0; tentativa < 2; tentativa++) {
+    try {
+      writeFileSync(alvo, JSON.stringify({ pid: process.pid, nonce, desde: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
+      return {
+        liberar() {
+          try { if ((JSON.parse(readFileSync(alvo, "utf8")) as { nonce?: string }).nonce === nonce) rmSync(alvo, { force: true }); } catch { /* já não existe */ }
+        },
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    let dono: { pid?: unknown } = {};
+    try { dono = JSON.parse(readFileSync(alvo, "utf8")) as typeof dono; } catch { /* lock ilegível: tratado como velho */ }
+    const pid = Number.isInteger(dono.pid) ? (dono.pid as number) : 0;
+    const anunciado = ler(root);
+    let idade = 0; try { idade = Date.now() - statSync(alvo).mtimeMs; } catch { /* sumiu: tenta de novo */ }
+    const velho = !pid || !pidExiste(pid) || (anunciado?.pid !== pid && idade > LOCK_VELHO_MS);
+    if (!velho) {
+      throw new BrainError("locked", anunciado?.pid === pid
+        ? `já há um brain serve rodando para este vault em ${anunciado.url}`
+        : `já há um brain serve subindo para este vault (pid ${pid}); se esse processo não é um brain serve, apague ${alvo}`);
+    }
+    try { rmSync(alvo, { force: true }); } catch { /* corrida: a próxima tentativa decide */ }
+  }
+  throw new BrainError("locked", `não foi possível obter o lock do brain serve (${alvo})`);
 }
 
 /** JSON com chaves ordenadas (a ordem das chaves no YAML não muda o hash). */

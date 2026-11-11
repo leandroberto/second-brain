@@ -108,6 +108,19 @@ describe("ferramentas MCP de módulo", () => {
     } finally { rmSync(join(dir, "state", "serve.json"), { force: true }); await fechar(outro); }
   });
 
+  it("serve anunciado que não responde: erro claro, sem cair no fallback", async () => {
+    const mudo = createServer(() => { /* aceita a conexão e nunca responde */ });
+    const porta = await ouvir(mudo);
+    writeServeInfo(root, { url: `http://127.0.0.1:${porta}`, pid: process.ppid, iniciado: new Date().toISOString() });
+    try {
+      const c = await connect();
+      const r = await call(c, "ok_eco", { texto: "oi" });
+      expect(r.isError).toBe(true);
+      expect(r.text).toMatch(new RegExp(`^o brain serve em http://127\\.0\\.0\\.1:${porta} \\(pid ${process.ppid}\\) não respondeu .*; a ferramenta ok_eco precisa dele$`));
+      expect(r.text).not.toContain(token);
+    } finally { rmSync(join(dir, "state", "serve.json"), { force: true }); await fechar(mudo); }
+  });
+
   it("sem serve devolve erro claro", async () => {
     clearServeInfo(root);
     const c = await connect();

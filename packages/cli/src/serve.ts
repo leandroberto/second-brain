@@ -1,5 +1,5 @@
 import { hostname } from "node:os";
-import { AvisosStore, Scheduler, clearServeInfo, createModuleIa, loadConfig, loadModules, modulesConfigHash, modulesStateRoot, serveVivo, stopModules, writeServeInfo, type Assistant, type AssistantEngine, type Brain, type ModuleRegistry, type SessionStoreOptions } from "@brain/core";
+import { AvisosStore, Scheduler, clearServeInfo, createModuleIa, loadConfig, loadModules, modulesConfigHash, modulesStateRoot, serveEstado, acquireServeLock, stopModules, writeServeInfo, type Assistant, type AssistantEngine, type Brain, type ModuleRegistry, type SessionStoreOptions } from "@brain/core";
 import { startApi } from "@brain/api";
 import { BrainError } from "@brain/shared";
 
@@ -23,9 +23,21 @@ export interface ServeHandle { url: string; token: string; registry: ModuleRegis
  */
 export async function startServe(b: Brain, o: ServeOptions): Promise<ServeHandle> {
   const root = modulesStateRoot(b);
-  // um segundo serve no mesmo vault rodaria `iniciar` e as tarefas de novo e pisaria no estado e no marcador do vivo
-  const vivo = await serveVivo(root, b.vault);
-  if (vivo && vivo.pid !== process.pid) throw new BrainError("locked", `já há um brain serve rodando para este vault em ${vivo.url}`);
+  // um segundo serve no mesmo vault rodaria `iniciar` e as tarefas de novo e pisaria no estado e no marcador do vivo.
+  // Lock exclusivo primeiro (a recusa é atômica); depois o serve anunciado (um build antigo, sem lock): vivo ou que não
+  // respondeu contam como "já há um serve"
+  const lock = acquireServeLock(root);
+  try {
+    const e = await serveEstado(root, b.vault);
+    if (e.estado === "vivo" && e.pid !== process.pid) throw new BrainError("locked", `já há um brain serve rodando para este vault em ${e.url}`);
+    if (e.estado === "indeterminado" && e.pid !== process.pid) {
+      throw new BrainError("locked", `há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
+    }
+    return await montar(b, o, root, lock);
+  } catch (err) { lock.liberar(); throw err; }
+}
+
+async function montar(b: Brain, o: ServeOptions, root: string, lock: { liberar(): void }): Promise<ServeHandle> {
   const avisos = new AvisosStore(root);
   // hash do bloco `modules` carregado: `GET /api/modules` compara com o do config.yaml em disco a cada chamada
   const hash = modulesConfigHash(b.config.modules);
@@ -55,7 +67,7 @@ export async function startServe(b: Brain, o: ServeOptions): Promise<ServeHandle
       await scheduler.stop();
       await stopModules(registry);
       registry.encerrarExecucoes();
-    } finally { clearServeInfo(root); }
+    } finally { clearServeInfo(root); lock.liberar(); }
   })());
   return { url: api.url, token: api.token, registry, close };
 }

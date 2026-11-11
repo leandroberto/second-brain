@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { McpServer, fromJsonSchema } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
-import { BRAIN_TOOLS, Brain, MODULE_TOOL_RE, loadModules, modulesStateRoot, principal, serveUrl, type LoadedModule, type ModuleRegistry } from "@brain/core";
+import { BRAIN_TOOLS, Brain, MODULE_TOOL_RE, loadModules, modulesStateRoot, principal, serveEstado, serveFallbackUrl, type LoadedModule, type ModuleRegistry } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, RESOLUTIONS, type Principal } from "@brain/shared";
 
 const VERSION = "0.1.0";
@@ -111,16 +111,21 @@ async function executarNoServe(brain: Brain, id: string, nome: string, args: unk
   try { token = readFileSync(brain.vault.tokenPath, "utf8").trim(); } catch { return foraDoAr; }
   if (!token) return foraDoAr;
   const limpar = (t: string) => t.split(token).join("***");
-  const url = await serveUrl(modulesStateRoot(brain), brain.vault);
+  // confirmado → ele; sem serve.json (ou morto) → fallback de porta; anunciado mas sem resposta → erro, sem tentar outro lugar
+  const e = await serveEstado(modulesStateRoot(brain), brain.vault);
+  if (e.estado === "indeterminado") return textoDeErro(`o brain serve em ${e.url} (pid ${e.pid}) não respondeu (${e.motivo}); a ferramenta ${ferramenta} precisa dele`);
+  const url = e.estado === "vivo" ? e.url : serveFallbackUrl();
   let r: Response;
   try {
     r = await fetch(`${url}/api/modules/${encodeURIComponent(id)}/_mcp/${encodeURIComponent(nome)}`, {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ args: args ?? {} }),
       signal: AbortSignal.timeout(TIMEOUT_FERRAMENTA_MS),
     });
-  } catch (e) {
-    if ((e as Error)?.name === "TimeoutError") return textoDeErro(`a ferramenta ${ferramenta} não respondeu em ${TIMEOUT_FERRAMENTA_MS / 60_000} min (o brain serve pode seguir com ela)`);
-    return foraDoAr;
+  } catch (err) {
+    if ((err as Error)?.name === "TimeoutError") return textoDeErro(`a ferramenta ${ferramenta} não respondeu em ${TIMEOUT_FERRAMENTA_MS / 60_000} min (o brain serve pode seguir com ela)`);
+    // conexão recusada: nada saiu. Qualquer outro erro de rede pode ter acontecido com a ferramenta já rodando
+    if ((err as { cause?: { code?: unknown } })?.cause?.code === "ECONNREFUSED") return foraDoAr;
+    return textoDeErro(`a conexão com o brain serve caiu durante ${ferramenta}; ela pode ter rodado (veja brain doctor)`);
   }
   let corpo: { resultado?: unknown; message?: unknown } = {};
   try { corpo = await r.json() as typeof corpo; } catch { /* corpo vazio ou não JSON */ }

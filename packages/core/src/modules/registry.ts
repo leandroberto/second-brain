@@ -30,6 +30,8 @@ export class ModuleRegistry {
   private readonly modules = new Map<string, LoadedModule>();
   private readonly emCurso = new Map<number, Execucao>();
   private seq = 0;
+  /** `false` quando outro serve (vivo ou que não respondeu) é o dono do marcador: este registro não o grava nem apaga */
+  private donoDoMarcador = true;
   constructor(private readonly root?: string) {}
 
   /** @internal usado pelo carregador */
@@ -85,7 +87,7 @@ export class ModuleRegistry {
 
   /** Na subida do `serve`: cada execução que ficou no marcador vira erro do módulo ("o serve caiu enquanto…") e o arquivo é apagado. */
   recuperarExecucoesInterrompidas(): void {
-    if (!this.root) return;
+    if (!this.root || !this.donoDoMarcador) return;
     const arq = join(this.root, MARCADOR);
     if (!existsSync(arq)) return;
     let v: unknown;
@@ -97,6 +99,9 @@ export class ModuleRegistry {
     try { rmSync(arq, { force: true }); } catch { /* best effort */ }
   }
 
+  /** Outro serve ainda pode estar vivo: as execuções deste registro não tocam no `_executando.json` dele. */
+  desligarMarcador(): void { this.donoDoMarcador = false; }
+
   /** Desligamento ordenado: o que ainda roda (tarefa que estourou o tempo e não respeitou o sinal) não é queda; apaga o marcador. */
   encerrarExecucoes(): void {
     this.emCurso.clear();
@@ -104,7 +109,7 @@ export class ModuleRegistry {
   }
 
   private gravarMarcador(): void {
-    if (!this.root) return;
+    if (!this.root || !this.donoDoMarcador) return;
     const arq = join(this.root, MARCADOR);
     try {
       if (!this.emCurso.size) { rmSync(arq, { force: true }); return; }
