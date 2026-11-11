@@ -187,3 +187,28 @@ test("renovar chama POST /api/assistant/session/renew e devolve o token novo; 40
   // resposta sem token válido não vira credencial
   expect(await criarClienteApi("http://localhost:3737", "t", falso(() => resposta(200, { token: "" })).f).renovar()).toMatchObject({ ok: false, tipo: "http" });
 });
+
+test("avisos consulta com o cursor e devolve avisos, cursor e total", async () => {
+  const corpo = { avisos: [], cursor: "c9", badges: {}, total: 3 };
+  const { f, chamadas } = falso(() => resposta(200, corpo));
+  const c = criarClienteApi("http://localhost:3737", "hs_x", f);
+  expect(await c.avisos()).toEqual({ avisos: [], cursor: "c9", total: 3 });
+  await c.avisos("a b");
+  expect(chamadas[0]!.url).toBe("http://localhost:3737/api/notifications");
+  expect(chamadas[1]!.url).toBe("http://localhost:3737/api/notifications?depois=a%20b");
+  expect((chamadas[1]!.init.headers as Record<string, string>).authorization).toBe("Bearer hs_x");
+});
+
+test("avisos lança em falha de rede, 401 e resposta inválida", async () => {
+  await expect(criarClienteApi("http://x", "t", falhaCom(erroComCausa("ECONNREFUSED"))).avisos()).rejects.toThrow();
+  await expect(criarClienteApi("http://x", "t", falso(() => resposta(401, {})).f).avisos()).rejects.toThrow();
+  await expect(criarClienteApi("http://x", "t", falso(() => resposta(200, { x: 1 })).f).avisos()).rejects.toThrow();
+});
+
+test("marcarVisto faz POST em /visto e aceita 204", async () => {
+  const { f, chamadas } = falso(() => new Response(null, { status: 204 }));
+  await criarClienteApi("http://localhost:3737", "t", f).marcarVisto("a/1");
+  expect(chamadas[0]!.url).toBe("http://localhost:3737/api/notifications/a%2F1/visto");
+  expect(chamadas[0]!.init.method).toBe("POST");
+  await expect(criarClienteApi("http://x", "t", falso(() => resposta(500, {})).f).marcarVisto("a")).rejects.toThrow();
+});
