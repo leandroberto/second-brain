@@ -24,3 +24,4 @@ export type { Candidate } from "./importer/extract.js";
 export * from "./integration.js";
 export * from "./migrate-flat.js";
 export * from "./assistant/index.js";
+export * from "./modules/index.js";
