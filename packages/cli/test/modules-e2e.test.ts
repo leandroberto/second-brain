@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Brain, issueHumanSession } from "@brain/core";
+import { Brain, issueHumanSession, modulesStateRoot } from "@brain/core";
 import { startServe, type ServeHandle } from "../src/serve.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
@@ -31,8 +31,9 @@ beforeAll(async () => {
   const modules = { lembrete: { enabled: true, path: LEMBRETE, config: { horario: "10:00" } } };
   writeFileSync(brain.vault.configPath, `${atual.trimEnd()}\nmodules: ${JSON.stringify(modules)}\n`, "utf8");
   (brain as unknown as { reloadConfig(): void }).reloadConfig();
-  // sem `engine`: a IA dos módulos responde "IA indisponível"
-  serve = await startServe(brain, { port: 0, sessions: sessions() });
+  // sem `engine`: a IA dos módulos responde "IA indisponível". Sem o agendador automático: perto das 10:00 locais o tick
+  // competiria com `rodarDiario` (o teste roda a tarefa só pelo "rodar agora")
+  serve = await startServe(brain, { port: 0, sessions: sessions(), agendador: false });
   sessao = issueHumanSession(brain.vault.root, await terminalHuman("alice", sessions()), sessions());
 });
 afterAll(async () => {
@@ -44,6 +45,8 @@ describe("módulo de exemplo lembrete, ponta a ponta", () => {
   it("o módulo sobe ativo", async () => {
     const r = await json(await call(serve.token, "/api/modules"));
     expect(r.modulos.map((m: { id: string; status: string }) => [m.id, m.status])).toEqual([["lembrete", "ativo"]]);
+    // nenhum tick automático rodou (a subida do agendador gravaria o estado das tarefas)
+    expect(existsSync(join(modulesStateRoot(brain), "_scheduler.json"))).toBe(false);
   });
 
   let itemId = "";

@@ -12,6 +12,11 @@ export interface ServeOptions {
   /** motor do assistente; sem ele, a IA dos módulos responde "IA indisponível" */
   engine?: AssistantEngine;
   sessions?: SessionStoreOptions;
+  /**
+   * `false` só em teste: não liga o tick automático do agendador (as tarefas rodam só por "rodar agora"), para o teste não
+   * competir com o relógio real. Padrão (e sempre em produção): ligado.
+   */
+  agendador?: boolean;
 }
 
 export interface ServeHandle { url: string; token: string; registry: ModuleRegistry; close(): Promise<void> }
@@ -48,7 +53,7 @@ async function montar(b: Brain, o: ServeOptions, root: string, lock: { liberar()
     hostname: hostname(),
   });
   const scheduler = new Scheduler(registry, root);
-  scheduler.start();
+  if (o.agendador !== false) scheduler.start();
   const reiniciar = () => { try { return modulesConfigHash(loadConfig(b.vault.configPath).modules) !== hash; } catch { return false; } };
 
   let api;
