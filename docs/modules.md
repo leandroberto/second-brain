@@ -36,6 +36,10 @@ ln -s ~/projetos/meu-modulo "${BRAIN_MODULES_DIR:-$HOME/.local/share/second-brai
 
 Alternativa: `modules.<id>.path` na config do vault (aceita `~` e `$VAR`), para quem não sincroniza o vault entre máquinas.
 
+`BRAIN_MODULES_DIR` e `modules.<id>.path` precisam ser **absolutos** depois da expansão de `~` e `$VAR`: um caminho relativo
+seria resolvido pela pasta atual de cada processo (o `serve` e o MCP divergem). Relativo deixa o módulo `ausente` com a causa
+("BRAIN_MODULES_DIR deve ser absoluto", "modules.<id>.path deve ser absoluto").
+
 ## Configuração no vault
 
 A chave `modules` do `.brain/config.yaml` diz quais módulos estão ligados e a configuração de cada um:

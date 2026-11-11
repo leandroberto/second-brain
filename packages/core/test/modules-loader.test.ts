@@ -64,6 +64,20 @@ describe("loadModules", () => {
     expect(reg.get("remoto")).toMatchObject({ status: "inativo", causa: "inativo nesta máquina" });
   });
 
+  it("pasta relativa deixa o módulo ausente com a causa clara", async () => {
+    const antes = process.env.BRAIN_MODULES_DIR;
+    process.env.BRAIN_MODULES_DIR = "modulos-relativos";
+    try {
+      const b = await comModulos({ rel: { path: "./mods/rel" }, padrao: {}, remoto: { path: "rel", host: "outra-maquina" } });
+      const reg = await loadModules(b, { modo: "serve", hostname: "esta-maquina" });
+      expect(reg.get("rel")).toMatchObject({ status: "ausente" });
+      expect(reg.get("rel")!.causa).toContain("modules.rel.path deve ser absoluto");
+      expect(reg.get("padrao")).toMatchObject({ status: "ausente" });
+      expect(reg.get("padrao")!.causa).toContain("BRAIN_MODULES_DIR deve ser absoluto");
+      expect(reg.get("remoto")).toMatchObject({ status: "inativo" }); // de outra máquina: o caminho é de lá
+    } finally { if (antes === undefined) delete process.env.BRAIN_MODULES_DIR; else process.env.BRAIN_MODULES_DIR = antes; }
+  });
+
   it("enabled: false é ignorado (não aparece)", async () => {
     const b = await comModulos({ ok: mod("ok", { enabled: false }) });
     const reg = await loadModules(b, { modo: "serve" });
@@ -255,6 +269,15 @@ describe("resolveModuleDir e validar", () => {
     expect(resolveModuleDir("m", { path: "~/a/$X/b" }, env)).toBe("/h/a//x/b");
     expect(resolveModuleDir("m", {}, env)).toBe("/mods/m");
     expect(resolveModuleDir("m", {}, { HOME: "/h" } as NodeJS.ProcessEnv)).toBe("/h/.local/share/second-brain/modules/m");
+  });
+
+  it("caminho relativo é recusado (o cwd do serve e o do MCP divergem)", () => {
+    expect(() => resolveModuleDir("m", {}, { HOME: "/h", BRAIN_MODULES_DIR: "mods" } as NodeJS.ProcessEnv)).toThrow("BRAIN_MODULES_DIR deve ser absoluto");
+    expect(() => resolveModuleDir("m", { path: "./mods/m" }, { HOME: "/h" } as NodeJS.ProcessEnv)).toThrow("modules.m.path deve ser absoluto");
+    // relativo DEPOIS da expansão: variável ausente vira vazio
+    expect(() => resolveModuleDir("m", { path: "$NAO_TEM/m" }, { HOME: "/h" } as NodeJS.ProcessEnv)).not.toThrow(); // "/m": absoluto
+    expect(() => resolveModuleDir("m", { path: "${REL}/m" }, { HOME: "/h", REL: "rel" } as NodeJS.ProcessEnv)).toThrow("deve ser absoluto");
+    expect(resolveModuleDir("m", { path: "$BASE/m" }, { HOME: "/h", BASE: "/b" } as NodeJS.ProcessEnv)).toBe("/b/m");
   });
 
   it("validar junta path: message e aceita schema sem instanceof", async () => {

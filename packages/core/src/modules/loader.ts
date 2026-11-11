@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, hostname as osHostname } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { BrainError } from "@brain/shared";
 import { pathToFileURL } from "node:url";
 import { SDK_VERSION, type ModuleDef, type ModuleIa } from "@brain/module-sdk";
 import type { Brain } from "../brain.js";
@@ -16,14 +17,22 @@ import { modulesStateRoot } from "./state.js";
 /** Expande `~` e `$VAR`/`${VAR}` num caminho configurado. Variável ausente vira vazio. */
 function expandir(p: string, env: NodeJS.ProcessEnv): string {
   const home = env.HOME || homedir();
-  const s = p.replace(/^~(?=$|\/)/, home).replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, a, b) => env[a ?? b] ?? "");
-  return isAbsolute(s) ? s : resolve(s);
+  return p.replace(/^~(?=$|\/)/, home).replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, a, b) => env[a ?? b] ?? "");
 }
 
-/** Ordem: `path` da config (com `~`/`$VAR`), depois `$BRAIN_MODULES_DIR/<id>`, por fim `~/.local/share/second-brain/modules/<id>`. */
+/** Caminho já expandido precisa ser absoluto: relativo resolveria pelo cwd, e o do `serve` e o do MCP divergem. */
+function absoluto(p: string, origem: string): string {
+  if (!isAbsolute(p)) throw new BrainError("invalid", `${origem} deve ser absoluto (recebido: "${p}"); use um caminho completo, ~ ou $VAR`);
+  return p;
+}
+
+/**
+ * Ordem: `path` da config (com `~`/`$VAR`), depois `$BRAIN_MODULES_DIR/<id>`, por fim `~/.local/share/second-brain/modules/<id>`.
+ * Lança `invalid` se o caminho, depois da expansão, for relativo.
+ */
 export function resolveModuleDir(id: string, entry: { path?: string }, env: NodeJS.ProcessEnv = process.env): string {
-  if (entry.path) return expandir(entry.path, env);
-  if (env.BRAIN_MODULES_DIR) return join(expandir(env.BRAIN_MODULES_DIR, env), id);
+  if (entry.path) return absoluto(expandir(entry.path, env), `modules.${id}.path`);
+  if (env.BRAIN_MODULES_DIR) return join(absoluto(expandir(env.BRAIN_MODULES_DIR, env), "BRAIN_MODULES_DIR"), id);
   return join(env.HOME || homedir(), ".local", "share", "second-brain", "modules", id);
 }
 
@@ -85,12 +94,14 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
 
   for (const [id, entry] of Object.entries(brain.config.modules)) {
     if (entry.enabled === false) continue;
-    const dir = resolveModuleDir(id, entry);
+    let dir = ""; let caminhoInvalido: string | undefined;
+    try { dir = resolveModuleDir(id, entry); } catch (e) { caminhoInvalido = msg(e); }
     const m: LoadedModule = { id, dir, status: "falho" as ModuleStatus };
     reg.add(m);
     const falhar = (causa: string) => { m.status = "falho"; m.causa = causa; };
 
     if (entry.host && entry.host !== host) { m.status = "inativo"; m.causa = "inativo nesta máquina"; continue; }
+    if (caminhoInvalido) { m.status = "ausente"; m.causa = caminhoInvalido; continue; }
     if (!existsSync(dir)) { m.status = "ausente"; m.causa = `pasta do módulo não encontrada: ${dir}`; continue; }
 
     let def: ModuleDef;
