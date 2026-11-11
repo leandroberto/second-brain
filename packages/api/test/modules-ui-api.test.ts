@@ -12,7 +12,7 @@ import { terminalHuman } from "../../core/test/helpers.js";
 // Aba de módulo (spec de módulos §7.7): estático em /modules/<id>/, token de página, CORS só para a origem opaca `null`.
 const FIX = resolve(import.meta.dirname, "fixtures/modules");
 const savedState = process.env.BRAIN_STATE_DIR;
-const CSP_MODULO = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; sandbox allow-scripts allow-forms";
+const CSP_MODULO = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; form-action 'self'; sandbox allow-scripts allow-forms";
 
 let dir: string; let brain: Brain; let api: ApiHandle;
 let registry: ModuleRegistry;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, BookOpen, Bot, CalendarDays, ChartBar, CircleCheck, Clock, Cloud, Database, FileText, Folder, Globe, Heart, Lightbulb, ListTodo, Mail, MessageSquare, Puzzle, Rocket, Sparkles, Star, StickyNote, Tag, Timer, Users, Wallet, Wrench, Zap, type LucideIcon } from "lucide-react";
 import { api } from "./api";
 import { errMsg, go } from "./lib";
-import { idModuloValido, mensagemInit, mensagemTema, mensagemToken, parseMensagemDoModulo, restoValido, criarControleRemontagem, type Tema } from "./moduleBridge";
+import { idModuloValido, mensagemInit, mensagemTema, mensagemToken, parseMensagemDoModulo, restoValido, criarControlePonte, criarControleRemontagem, type Tema } from "./moduleBridge";
 
 /** Ícones aceitos para `icone` do módulo (nome em kebab-case do lucide). Qualquer outro vira `Puzzle`. */
 const ICONES: Record<string, LucideIcon> = {
@@ -41,22 +41,25 @@ function ModuleFrameValido({ id, resto, onBadge }: { id: string; resto: string; 
     const f = () => { if (ctrl.current.aoMudarHash(restoDoHash(id))) setGeracao((g) => g + 1); };
     addEventListener("hashchange", f); return () => removeEventListener("hashchange", f);
   }, [id]);
-  return <Frame key={geracao} id={id} resto={ctrl.current.ultimo()} onBadge={onBadge} onNavegou={(r) => ctrl.current.aoNavegar(r)} />;
+  return <Frame key={geracao} id={id} resto={ctrl.current.ultimo()} onBadge={onBadge} onNavegou={(r) => ctrl.current.aoNavegar(r)} onRemontar={() => setGeracao((g) => g + 1)} />;
 }
 
-function Frame({ id, resto, onBadge, onNavegou }: { id: string; resto: string; onBadge?: (id: string, n: number) => void; onNavegou: (resto: string) => void }) {
+function Frame({ id, resto, onBadge, onNavegou, onRemontar }: { id: string; resto: string; onBadge?: (id: string, n: number) => void; onNavegou: (resto: string) => void; onRemontar: () => void }) {
   const [src] = useState(() => `/modules/${id}/index.html#${resto}`); // congelado no mount: navegar não recarrega o iframe
   const iframe = useRef<HTMLIFrameElement>(null);
   const restoRef = useRef(resto); // resto inicial: `navegar` não recarrega o iframe
   const tokenRef = useRef<{ token: string; expira: number } | undefined>(undefined);
   const onBadgeRef = useRef(onBadge); onBadgeRef.current = onBadge;
   const onNavegouRef = useRef(onNavegou); onNavegouRef.current = onNavegou;
+  const ponte = useRef(criarControlePonte()); // um por montagem do iframe (cada remontagem cria outro Frame)
   const [pronto, setPronto] = useState(false);
+  const [saiu, setSaiu] = useState(false); // o iframe navegou para outro documento: credencial cortada
   const [erro, setErro] = useState<string>();
   const [expiraEm, setExpiraEm] = useState<number>();
   const apiBase = `/api/modules/${id}`;
 
-  const enviar = useCallback((msg: unknown) => { iframe.current?.contentWindow?.postMessage(msg, "*"); }, []); // origem opaca: só "*"
+  // origem opaca: só "*". Por isso nada sai depois que o iframe navegou para outro documento (`ponte`)
+  const enviar = useCallback((msg: unknown) => { if (ponte.current.podeEnviar()) iframe.current?.contentWindow?.postMessage(msg, "*"); }, []);
 
   const obterToken = useCallback(async (): Promise<boolean> => {
     try {
@@ -70,6 +73,7 @@ function Frame({ id, resto, onBadge, onNavegou }: { id: string; resto: string; o
   }, [id]);
 
   const renovar = useCallback(async () => {
+    if (!ponte.current.podeEnviar()) return;
     if (await obterToken()) { setPronto(true); if (tokenRef.current) enviar(mensagemToken(tokenRef.current.token)); }
   }, [obterToken, enviar]);
 
@@ -92,7 +96,7 @@ function Frame({ id, resto, onBadge, onNavegou }: { id: string; resto: string; o
     const h = (ev: MessageEvent) => {
       const m = parseMensagemDoModulo(ev, iframe.current?.contentWindow);
       if (!m) return;
-      if (m.type === "brain:pronto") { if (tokenRef.current) enviar(mensagemInit(tokenRef.current.token, temaAtual(), restoRef.current, apiBase)); }
+      if (m.type === "brain:pronto") { if (tokenRef.current && ponte.current.aoPronto()) enviar(mensagemInit(tokenRef.current.token, temaAtual(), restoRef.current, apiBase)); }
       else if (m.type === "brain:navegar") { restoRef.current = m.resto; onNavegouRef.current(m.resto); history.replaceState(null, "", `#/m/${id}${m.resto ? "/" + m.resto.split("/").map(encodeURIComponent).join("/") : ""}`); }
       else if (m.type === "brain:abrirNota") go(`note/${encodeURIComponent(m.id)}`);
       else onBadgeRef.current?.(id, m.n);
@@ -110,7 +114,9 @@ function Frame({ id, resto, onBadge, onNavegou }: { id: string; resto: string; o
   return (
     <div className="modframe">
       {erro && <div className="banner danger" role="alert"><span>Não foi possível obter o acesso da aba do módulo: {erro}</span><button className="btn sm" onClick={() => void renovar()}>Tentar de novo</button></div>}
-      {pronto && <iframe ref={iframe} title={`Módulo ${id}`} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={src} />}
+      {saiu && <div className="banner danger" role="alert"><span>A aba do módulo saiu da própria página (link externo ou outro documento) e o acesso dela foi cortado.</span><button className="btn sm" onClick={onRemontar}>Recarregar a aba</button></div>}
+      {pronto && !saiu && <iframe ref={iframe} title={`Módulo ${id}`} sandbox="allow-scripts allow-forms" referrerPolicy="no-referrer" src={src}
+        onLoad={() => { if (!ponte.current.aoCarregar()) { tokenRef.current = undefined; setSaiu(true); } }} />}
     </div>
   );
 }

@@ -291,7 +291,7 @@ export const PREFLIGHT_OPACO = {
  * leria o `localStorage` onde a UI guarda a sessão humana (anti-objetivo do §4). Os subrecursos de um documento sandboxed
  * mandam `Origin: null`, que é exatamente o CORS aceito nos prefixos de módulo.
  */
-export const CSP_DA_ABA = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; sandbox allow-scripts allow-forms";
+export const CSP_DA_ABA = "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; form-action 'self'; sandbox allow-scripts allow-forms";
 
 /** Caminho cru com segmento `.`/`..` (inclusive `%2e`, e `\` que a URL trata como `/`): a URL já normalizou, então recusa. */
 export const temSegmentoDePonto = (bruto: string): boolean =>

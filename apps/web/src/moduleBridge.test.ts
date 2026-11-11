@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { criarControleRemontagem, deveRemontar, idModuloValido, mensagemInit, parseMensagemDoModulo, restoValido } from "./moduleBridge";
+import { criarControlePonte, criarControleRemontagem, deveRemontar, idModuloValido, mensagemInit, parseMensagemDoModulo, restoValido } from "./moduleBridge";
 
 const janela = {};
 const ev = (data: unknown, over: Partial<{ origin: string; source: unknown }> = {}) => ({ origin: "null", source: janela, data, ...over });
@@ -73,5 +73,34 @@ describe("criarControleRemontagem", () => {
     expect(c.aoMudarHash("a/b")).toBe(false);
     expect(c.aoMudarHash("c")).toBe(true);
     expect(c.aoMudarHash("c")).toBe(false);
+  });
+});
+
+describe("criarControlePonte", () => {
+  it("brain:pronto só vale uma vez por montagem do iframe", () => {
+    const p = criarControlePonte();
+    expect(p.aoPronto()).toBe(true);
+    expect(p.aoPronto()).toBe(false); // um segundo pronto (outro documento no mesmo iframe) não recebe o token
+    expect(p.aoCarregar()).toBe(true);
+    expect(p.podeEnviar()).toBe(true);
+  });
+  it("pronto antes ou depois do primeiro load é aceito", () => {
+    const p = criarControlePonte();
+    expect(p.aoCarregar()).toBe(true);
+    expect(p.aoPronto()).toBe(true);
+  });
+  it("segundo load (o iframe navegou para outro documento) corta a credencial de vez", () => {
+    const p = criarControlePonte();
+    p.aoCarregar(); p.aoPronto();
+    expect(p.aoCarregar()).toBe(false);
+    expect(p.podeEnviar()).toBe(false);
+    expect(p.aoPronto()).toBe(false);
+    expect(p.aoCarregar()).toBe(false);
+  });
+  it("navegou antes de qualquer pronto: nada é enviado", () => {
+    const p = criarControlePonte();
+    p.aoCarregar(); p.aoCarregar();
+    expect(p.aoPronto()).toBe(false);
+    expect(p.podeEnviar()).toBe(false);
   });
 });

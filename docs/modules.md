@@ -154,7 +154,12 @@ A página roda num iframe com origem opaca (`sandbox="allow-scripts allow-forms"
 - ela **não** acessa a janela, o armazenamento nem a sessão do second-brain;
 - chama a API com um **token de página**, curto, só em memória e só para as rotas do próprio módulo; ele morre junto com a
   sessão humana que abriu a aba (revogada ou expirada);
-- a CSP não permite script inline: todo JavaScript fica em arquivo (`<script type="module" src="app.js">`);
+- a CSP (`default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+  frame-ancestors 'self'; form-action 'self'; sandbox allow-scripts allow-forms`) não permite script inline: todo JavaScript
+  fica em arquivo (`<script type="module" src="app.js">`); `fetch` e formulários só vão ao próprio second-brain;
+- **links externos não funcionam dentro da aba**: se o iframe sair da página do módulo (link, formulário, `location = ...`),
+  o second-brain corta o acesso da aba e mostra "Recarregar a aba". Para mudar de tela use `navegar(resto)`; para abrir uma
+  nota, `abrirNota(id)`;
 - renderize dado com `textContent`, nunca com `innerHTML`.
 
 O SDK traz dois arquivos estáticos opcionais, servidos pelo second-brain:

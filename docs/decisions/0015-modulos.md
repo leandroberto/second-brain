@@ -68,6 +68,13 @@ o sandbox só no atributo do iframe. Sem ele na CSP, uma página de módulo aber
 origem do second-brain e leria o `localStorage` onde a UI guarda a sessão humana. Com `sandbox` na CSP, a origem é opaca
 também nesse caso.
 
+A CSP completa do estático da aba é:
+`default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; form-action 'self'; sandbox allow-scripts allow-forms`.
+`form-action 'self'` impede que um formulário da aba envie dados para fora. Como defesa em profundidade, a UI aceita
+`brain:pronto` uma única vez por montagem do iframe e, se o iframe carregar um segundo documento (link externo, formulário,
+`location = ...`), para de enviar o token (inclusive a renovação, que vai com `"*"` por causa da origem opaca), tira o iframe
+da tela e oferece recarregar a aba.
+
 ### Tarefas agendadas
 
 Uma ocorrência conta como atendida **assim que a execução começa**. Falha, timeout ou queda do processo não geram nova

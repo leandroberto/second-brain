@@ -58,3 +58,21 @@ export function criarControleRemontagem(restoInicial: string) {
     aoMudarHash(resto: string): boolean { if (!deveRemontar(resto, ultimo)) return false; ultimo = resto; return true; },
   };
 }
+
+/**
+ * Controle da ponte de UM iframe montado (defesa em profundidade). O token só vai para o documento da aba que o SB carregou:
+ * - `brain:pronto` é aceito uma única vez por montagem (outro documento no mesmo iframe pediria o token de novo);
+ * - o primeiro `load` é o da aba; um segundo `load` significa que o iframe navegou para outro documento (link externo, form,
+ *   `location = ...`), e a partir daí nada mais é enviado (nem renovação de token). O SB então remonta ou mostra erro.
+ */
+export function criarControlePonte() {
+  let cargas = 0; let prontoAceito = false; let cortada = false;
+  return {
+    /** Evento `load` do iframe: `false` quando é uma navegação para outro documento (a credencial foi cortada). */
+    aoCarregar(): boolean { cargas++; if (cargas > 1) cortada = true; return !cortada; },
+    /** `brain:pronto`: `true` só na primeira vez e enquanto a ponte não foi cortada (então envie `brain:init`). */
+    aoPronto(): boolean { if (cortada || prontoAceito) return false; prontoAceito = true; return true; },
+    /** Ainda pode mandar mensagens (token, tema) para o iframe. */
+    podeEnviar(): boolean { return !cortada; },
+  };
+}
