@@ -6,3 +6,4 @@ export * from "./registry.js";
 export * from "./loader.js";
 export * from "./cron.js";
 export * from "./scheduler.js";
+export * from "./avisos.js";

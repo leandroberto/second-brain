@@ -42,7 +42,7 @@ export function createModuleContext(brain: Brain, id: string, config: unknown, d
     estado: createModuleState(modulesStateRoot(brain), id),
     ia: deps.ia,
     avisar: async (a) => { await deps.avisos.avisar(id, a); },
-    badge: (n) => deps.avisos.badge(id, n),
+    badge: (n) => deps.avisos.badge(id, Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0),
     log: {
       info: (m) => { console.error(`${prefixo} ${m}`); },
       erro: (m, e) => { console.error(`${prefixo} ${m}${e ? `: ${e instanceof Error ? e.message : String(e)}` : ""}`); },
