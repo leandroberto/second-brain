@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, serveVivo, vaultFingerprint, writeServeInfo } from "@brain/core";
+import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, vaultFingerprint, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
 import { dispararTarefa, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
@@ -101,7 +101,6 @@ describe("liveness do serve e serve duplicado", () => {
     writeServeInfo(root, { url: semServe, pid: process.ppid, iniciado: new Date().toISOString() });
     expect(readServeInfo(root)).toEqual({ url: semServe, pid: process.ppid });
     expect(await serveEstado(root, brain.vault)).toEqual({ estado: "morto" });
-    expect(await serveVivo(root, brain.vault)).toBeUndefined();
     writeFileSync(join(root, "_executando.json"), JSON.stringify([{ id: "ok", onde: "rota:GET /eco", desde: new Date().toISOString() }]));
     const reg = await loadModules(brain, { modo: "serve" });
     expect(existsSync(join(root, "_executando.json"))).toBe(false);
@@ -112,7 +111,7 @@ describe("liveness do serve e serve duplicado", () => {
   it("segundo brain serve no mesmo vault é recusado e não mexe no vivo", async () => {
     const s = await startServe(brain, { port: 0, sessions: sessions() });
     try {
-      expect(await serveVivo(root, brain.vault)).toEqual({ url: s.url, pid: process.pid });
+      expect(await serveEstado(root, brain.vault)).toEqual({ estado: "vivo", url: s.url, pid: process.pid });
       writeFileSync(join(root, "_executando.json"), "[]"); // marcador "do vivo": o recusado não pode apagá-lo
       const r = await run(process.execPath, [BIN, "serve", "--port", "0", "--vault", brain.vault.root], { env: env(), timeout: 30_000 }).catch((e) => e as { code: number; stderr: string });
       expect(r.code).toBe(1);

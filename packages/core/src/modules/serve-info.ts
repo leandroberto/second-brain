@@ -35,7 +35,7 @@ function ler(root: string): ServeInfo | undefined {
 
 /**
  * `{ url, pid }` do `serve` se o arquivo existe e o pid ainda existe; senão `undefined`. É só um PRÉ-FILTRO barato: o pid pode
- * ter sido reusado (reboot) ou ser de outro usuário. Para decidir que há um serve deste vault, use `serveVivo`.
+ * ter sido reusado (reboot) ou ser de outro usuário. Para decidir que há um serve deste vault, use `serveEstado`.
  */
 export function readServeInfo(root: string): { url: string; pid: number } | undefined {
   const i = ler(root);
@@ -100,12 +100,6 @@ export async function serveEstado(root: string, vault: { root: string; tokenPath
   let j: { vault?: unknown; pid?: unknown };
   try { j = await r.json() as typeof j; } catch { return indeterminado("resposta ilegível"); }
   return j.pid === i.pid && j.vault === vaultFingerprint(vault.root) ? { estado: "vivo", url: i.url, pid: i.pid } : { estado: "morto" };
-}
-
-/** `{ url, pid }` só quando o serve está CONFIRMADO vivo (`serveEstado` = `vivo`). */
-export async function serveVivo(root: string, vault: { root: string; tokenPath: string }, o: { timeoutMs?: number } = {}): Promise<{ url: string; pid: number } | undefined> {
-  const e = await serveEstado(root, vault, o);
-  return e.estado === "vivo" ? { url: e.url, pid: e.pid } : undefined;
 }
 
 /** Fallback de §7.10 quando não há `serve.json`: `http://127.0.0.1:<BRAIN_PORT ou 3737>`. Nunca para enviar sessão humana. */

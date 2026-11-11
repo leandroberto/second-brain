@@ -48,11 +48,6 @@ export class ModuleRegistry {
   list(): LoadedModule[] { return [...this.modules.values()]; }
   get(id: string): LoadedModule | undefined { return this.modules.get(id); }
 
-  markFailed(id: string, causa: string): void {
-    const m = this.modules.get(id);
-    if (m) { m.status = "falho"; m.causa = causa; }
-  }
-
   recordError(id: string, onde: string, e: unknown): void {
     const mensagem = (e instanceof Error ? e.message : String(e)).slice(0, 500);
     if (!this.root) return;
