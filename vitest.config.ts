@@ -4,6 +4,7 @@ const p = (s: string) => fileURLToPath(new URL(s, import.meta.url));
 export default defineConfig({
   resolve: { alias: {
     "@brain/shared": p("./packages/shared/src/index.ts"),
+    "@brain/module-sdk": p("./packages/module-sdk/src/index.ts"),
     "@brain/core": p("./packages/core/src/index.ts"),
     "@brain/mcp": p("./packages/mcp/src/index.ts"),
     "@brain/api": p("./packages/api/src/index.ts"),

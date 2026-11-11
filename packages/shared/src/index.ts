@@ -46,10 +46,10 @@ export type Actor = z.infer<typeof ActorSchema>;
 /**
  * Canal pelo qual a ação chegou ao Core. A IDENTIDADE confiável é ator + canal, e quem a define é o adapter (MCP, API, CLI),
  * nunca o cliente: um corpo HTTP com {kind:"human"} não vira humano. Só `ui` (sessão humana) e `cli-admin` (terminal interativo
- * com confirmação) são canais humanos de revisão. `desktop` é o humano do atalho desktop (sessão com escopo restrito): anota,
+ * com confirmação) são canais humanos de revisão. `module` é o agente de um módulo carregado (nunca humano). `desktop` é o humano do atalho desktop (sessão com escopo restrito): anota,
  * pergunta, reprocessa e desfaz as próprias capturas, mas não revisa.
  */
-export const CHANNELS = ["ui", "cli-admin", "cli", "mcp", "api", "importer", "maintenance", "seed", "internal", "desktop"] as const;
+export const CHANNELS = ["ui", "cli-admin", "cli", "mcp", "api", "importer", "maintenance", "seed", "internal", "desktop", "module"] as const;
 export type Channel = (typeof CHANNELS)[number];
 export interface Principal extends Actor { readonly channel: Channel }
 

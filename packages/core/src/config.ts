@@ -52,6 +52,14 @@ export const ConfigSchema = z.object({
     timeout_s: z.number().int().default(120),
     claude_path: z.string().default("claude"),
   }).default({ engine: "claude", model: "sonnet", max_budget_usd: 0.5, timeout_s: 120, claude_path: "claude" }),
+  /** módulos de outros repositórios, por id (spec de módulos): só entram aqui; o SB nunca importa um módulo pelo nome */
+  modules: z.record(z.string(), z.object({
+    enabled: z.boolean().default(true),
+    path: z.string().optional(),
+    host: z.string().optional(),
+    ia_max_usd_dia: z.number().default(2),
+    config: z.unknown().optional(),
+  }).passthrough()).default({}),
 });
 export type BrainConfig = z.infer<typeof ConfigSchema>;
 
