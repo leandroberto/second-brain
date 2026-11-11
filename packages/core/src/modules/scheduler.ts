@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
@@ -36,6 +36,7 @@ export class Scheduler {
   private timer?: ReturnType<typeof setInterval>;
   private ultimoTick?: number;
   private parado = false;
+  private erroGravacaoVisto = false;
   private readonly emCurso = new Map<string, { ctl: AbortController; fim: Promise<ResultadoTarefa> }>();
   private readonly crons = new Map<string, { expr: string; cron: Cron }>();
   private readonly invalidas = new Set<string>();
@@ -71,8 +72,11 @@ export class Scheduler {
       const cron = this.cronDe(id, t);
       if (!cron) continue;
       const r = this.estado[`${id}/${t.id}`];
+      let proxima: string;
+      try { proxima = cron.next(this.agora()).toISOString(); }
+      catch (e) { this.reg.recordError(id, `tarefa:${t.id}`, e); continue; }
       out.push({
-        tarefa: t.id, quando: t.quando, proxima: cron.next(this.agora()).toISOString(),
+        tarefa: t.id, quando: t.quando, proxima,
         ultimaOcorrencia: r?.ultimaOcorrencia, inicio: r?.inicio, fim: r?.fim, resultado: r?.resultado, erro: r?.erro,
         suspensa: r?.suspensa ?? false, errosSeguidos: r?.errosSeguidos ?? 0,
       });
@@ -90,6 +94,7 @@ export class Scheduler {
     if (!cron) throw new BrainError("invalid", `tarefa "${id}/${tarefa}" tem expressão cron inválida`);
     const chave = `${id}/${tarefa}`;
     if (this.emCurso.has(chave)) return { resultado: "erro", erro: "já em execução" };
+    this.erroGravacaoVisto = false;
     const r = this.registro(chave);
     const oc = ocorrencia ?? (r.ultimaOcorrencia ? new Date(r.ultimaOcorrencia) : cron.prev(this.agora()));
     r.suspensa = false;
@@ -103,9 +108,11 @@ export class Scheduler {
     this.ultimoTick = agora.getTime();
     const reaplicar = subida || salto;
     let sujo = false;
+    this.erroGravacaoVisto = false;
     for (const m of this.reg.list()) {
       if (m.status !== "ativo" || !m.ctx) continue;
       for (const t of m.def?.tarefas ?? []) {
+       try {
         const cron = this.cronDe(m.id, t);
         if (!cron) continue;
         const chave = `${m.id}/${t.id}`;
@@ -117,9 +124,10 @@ export class Scheduler {
         const pula = r.suspensa || this.emCurso.has(chave) || (reaplicar && !t.recuperar);
         if (pula) { r.ultimaOcorrencia = prev.toISOString(); sujo = true; continue; }
         void this.executar(m.id, t, prev, true);
+       } catch (e) { this.reg.recordError(m.id, `tarefa:${t.id}`, e); }
       }
     }
-    if (sujo) this.gravar();
+    if (sujo) this.gravar(undefined);
   }
 
   private executar(id: string, t: Tarefa, ocorrencia: Date, automatica: boolean): Promise<ResultadoTarefa> {
@@ -130,7 +138,13 @@ export class Scheduler {
     if (automatica || !r.ultimaOcorrencia) r.ultimaOcorrencia = ocorrencia.toISOString();
     r.inicio = this.agora().toISOString();
     r.fim = undefined; r.resultado = undefined; r.erro = undefined;
-    this.gravar();
+    const falha = this.gravar(id, `tarefa:${t.id}`);
+    if (falha) {
+      // sem marcador persistido a garantia "atendida ao começar" não vale: não roda
+      const erro = `não foi possível gravar o marcador da ocorrência: ${falha}`;
+      r.fim = this.agora().toISOString(); r.resultado = "erro"; r.erro = erro;
+      return Promise.resolve({ resultado: "erro", erro });
+    }
     const fim = this.rodar(id, t, ocorrencia, ctl).then((res) => this.concluir(id, t, chave, res));
     this.emCurso.set(chave, { ctl, fim });
     void fim.finally(() => this.emCurso.delete(chave)).catch(() => undefined);
@@ -172,7 +186,7 @@ export class Scheduler {
       if (r.errosSeguidos >= MAX_ERROS_SEGUIDOS) r.suspensa = true;
       this.reg.recordError(id, `tarefa:${t.id}`, res.interna ?? new Error(res.erro ?? res.resultado));
     }
-    this.gravar();
+    this.gravar(id, `tarefa:${t.id}`);
     return res.erro === undefined ? { resultado: res.resultado } : { resultado: res.resultado, erro: res.erro };
   }
 
@@ -186,6 +200,9 @@ export class Scheduler {
     if (c && c.expr === t.quando) return c.cron;
     try {
       const cron = parseCron(t.quando);
+      // expressão válida mas impossível (ex.: 31 de fevereiro) só falha ao buscar ocorrência
+      const agora = this.agora();
+      cron.next(agora); cron.prev(agora);
       this.crons.set(chave, { expr: t.quando, cron });
       return cron;
     } catch (e) {
@@ -204,11 +221,19 @@ export class Scheduler {
     } catch { /* arquivo corrompido: recomeça sem histórico (primeira subida não recupera) */ }
   }
 
-  private gravar(): void {
+  /** Devolve a mensagem de erro (ou `undefined` se gravou). Falha de disco nunca lança; registra no máximo uma vez por ciclo. */
+  private gravar(id?: string, onde = "scheduler"): string | undefined {
+    const tmp = `${this.arq}.${randomBytes(6).toString("hex")}.tmp`;
     try {
-      const tmp = `${this.arq}.${randomBytes(6).toString("hex")}.tmp`;
       writeFileSync(tmp, JSON.stringify(this.estado, null, 2), { mode: 0o600 });
       renameSync(tmp, this.arq);
-    } catch { /* falha de disco não derruba o serve */ }
+      return undefined;
+    } catch (e) {
+      try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+      const msg = e instanceof Error ? e.message : String(e);
+      const alvo = id ?? this.reg.list()[0]?.id;
+      if (alvo && !this.erroGravacaoVisto) { this.erroGravacaoVisto = true; this.reg.recordError(alvo, onde, new Error(`falha ao gravar _scheduler.json: ${msg}`)); }
+      return msg;
+    }
   }
 }

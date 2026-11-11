@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -181,5 +181,33 @@ describe("Scheduler", () => {
     await s.stop();
     expect(sinal.aborted).toBe(true);
     expect((await p).resultado).toBe("erro");
+  });
+
+  it("expressão impossível (31 de fevereiro) não derruba start, tick nem status; as outras seguem", async () => {
+    let n = 0;
+    const { s, reg, relogio } = montar({ id: "ruim", quando: "0 0 31 2 *", recuperar: true, rodar: async () => undefined }, new Date(L(2026, 11, 12, 8).getTime() - 10));
+    reg.get("mod")!.def!.tarefas!.push({ id: "boa", quando: "0 8 * * *", rodar: async () => { n++; } });
+    expect(() => s.start()).not.toThrow();
+    await esperar();
+    relogio.agora = L(2026, 11, 12, 8, 0);
+    await esperar();
+    expect(n).toBe(1);
+    expect(() => s.status("mod")).not.toThrow();
+    expect(s.status("mod").map((x) => x.tarefa)).toEqual(["boa"]);
+    expect(reg.errors("mod").filter((e) => e.onde === "tarefa:ruim")).toHaveLength(1);
+    await expect(s.runNow("mod", "ruim")).rejects.toMatchObject({ code: "invalid" });
+  });
+
+  it("marcador que não persiste: não roda, registra o erro e não deixa tmp órfão", async () => {
+    let n = 0;
+    const { s: s2, reg: reg2, root: root2 } = montar({ recuperar: true, rodar: async () => { n++; } }, L(2026, 11, 11, 9));
+    mkdirSync(join(root2, "_scheduler.json"));
+    s2.start(); await esperar();
+    const r = await s2.runNow("mod", "t");
+    expect(n).toBe(0);
+    expect(r.resultado).toBe("erro");
+    expect(r.erro).toMatch(/marcador/);
+    expect(reg2.errors("mod").some((e) => /_scheduler\.json/.test(e.mensagem))).toBe(true);
+    expect(readdirSync(root2).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 });
