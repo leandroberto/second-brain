@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, vaultFingerprint, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
-import { dispararTarefa, modulesChecks } from "../src/modules.js";
+import { dispararTarefa, estadoDosModulos, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const run = promisify(execFile);
@@ -407,6 +407,18 @@ describe("doctor: erros recentes dos módulos", () => {
       expect(ok.status).toBe("warn");
       expect(readFileSync(arq, "utf8")).toBe("{ trunc");
     } finally { rmSync(arq, { force: true }); }
+  });
+
+  it("modules list/doctor pelo disco com _scheduler.json ilegível não move nem grava o arquivo", async () => {
+    const arq = join(root, "_scheduler.json");
+    const antes = existsSync(arq) ? readFileSync(arq, "utf8") : undefined;
+    writeFileSync(arq, "{ trunc");
+    try {
+      const e = await estadoDosModulos(brain, 1);
+      expect(e?.fonte).toBe("disco");
+      expect(readFileSync(arq, "utf8")).toBe("{ trunc");
+      expect(readdirSync(root).filter((f) => f.startsWith("_scheduler.json.corrompido"))).toEqual([]);
+    } finally { if (antes === undefined) rmSync(arq, { force: true }); else writeFileSync(arq, antes); }
   });
 
   it("via serve usa os erros de GET /api/modules", async () => {

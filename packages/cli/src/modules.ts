@@ -56,10 +56,10 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
   }
 
   const reg = await loadModules(b, { modo: "definicoes" });
-  // o status das tarefas sai de um registro sem raiz: ler o estado não grava nada em `_erros.jsonl`
+  // só leitura: mostrar o status nunca preserva, grava nem registra nada (isso é do serve); o registro sem raiz é outra garantia
   const leitura = new ModuleRegistry();
   for (const m of reg.list()) leitura.add(m);
-  const agenda = new Scheduler(leitura, root);
+  const agenda = new Scheduler(leitura, root, { somenteLeitura: true });
   return {
     fonte: "disco", reiniciar: false,
     modulos: reg.list().map((m) => ({

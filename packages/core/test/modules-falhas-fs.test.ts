@@ -15,7 +15,7 @@ vi.mock("node:fs", async (original) => {
   return { ...fs, linkSync: (...a: Parameters<typeof fs.linkSync>) => { if (erroDoLink.code) throw Object.assign(new Error(`${erroDoLink.code}: link`), { code: erroDoLink.code }); return fs.linkSync(...a); } };
 });
 
-const { ConfigSchema, acquireServeLock, createModuleIa } = await import("../src/index.js");
+const { ConfigSchema, ModuleRegistry, Scheduler, acquireServeLock, createModuleIa } = await import("../src/index.js");
 
 describe("preservação que falha", () => {
   it("_ia.json ilegível que não pôde ser preservado: nada é gravado por cima, a IA fica bloqueada e o stderr avisa", async () => {
@@ -33,6 +33,27 @@ describe("preservação que falha", () => {
     expect(readFileSync(join(root, "_ia.json"), "utf8")).toBe("{ trunc");
     expect(readdirSync(root)).toEqual(["_ia.json"]);
     expect(avisos.join("\n")).toMatch(/não foi possível preservá-lo \(EACCES/);
+  });
+});
+
+describe("preservação do _scheduler.json que falha", () => {
+  it("o agendador não grava por cima do ilegível não preservado; nada roda e o erro vai ao stderr e às tarefas", async () => {
+    const root = mkdtempSync(join(tmpdir(), "brain-falha-"));
+    writeFileSync(join(root, "_scheduler.json"), "{ trunc");
+    const reg = new ModuleRegistry(root);
+    let n = 0;
+    reg.add({ id: "mod", def: { sdk: 1, id: "mod", nome: "m", versao: "1", tarefas: [{ id: "t", quando: "0 8 * * *", rodar: async () => { n++; } }] }, dir: root, status: "ativo", ctx: {} as never });
+    const s = new Scheduler(reg, root, { agora: () => new Date(2026, 10, 11, 9), tickMs: 10 });
+    const avisos: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m: unknown) => { avisos.push(String(m)); });
+    try {
+      s.start();
+      expect((await s.runNow("mod", "t")).resultado).toBe("erro");
+    } finally { await s.stop(); spy.mockRestore(); }
+    expect(n).toBe(0);
+    expect(readFileSync(join(root, "_scheduler.json"), "utf8")).toBe("{ trunc");
+    expect(avisos.join("\n")).toMatch(/não pôde ser preservado/);
+    expect(reg.errors("mod").map((e) => e.mensagem)).toEqual(expect.arrayContaining(["estado do agendador inválido para t; reiniciado", expect.stringMatching(/falha ao gravar _scheduler\.json: o _scheduler\.json ilegível não pôde ser preservado/)]));
   });
 });
 

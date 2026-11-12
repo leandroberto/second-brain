@@ -205,7 +205,8 @@ await sb.api(`/api/modules/lembrete/itens/${id}/feito`, { method: "POST" });
   manualmente.
 - O histórico do agendador fica em `_scheduler.json`, no estado dos módulos. Uma entrada inválida faz aquela tarefa recomeçar
   como na primeira subida (nada é recuperado) e registra o erro "estado do agendador inválido para <tarefa>; reiniciado"; um
-  arquivo ilegível vale o mesmo para todas e é preservado como `_scheduler.json.corrompido-<data>`.
+  arquivo ilegível vale o mesmo para todas e é preservado como `_scheduler.json.corrompido-<data>`. Isso acontece ao subir o
+  `serve`; `brain modules list` e o doctor só leem o arquivo, nunca o movem nem gravam.
 - **Uma ocorrência conta como atendida assim que a execução começa.** Falha, timeout ou queda do processo **não** geram nova
   tentativa automática: o second-brain não sabe se a ação externa já saiu. O resultado aparece em Saúde e o dono usa "rodar
   agora".

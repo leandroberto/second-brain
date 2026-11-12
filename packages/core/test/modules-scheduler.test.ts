@@ -291,3 +291,51 @@ describe("Scheduler: estado inválido, rodar agora e erros", () => {
     expect(reg.errors("sem")).toEqual([]);
   });
 });
+
+describe("Scheduler: leitura não mexe no estado; erros só no fluxo do serve", () => {
+  it("somenteLeitura (CLI/doctor) com _scheduler.json ilegível: status não move, não grava nem registra; start e runNow recusam", async () => {
+    const { reg, root } = montar({ recuperar: true, rodar: async () => undefined }, L(2026, 11, 11, 9));
+    writeFileSync(join(root, "_scheduler.json"), "{ trunc");
+    const leitura = new Scheduler(reg, root, { agora: () => L(2026, 11, 11, 9), somenteLeitura: true });
+    expect(leitura.status("mod")).toEqual([expect.objectContaining({ tarefa: "t", ultimaOcorrencia: undefined })]);
+    expect(readdirSync(root).sort()).toEqual(["_scheduler.json"]);
+    expect(readFileSync(join(root, "_scheduler.json"), "utf8")).toBe("{ trunc");
+    expect(reg.errors("mod")).toEqual([]);
+    expect(() => leitura.start()).toThrowError(expect.objectContaining({ code: "invalid" }));
+    await expect(leitura.runNow("mod", "t")).rejects.toMatchObject({ code: "invalid" });
+    expect(readFileSync(join(root, "_scheduler.json"), "utf8")).toBe("{ trunc");
+  });
+
+  it("no serve, status antes do start não preserva; o start preserva e registra o erro", async () => {
+    const { s, reg, root } = montar({ recuperar: true, rodar: async () => undefined }, L(2026, 11, 11, 9));
+    writeFileSync(join(root, "_scheduler.json"), JSON.stringify({ "mod/t": { ultimaOcorrencia: "lixo", suspensa: false, errosSeguidos: 0 } }));
+    s.status("mod");
+    expect(reg.errors("mod")).toEqual([]);
+    writeFileSync(join(root, "_scheduler.json"), "{ trunc");
+    s.status("mod");
+    expect(readdirSync(root).filter((f) => f.includes("corrompido"))).toEqual([]);
+    expect(reg.errors("mod")).toEqual([]);
+    s.start(); await esperar();
+    expect(readdirSync(root).filter((f) => f.includes("corrompido"))).toHaveLength(1);
+    expect(reg.errors("mod").map((e) => e.mensagem)).toEqual(["estado do agendador inválido para t; reiniciado"]);
+  });
+
+  it("erro síncrono depois do prev, no mesmo ciclo, também é registrado uma vez só", async () => {
+    const { s, reg, relogio } = montar({ recuperar: true, rodar: async () => undefined }, L(2026, 11, 11, 9));
+    s.start(); await esperar();
+    // registro cuja leitura de `suspensa` lança, com ocorrência pendente a cada ciclo
+    const ruim = { ultimaOcorrencia: L(2026, 11, 1, 8).toISOString(), errosSeguidos: 0, get suspensa(): boolean { throw new Error("registro quebrado"); } };
+    (s as unknown as { estado: Record<string, unknown> }).estado["mod/t"] = ruim;
+    for (let i = 0; i < 4; i++) { relogio.agora = new Date(relogio.agora.getTime() + 10); await esperar(30); }
+    expect(reg.errors("mod").filter((e) => e.mensagem === "registro quebrado")).toHaveLength(1);
+  });
+
+  it("status: cron.next que lança (com o prev funcionando no tick) é registrado uma vez só", async () => {
+    const { s, reg, relogio } = montar({ rodar: async () => undefined }, L(2026, 11, 11, 9));
+    s.start(); await esperar();
+    const cron = (s as unknown as { crons: Map<string, { cron: { next(d: Date): Date } }> }).crons.get("mod/t")!.cron;
+    cron.next = () => { throw new Error("next quebrou"); };
+    for (let i = 0; i < 3; i++) { expect(s.status("mod")).toEqual([]); relogio.agora = new Date(relogio.agora.getTime() + 10); await esperar(30); }
+    expect(reg.errors("mod").filter((e) => e.mensagem === "next quebrou")).toHaveLength(1);
+  });
+});

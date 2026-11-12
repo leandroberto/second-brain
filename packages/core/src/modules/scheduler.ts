@@ -61,17 +61,26 @@ export class Scheduler {
   private readonly emCurso = new Map<string, { ctl: AbortController; fim: Promise<ResultadoTarefa> }>();
   private readonly crons = new Map<string, { expr: string; cron: Cron }>();
   private readonly invalidas = new Set<string>();
+  private readonly somenteLeitura: boolean;
+  /** `_scheduler.json` ilegível que não pôde ser preservado: nada é gravado por cima (e, sem marcador, nada roda) */
+  private gravacaoBloqueada?: string;
 
-  constructor(private readonly reg: ModuleRegistry, private readonly root: string, o: { agora?: () => Date; tickMs?: number } = {}) {
+  /**
+   * `somenteLeitura` (CLI, doctor): só lê o `_scheduler.json` para mostrar o status. Nunca preserva, grava nem registra erro;
+   * `start` e `runNow` recusam. A preservação de arquivo ilegível e o erro de estado inválido acontecem só no `start` do serve.
+   */
+  constructor(private readonly reg: ModuleRegistry, private readonly root: string, o: { agora?: () => Date; tickMs?: number; somenteLeitura?: boolean } = {}) {
     this.agora = o.agora ?? (() => new Date());
     this.tickMs = o.tickMs ?? 30_000;
     this.arq = join(root, "_scheduler.json");
+    this.somenteLeitura = o.somenteLeitura === true;
   }
 
   start(): void {
+    if (this.somenteLeitura) throw new BrainError("invalid", "agendador aberto só para leitura");
     if (this.timer) return;
     this.parado = false;
-    this.carregar();
+    this.carregar(true);
     // reinício reativa tarefas suspensas
     for (const r of Object.values(this.estado)) { r.suspensa = false; r.errosSeguidos = 0; }
     this.tick(true);
@@ -95,7 +104,8 @@ export class Scheduler {
       const r = this.estado[`${id}/${t.id}`];
       let proxima: string;
       try { proxima = cron.next(this.agora()).toISOString(); }
-      catch (e) { this.erroDeTarefa(id, t.id, e); continue; }
+      catch (e) { this.erroDeTarefa(id, t.id, "status", e); continue; }
+      this.errosDeTarefa.delete(`${id}/${t.id}|status`);
       out.push({
         tarefa: t.id, quando: t.quando, proxima,
         ultimaOcorrencia: r?.ultimaOcorrencia, inicio: r?.inicio, fim: r?.fim, resultado: r?.resultado, erro: r?.erro,
@@ -110,6 +120,7 @@ export class Scheduler {
    * última atendida a partir da data pedida; sem registro, ela começa como na primeira subida (a ocorrência mais recente).
    */
   async runNow(id: string, tarefa: string, ocorrencia?: Date): Promise<ResultadoTarefa> {
+    if (this.somenteLeitura) throw new BrainError("invalid", "agendador aberto só para leitura");
     this.carregarSeVazio();
     const m = this.reg.get(id);
     const t = m?.def?.tarefas?.find((x) => x.id === tarefa);
@@ -137,35 +148,47 @@ export class Scheduler {
     for (const m of this.reg.list()) {
       if (m.status !== "ativo" || !m.ctx) continue;
       for (const t of m.def?.tarefas ?? []) {
-       try {
-        const cron = this.cronDe(m.id, t);
-        if (!cron) continue;
-        const chave = `${m.id}/${t.id}`;
-        const prev = cron.prev(agora);
-        this.errosDeTarefa.delete(chave); // o erro anterior desta tarefa (se houve) já não persiste
-        const r = this.estado[chave];
-        if (!r) { this.estado[chave] = { ultimaOcorrencia: prev.toISOString(), suspensa: false, errosSeguidos: 0 }; afetados.add(m.id); continue; }
-        const ultima = r.ultimaOcorrencia ? new Date(r.ultimaOcorrencia) : undefined;
-        if (ultima && (prev.getTime() <= ultima.getTime() || chaveLocal(prev) === chaveLocal(ultima))) continue;
-        // ocorrência pendente: roda, ou é só marcada como atendida (suspensa, sobreposição, subida sem recuperar)
-        const pula = r.suspensa || this.emCurso.has(chave) || (reaplicar && !t.recuperar);
-        if (pula) { r.ultimaOcorrencia = prev.toISOString(); afetados.add(m.id); continue; }
-        void this.executar(m.id, t, prev, true);
-       } catch (e) { this.erroDeTarefa(m.id, t.id, e); }
+        try {
+          this.tickTarefa(m.id, t, agora, reaplicar, afetados);
+          this.errosDeTarefa.delete(`${m.id}/${t.id}|tick`); // ciclo inteiro sem erro: o anterior (se houve) já não persiste
+        } catch (e) { this.erroDeTarefa(m.id, t.id, "tick", e); }
       }
     }
     if (afetados.size) this.gravar(afetados);
   }
 
+  private tickTarefa(id: string, t: Tarefa, agora: Date, reaplicar: boolean, afetados: Set<string>): void {
+    const cron = this.cronDe(id, t);
+    if (!cron) return;
+    const chave = `${id}/${t.id}`;
+    const prev = cron.prev(agora);
+    const r = this.estado[chave];
+    if (!r) { this.estado[chave] = { ultimaOcorrencia: prev.toISOString(), suspensa: false, errosSeguidos: 0 }; afetados.add(id); return; }
+    const ultima = r.ultimaOcorrencia ? new Date(r.ultimaOcorrencia) : undefined;
+    if (ultima && (prev.getTime() <= ultima.getTime() || chaveLocal(prev) === chaveLocal(ultima))) return;
+    // ocorrência pendente: roda, ou é só marcada como atendida (suspensa, sobreposição, subida sem recuperar)
+    const pula = r.suspensa || this.emCurso.has(chave) || (reaplicar && !t.recuperar);
+    if (pula) { r.ultimaOcorrencia = prev.toISOString(); afetados.add(id); return; }
+    void this.executar(id, t, prev, true);
+  }
+
   private novoCiclo(): void { this.gravacaoAvisadaNoStderr = false; this.gravacaoAvisadaPara.clear(); }
 
-  /** Registra o erro de uma tarefa, mas não o mesmo de novo enquanto ele persistir (um cron que lança falharia a cada ciclo). */
-  private erroDeTarefa(id: string, tarefa: string, e: unknown): void {
-    const chave = `${id}/${tarefa}`;
+  /**
+   * Registra o erro de uma tarefa, mas não o mesmo de novo enquanto ele persistir (um cron que lança falharia a cada ciclo).
+   * `origem` separa o tick do `status`: cada um limpa o seu quando volta a funcionar.
+   */
+  private erroDeTarefa(id: string, tarefa: string, origem: "tick" | "status", e: unknown): void {
+    const chave = `${id}/${tarefa}|${origem}`;
     const msg = e instanceof Error ? e.message : String(e);
     if (this.errosDeTarefa.get(chave) === msg) return;
     this.errosDeTarefa.set(chave, msg);
-    this.reg.recordError(id, `tarefa:${tarefa}`, e);
+    this.registrarErro(id, `tarefa:${tarefa}`, e);
+  }
+
+  /** `recordError`, exceto no agendador só de leitura (CLI/doctor), que nunca registra nada. */
+  private registrarErro(id: string, onde: string, e: unknown): void {
+    if (!this.somenteLeitura) this.reg.recordError(id, onde, e);
   }
 
   private executar(id: string, t: Tarefa, ocorrencia: Date, automatica: boolean): Promise<ResultadoTarefa> {
@@ -225,7 +248,7 @@ export class Scheduler {
     else if (!res.interrompida) {
       r.errosSeguidos += 1;
       if (r.errosSeguidos >= MAX_ERROS_SEGUIDOS) r.suspensa = true;
-      this.reg.recordError(id, `tarefa:${t.id}`, res.interna ?? new Error(res.erro ?? res.resultado));
+      this.registrarErro(id, `tarefa:${t.id}`, res.interna ?? new Error(res.erro ?? res.resultado));
     }
     this.gravar([id], `tarefa:${t.id}`);
     return res.erro === undefined ? { resultado: res.resultado } : { resultado: res.resultado, erro: res.erro };
@@ -247,27 +270,37 @@ export class Scheduler {
       this.crons.set(chave, { expr: t.quando, cron });
       return cron;
     } catch (e) {
-      if (!this.invalidas.has(chave)) { this.invalidas.add(chave); this.reg.recordError(id, `tarefa:${t.id}`, e); }
+      if (!this.invalidas.has(chave)) { this.invalidas.add(chave); this.registrarErro(id, `tarefa:${t.id}`, e); }
       return undefined;
     }
   }
 
-  private carregarSeVazio(): void { if (!this.timer && Object.keys(this.estado).length === 0) this.carregar(); }
+  /** Leitura para o status/runNow antes do `start`: só carrega na memória (nunca preserva arquivo nem registra erro). */
+  private carregarSeVazio(): void { if (!this.timer && Object.keys(this.estado).length === 0) this.carregar(false); }
 
   /**
    * Carrega o `_scheduler.json`. Entrada inválida (tipos, datas) é descartada: a tarefa recomeça como na primeira subida (a
-   * ocorrência mais recente conta como atendida, nada roda) e o erro é registrado uma vez. Arquivo ilegível (JSON inválido ou
-   * que não é objeto) é preservado como `_scheduler.json.corrompido-<timestamp>` e vale o mesmo para todas as tarefas.
+   * ocorrência mais recente conta como atendida, nada roda). Arquivo ilegível (JSON inválido ou que não é objeto) vale o mesmo
+   * para todas as tarefas. Só no `start` do serve (`doServe`): o ilegível é preservado como `_scheduler.json.corrompido-<ts>` e
+   * o erro "estado do agendador inválido" é registrado, uma vez por tarefa. Se a preservação falhar, o agendador não grava por
+   * cima (o stderr e cada tarefa recebem o erro).
    */
-  private carregar(): void {
+  private carregar(doServe: boolean): void {
     if (!existsSync(this.arq)) return;
     let v: unknown;
     let corrompido = false;
     try { v = JSON.parse(readFileSync(this.arq, "utf8")); }
     catch (e) { corrompido = e instanceof SyntaxError; v = undefined; } // erro de leitura (EISDIR, EACCES): sem histórico, arquivo intocado
     if (!v || typeof v !== "object" || Array.isArray(v)) {
-      if (corrompido || v !== undefined) preservarCorrompido(this.arq);
       this.estado = {};
+      if (!doServe) return;
+      if (corrompido || v !== undefined) {
+        try { preservarCorrompido(this.arq); }
+        catch (e) {
+          this.gravacaoBloqueada = `o _scheduler.json ilegível não pôde ser preservado (${e instanceof Error ? e.message : String(e)})`;
+          console.error(`[brain] agendador: ${this.gravacaoBloqueada}; nada será gravado por cima`);
+        }
+      }
       for (const m of this.reg.list()) for (const t of m.def?.tarefas ?? []) this.estadoInvalido(m.id, t.id);
       return;
     }
@@ -275,7 +308,7 @@ export class Scheduler {
     for (const [chave, r] of Object.entries(v)) {
       if (registroValido(r)) { estado[chave] = r; continue; }
       const i = chave.indexOf("/");
-      if (i > 0) this.estadoInvalido(chave.slice(0, i), chave.slice(i + 1));
+      if (doServe && i > 0) this.estadoInvalido(chave.slice(0, i), chave.slice(i + 1));
     }
     this.estado = estado;
   }
@@ -284,7 +317,7 @@ export class Scheduler {
     const chave = `${id}/${tarefa}`;
     if (this.estadoInvalidoAvisado.has(chave)) return;
     this.estadoInvalidoAvisado.add(chave);
-    this.reg.recordError(id, "agendador", new Error(`estado do agendador inválido para ${tarefa}; reiniciado`));
+    this.registrarErro(id, "agendador", new Error(`estado do agendador inválido para ${tarefa}; reiniciado`));
   }
 
   /**
@@ -292,7 +325,9 @@ export class Scheduler {
    * `afetados` (os que tiveram estado alterado), no máximo uma vez por ciclo.
    */
   private gravar(afetados: Iterable<string>, onde = "scheduler"): string | undefined {
+    if (this.somenteLeitura) return undefined;
     try {
+      if (this.gravacaoBloqueada) throw new Error(this.gravacaoBloqueada);
       writeFileAtomic(this.arq, JSON.stringify(this.estado, null, 2));
       return undefined;
     } catch (e) {
@@ -302,7 +337,7 @@ export class Scheduler {
       for (const id of afetados) {
         if (this.gravacaoAvisadaPara.has(id)) continue;
         this.gravacaoAvisadaPara.add(id);
-        this.reg.recordError(id, onde, erro);
+        this.registrarErro(id, onde, erro);
       }
       return msg;
     }
