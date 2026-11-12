@@ -273,7 +273,10 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
 - Os valores em US$ (`orcamentoUsd`, `custoUsd`, o teto diário) são **estimativas** do `claude`. Na assinatura servem como
   freio de consumo da cota, não como cobrança.
 - Há um teto por chamada (`assistant.max_budget_usd`) e um **teto diário por módulo**, `modules.<id>.ia_max_usd_dia` (padrão
-  2). Acima dele a chamada volta `{ ok: false, tipo: "orcamento" }`. O gasto do dia aparece em Saúde.
+  2). Acima dele a chamada volta `{ ok: false, tipo: "orcamento" }`. O gasto do dia aparece em Saúde. Se o registro de gasto
+  (`_ia.json`, no estado dos módulos) estiver ilegível, ele é preservado como `_ia.json.corrompido-<data>`, um aviso sai no
+  stderr do `serve` e a IA de todos os módulos fica bloqueada até o dia seguinte (`tipo: "orcamento"`): sem o registro, o
+  gasto do dia é desconhecido e conta como igual ao teto.
 - Trate a IA como opcional: sem motor, sem login ou acima do teto, `ok` é `false`. O `lembrete` a deixa **desligada por padrão**
   (`config: { ia: true }` a liga): ligada, usa a assinatura do `claude` uma vez por dia, e se falhar o aviso sai sem corpo. Gaste a
   cota do dono só com o que ele ligou.

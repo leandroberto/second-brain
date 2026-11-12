@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, gastoIaDoDia, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
 
 const MCP = { command: "/usr/bin/node-ficticio", args: ["/opt/brain-ficticio/bin.js", "mcp"] };
@@ -135,6 +135,32 @@ describe("complete / createModuleIa", () => {
     await d.ia.completar({ prompt: "p", orcamentoUsd: 0.2 });
     expect(await d.ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "orcamento", mensagem: "teto diário de IA do módulo x atingido" });
     expect(d.chamadas).toHaveLength(1);
+  });
+
+  it("_ia.json ilegível: fail-closed (preserva o arquivo, avisa no stderr e bloqueia a IA de hoje)", async () => {
+    const { chamadas, ia, root } = montar(() => saida({ total_cost_usd: 0.01 }));
+    writeFileSync(join(root, "_ia.json"), "{ não é json");
+    const avisos: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m: unknown) => { avisos.push(String(m)); });
+    try {
+      const bloqueio = { ok: false, tipo: "orcamento", mensagem: "registro de gasto de IA ilegível; IA do módulo x bloqueada até amanhã" };
+      expect(await ia.completar({ prompt: "p" })).toEqual(bloqueio);
+      expect(await ia.completar({ prompt: "p" })).toEqual(bloqueio); // o bloqueio persiste no novo _ia.json
+      expect(chamadas).toHaveLength(0);
+      expect(avisos).toHaveLength(1);
+      expect(avisos[0]).toMatch(/ilegível.*_ia\.json/);
+      const preservado = readdirSync(root).filter((f) => f.startsWith("_ia.json.corrompido-"));
+      expect(preservado).toHaveLength(1);
+      expect(readFileSync(join(root, preservado[0]!), "utf8")).toBe("{ não é json");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("bloqueio por _ia.json ilegível vale só no dia em que foi detectado", async () => {
+    const { chamadas, ia, root } = montar(() => saida({ total_cost_usd: 0.01 }));
+    writeFileSync(join(root, "_ia.json"), JSON.stringify({ _ilegivel: "2000-01-01" }));
+    expect(await ia.completar({ prompt: "p" })).toMatchObject({ ok: true });
+    expect(chamadas).toHaveLength(1);
+    expect(gasto(root)).toEqual({ x: { [hoje()]: 0.01 } });
   });
 
   it("timeoutS é limitado a 3600 s", async () => {
