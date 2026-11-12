@@ -239,6 +239,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   const origemDoSb = (o: string) => { try { return allowedHosts.has(new URL(o).host.toLowerCase()); } catch { return false; } };
 
   async function handle(req: IncomingMessage, res: ServerResponse) {
+    // toda resposta sob /modules/ (inclusive 403/404/405) leva a CSP da aba e nosniff: uma página de erro nunca roda sem sandbox
+    if ((req.url ?? "").startsWith("/modules/")) { res.setHeader("content-security-policy", CSP_DA_ABA); res.setHeader("x-content-type-options", "nosniff"); }
     const hostHdr = (req.headers.host ?? "").toLowerCase();
     if (!allowedHosts.has(hostHdr)) return plain(res, 403, "host não permitido");
     // segmento `.`/`..` cru (navegador nunca envia): a URL normalizaria e mudaria o alvo (ex.: sair de /modules/<id>/)

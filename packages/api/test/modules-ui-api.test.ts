@@ -269,6 +269,29 @@ describe("estático do módulo", () => {
     expect(js.headers.get("access-control-allow-origin")).toBe("null");
   });
 
+  it("respostas de erro sob /modules/ também levam a CSP da aba e nosniff", async () => {
+    const respostas = [
+      await call("", "GET", "/modules/fantasma/index.html"), // 404
+      await call("", "GET", "/modules/ok/nao-existe.html"), // 404
+      await call("", "POST", "/modules/ok/index.html"), // 405
+      await call("", "GET", "/modules/ok/index.html", { origin: "http://outra-origem.example" }), // 403
+    ];
+    expect(respostas.map((r) => r.status)).toEqual([404, 404, 405, 403]);
+    for (const r of respostas) {
+      expect(r.headers.get("content-security-policy")).toBe(CSP_MODULO);
+      expect(r.headers.get("x-content-type-options")).toBe("nosniff");
+    }
+    // segmento `..` cru (a URL do fetch normalizaria): também 404 com a CSP
+    const u = new URL(api.url);
+    const crua = await new Promise<{ status?: number; csp?: string | string[] }>((ok, ko) => {
+      const rq = request({ host: u.hostname, port: u.port, path: "/modules/ok/../x", method: "GET" }, (res) => { res.resume(); ok({ status: res.statusCode, csp: res.headers["content-security-policy"] }); });
+      rq.on("error", ko); rq.end();
+    });
+    expect(crua).toEqual({ status: 404, csp: CSP_MODULO });
+    // fora de /modules/ a CSP da aba não vale
+    expect((await call("", "GET", "/")).headers.get("content-security-policy")).not.toContain("sandbox");
+  });
+
   it("arquivos do SDK em /modules/_sdk", async () => {
     const css = await call("", "GET", "/modules/_sdk/base.css");
     expect(css.status).toBe(200);
