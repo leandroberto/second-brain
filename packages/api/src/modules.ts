@@ -11,6 +11,8 @@ export interface ModulesApiOptions {
   root: string;
   /** `true` quando o bloco `modules` do `config.yaml` em disco mudou desde a subida (o `serve` precisa reiniciar) */
   reiniciar?: () => boolean;
+  /** reinicia o `brain serve` (cópia destacada ou systemd); usado pelas rotas de gerenciamento depois de mudar o bloco `modules` */
+  reiniciarServe?: () => Promise<void>;
 }
 
 /** Tipo de credencial de uma requisição. A decisão fica concentrada em `negarAntesDoRoteamento`/`credencialDeModulo`. */

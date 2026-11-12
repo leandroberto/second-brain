@@ -2,6 +2,7 @@ import { hostname } from "node:os";
 import { AvisosStore, Scheduler, clearServeInfo, createModuleIa, loadConfig, loadModules, modulesConfigHash, modulesStateRoot, serveEstado, acquireServeLock, stopModules, writeServeInfo, type Assistant, type AssistantEngine, type Brain, type ModuleRegistry, type SessionStoreOptions } from "@brain/core";
 import { startApi } from "@brain/api";
 import { BrainError } from "@brain/shared";
+import { esperarServeAnterior } from "./reinicio.js";
 
 export interface ServeOptions {
   port: number;
@@ -17,6 +18,8 @@ export interface ServeOptions {
    * competir com o relógio real. Padrão (e sempre em produção): ligado.
    */
   agendador?: boolean;
+  /** reinicia este processo (`reiniciarProcesso`, montado pelo `bin.ts`); repassado à API de módulos */
+  reiniciarServe?: () => Promise<void>;
 }
 
 export interface ServeHandle { url: string; token: string; registry: ModuleRegistry; close(): Promise<void> }
@@ -28,6 +31,8 @@ export interface ServeHandle { url: string; token: string; registry: ModuleRegis
  */
 export async function startServe(b: Brain, o: ServeOptions): Promise<ServeHandle> {
   const root = modulesStateRoot(b);
+  // cópia subida por um reinício: espera o serve anterior sair antes de disputar o lock (que continua decidindo sozinho)
+  await esperarServeAnterior();
   // um segundo serve no mesmo vault rodaria `iniciar` e as tarefas de novo e pisaria no estado e no marcador do vivo.
   // Lock exclusivo primeiro (a recusa é atômica); depois o serve anunciado (um build antigo, sem lock): vivo ou que não
   // respondeu contam como "já há um serve"
@@ -58,7 +63,7 @@ async function montar(b: Brain, o: ServeOptions, root: string, lock: { liberar()
 
   let api;
   try {
-    api = await startApi(b, { port: o.port, host: o.host, webRoot: o.webRoot, build: o.build, assistant: o.assistant, sessions: o.sessions, modules: { registry, scheduler, avisos, reiniciar, root } });
+    api = await startApi(b, { port: o.port, host: o.host, webRoot: o.webRoot, build: o.build, assistant: o.assistant, sessions: o.sessions, modules: { registry, scheduler, avisos, reiniciar, root, reiniciarServe: o.reiniciarServe } });
   } catch (e) {
     await scheduler.stop(); await stopModules(registry); registry.encerrarExecucoes();
     throw e;

@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { Assistant, Brain, createClaudeEngine, bundleHistory, loadConfig, auditTitles, migrateFlat, importPath, importText, knowledgeAudit, reconcilePending, revalidateNotes, type ImportReport } from "@brain/core";
+import { Assistant, Brain, createClaudeEngine, bundleHistory, loadConfig, modulesStateRoot, auditTitles, migrateFlat, importPath, importText, knowledgeAudit, reconcilePending, revalidateNotes, type ImportReport } from "@brain/core";
 import type { Freshness } from "@brain/shared";
 import { humanFromTerminal, issueHumanSession, principal } from "@brain/core";
 import { runStdio } from "@brain/mcp";
@@ -15,7 +15,8 @@ import { printChecks, runDoctor } from "./doctor.js";
 import { seedDemo } from "./seed.js";
 import { adminCommand, realIO, requireHuman } from "./admin.js";
 import { modulesCommand } from "./modules.js";
-import { startServe } from "./serve.js";
+import { startServe, type ServeHandle } from "./serve.js";
+import { reiniciarProcesso } from "./reinicio.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(here, "../../..");
@@ -133,8 +134,14 @@ async function main() {
       // assistente: o motor roda `claude -p` com o MCP deste mesmo cli (`brain mcp`) como única fonte de ferramentas
       const engine = createClaudeEngine(b, undefined, { command: process.execPath, args: [fileURLToPath(import.meta.url), "mcp"] });
       const assistant = new Assistant(b, engine);
+      // fechamento único (e uma vez só: o db não fecha duas vezes): SIGINT/SIGTERM e o reinício pedido pela UI passam por aqui
+      const serve: { h?: ServeHandle } = {}; let fechado: Promise<void> | undefined;
+      const fechar = () => (fechado ??= (async () => { try { await serve.h?.close(); } finally { b.close(); } })());
+      const logPath = join(dirname(modulesStateRoot(b)), "serve.log");
+      let reinicio: Promise<void> | undefined; // um reinício por vez: um segundo pedido espera o primeiro
+      const reiniciarServe = () => (reinicio ??= reiniciarProcesso({ fechar, logPath }).catch((e: unknown) => { reinicio = undefined; throw e; }));
       // módulos, agendador, API e serve.json (o motor do assistente também serve a IA dos módulos)
-      const h = await startServe(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo(), assistant, engine });
+      const h = serve.h = await startServe(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo(), assistant, engine, reiniciarServe });
       // só um humano num terminal recebe a URL de REVISÃO; iniciado por agente/script, a API sobe sem emitir sessão humana
       const io = realIO(); let reviewUrl: string | undefined;
       if (process.stdin.isTTY && process.stdout.isTTY) { try { const who = await requireHuman(io, "brain serve", b); reviewUrl = `${h.url}/#token=${issueHumanSession(b.vault.root, who, { label: "brain serve" })}`; } catch (e) { console.error(`(sem sessão de revisão: ${(e as Error).message})`); } }
@@ -145,7 +152,7 @@ async function main() {
         (e) => { console.error(`assistente: falha ao reprocessar capturas pendentes: ${(e as Error).message}`); },
       );
       // scheduler.stop(), stopModules() e clearServeInfo() ficam dentro de h.close()
-      const stop = async () => { try { await h.close(); } finally { b.close(); process.exit(0); } };
+      const stop = async () => { try { await fechar(); } finally { process.exit(0); } };
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
       break;
     }

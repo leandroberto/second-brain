@@ -3,6 +3,8 @@
 Description=Second Brain (API + UI local)
 [Service]
 ExecStart=/usr/bin/env node %h/projetos/second-brain/packages/cli/dist/bin.js serve
+# on-failure também cobre o reinício pedido pela UI (Configurações › Módulos): sob systemd o serve sai com código 75, e
+# qualquer código ≠ 0 conta como falha (ver packages/cli/src/reinicio.ts)
 Restart=on-failure
 # o claude (e outros CLIs instalados por usuário) ficam em ~/.local/bin, fora do PATH padrão do systemd
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
