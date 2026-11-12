@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, setToken, getToken, type Analysis, type ModulosResp, type ModuloInfo } from "./api";
-import { ClassBadge, ErrorBox, timeAgo, Skeleton, TYPE_LABEL, errMsg, go, href, useData, useDebounced, useToast } from "./lib";
+import { api, setToken, getToken, type Analysis, type ModuloInfo } from "./api";
+import { ClassBadge, ErrorBox, timeAgo, Skeleton, TYPE_LABEL, errMsg, go, href, useData, useDebounced, useModulos, useToast } from "./lib";
 
 interface Settings {
   config: { vault_name: string; embeddings: { provider: string; external_opt_in: boolean; base_url: string; model: string; dimensions: number; api_key_env: string }; governance: { duplicate_threshold: number; candidate_threshold: number; stale_days: number }; agents: { commit_policy: string; can_link: boolean; per_type?: Record<string, string> }; git: { auto_commit: boolean; auto_commit_external: boolean }; limits: { max_chars: number; max_code_lines: number }; retention: { activity_days: number } };
@@ -79,7 +79,7 @@ const STATUS_MODULO: Record<ModuloInfo["status"], [string, string]> = { ativo: [
 const quando = (iso?: string) => { if (!iso) return "—"; const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); };
 
 function ModulesSection() {
-  const { data, reload } = useData<ModulosResp>("/api/modules", [], 15000);
+  const { data, reload } = useModulos();
   // "rodar agora" exige a sessão humana `full` da UI (canal ui); api-token e outras credenciais recebem 403, então nem mostra
   const { data: meta } = useData<{ principal: { kind: string; channel: string } }>("/api/meta");
   const podeRodar = meta?.principal.kind === "human" && meta.principal.channel === "ui";

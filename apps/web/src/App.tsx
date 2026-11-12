@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Bot, FileInput, FolderKanban, Home as HomeIcon, Inbox, Network, ScanSearch, Search, Settings as Cog, ListChecks } from "lucide-react";
-import { api, captureToken, type ModulosResp, getToken, setToken } from "./api";
+import { api, captureToken, getToken, setToken } from "./api";
 import { Palette, type Cmd } from "./Palette";
-import { Skeleton, go, href, ToastProvider, useData, useHotkey, useRoute, useToast, errMsg } from "./lib";
+import { ModulosProvider, Skeleton, go, href, ToastProvider, useData, useHotkey, useModulos, useRoute, useToast, errMsg } from "./lib";
 import { AgentsPage, GraphPage, ProjectsPage, ReviewPage, TimelinePage } from "./pages2";
 import { Home, NotePage, SearchPage } from "./pages1";
 import { AddKnowledge, SettingsPage } from "./pages3";
@@ -21,7 +21,7 @@ function Shell() {
   const [pal, setPal] = useState(false); const [add, setAdd] = useState(false); const [asst, setAsst] = useState<AssistantTab>();
   const { data: rv } = useData<unknown[]>("/api/review", [], 15000);
   const { data: ib } = useData<unknown[]>("/api/inbox", [], 15000);
-  const { data: mods, error: modsErro } = useData<ModulosResp>("/api/modules", [], 15000); // erro: mantém o último valor (ou nenhum módulo)
+  const { data: mods, error: modsErro } = useModulos(); // erro: mantém o último valor (ou nenhum módulo)
   const [badgeLocal, setBadgeLocal] = useState<Record<string, number>>({});
   useEffect(() => { setBadgeLocal({}); }, [mods]); // brain:badge só vale até o próximo GET /api/modules
   const abas = (mods?.modulos ?? []).filter((m) => m.aba && m.status === "ativo" && /^[a-z][a-z0-9-]{1,30}$/.test(m.id));
@@ -101,4 +101,4 @@ function TokenGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export default function App() { return <ToastProvider><TokenGate><Shell /></TokenGate></ToastProvider>; }
+export default function App() { return <ToastProvider><TokenGate><ModulosProvider><Shell /></ModulosProvider></TokenGate></ToastProvider>; }

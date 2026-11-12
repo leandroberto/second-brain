@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, createContext, useContext, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
-import { api, subscribe, ApiError } from "./api";
+import { api, subscribe, ApiError, EVENTOS_MODULOS, EVENTOS_PADRAO, recarregaCom, type ModulosResp } from "./api";
 
 // ---------- router (hash) ----------
 export function useRoute() {
@@ -30,13 +30,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 export const errMsg = (e: unknown) => (e instanceof ApiError ? e.message : (e as Error).message);
 
 // ---------- data ----------
-export function useData<T>(path: string | null, deps: unknown[] = [], pollMs = 0) {
+/**
+ * `eventos`: eventos em tempo real (SSE) que recarregam esta consulta; o padrão são os de hoje (`notes`, `proposals`) e
+ * ignora `module.*`, que só as consultas de módulos pedem.
+ */
+export function useData<T>(path: string | null, deps: unknown[] = [], pollMs = 0, eventos: readonly string[] = EVENTOS_PADRAO) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(!!path);
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
-  useEffect(() => subscribe(() => reload()), [reload]);
+  const chaveEventos = eventos.join(",");
+  useEffect(() => subscribe((ev) => { if (recarregaCom(chaveEventos.split(","), ev)) reload(); }), [reload, chaveEventos]);
   useEffect(() => { if (!pollMs) return; const i = setInterval(reload, pollMs); return () => clearInterval(i); }, [pollMs, reload]);
   useEffect(() => {
     if (!path) { setLoading(false); return; }
@@ -46,6 +51,21 @@ export function useData<T>(path: string | null, deps: unknown[] = [], pollMs = 0
     return () => { live = false; };
   }, [path, tick, ...deps]);
   return { data, error, loading, reload };
+}
+
+/**
+ * Lista de módulos (`GET /api/modules`): uma consulta só para o menu, a aba e a seção Módulos, que reage a `module.*`.
+ * Erro mantém o último valor.
+ */
+const ModulosCtx = createContext<ReturnType<typeof useData<ModulosResp>> | undefined>(undefined);
+export function ModulosProvider({ children }: { children: ReactNode }) {
+  const v = useData<ModulosResp>("/api/modules", [], 15000, EVENTOS_MODULOS);
+  return <ModulosCtx.Provider value={v}>{children}</ModulosCtx.Provider>;
+}
+export function useModulos() {
+  const v = useContext(ModulosCtx);
+  if (!v) throw new Error("useModulos fora do ModulosProvider");
+  return v;
 }
 
 // ---------- format ----------

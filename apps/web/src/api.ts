@@ -42,6 +42,12 @@ function openEvents(): void {
     .catch(() => { setTimeout(openEvents, 5000); })
     .finally(() => { opening = false; });
 }
+/** Eventos que recarregam as consultas comuns (notas, propostas). `module.*` não: não mudam grafo nem notas. */
+export const EVENTOS_PADRAO: readonly string[] = ["notes", "proposals"];
+/** Eventos que só as consultas de módulos (menu, aba, seção Módulos) acompanham. */
+export const EVENTOS_MODULOS: readonly string[] = ["module.badge", "module.notification"];
+export const recarregaCom = (eventos: readonly string[], ev: string): boolean => eventos.includes(ev);
+
 export function subscribe(l: Listener): () => void {
   listeners.add(l);
   openEvents();
