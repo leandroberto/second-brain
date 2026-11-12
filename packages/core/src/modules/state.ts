@@ -11,10 +11,11 @@ import { vaultFingerprint } from "./serve-info.js";
 
 /**
  * Raiz do estado dos módulos (e, ao lado dela, do `serve.json` e do `serve.lock`): SEMPRE fora do vault e NUNCA dividida entre
- * vaults diferentes. Com `state.external`, `<stateDir>/modules` (o `stateDir` já tem dono). Sem ele, a base é `BRAIN_STATE_DIR`
- * ou `~/.local/state/second-brain/<slug do vault_name>-<impressão do vault>` (o nome sozinho colide: o padrão é o mesmo em
- * todo vault), com a mesma garantia de dono do estado da máquina (`vault-path`): outro vault na mesma base é recusado. Nasce
- * com modo 0700.
+ * vaults diferentes. Com `state.external`, `<stateDir>/modules` (o `stateDir` já tem dono). Sem ele, uma subpasta própria
+ * `<slug do vault_name>-<impressão do vault>` (o nome sozinho colide: o padrão é o mesmo em todo vault) dentro de
+ * `BRAIN_STATE_DIR` ou, sem ele, de `~/.local/state/second-brain`, com a mesma garantia de dono do estado da máquina
+ * (`vault-path`) nessa subpasta. `BRAIN_STATE_DIR` aqui é só a raiz: nunca é usado cru nem reivindicado, porque o core o ignora
+ * quando `state.external` é falso e ele pode ser o estado de outro vault (externo) herdado do shell. Nasce com modo 0700.
  */
 export function modulesStateRoot(brain: Brain, env: NodeJS.ProcessEnv = process.env): string {
   const base = brain.vault.stateDir ?? baseSemEstadoExterno(brain, env);
@@ -25,8 +26,8 @@ export function modulesStateRoot(brain: Brain, env: NodeJS.ProcessEnv = process.
 }
 
 function baseSemEstadoExterno(brain: Brain, env: NodeJS.ProcessEnv): string {
-  const base = env.BRAIN_STATE_DIR
-    || join(env.HOME || homedir(), ".local", "state", "second-brain", `${stateSlug(brain.config.vault_name)}-${vaultFingerprint(brain.vault.root)}`);
+  const raiz = env.BRAIN_STATE_DIR || join(env.HOME || homedir(), ".local", "state", "second-brain");
+  const base = join(raiz, `${stateSlug(brain.config.vault_name)}-${vaultFingerprint(brain.vault.root)}`);
   mkdirSync(base, { recursive: true, mode: 0o700 });
   claimStateOwner(base, brain.vault.root);
   return base;

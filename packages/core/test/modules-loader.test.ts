@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { stringify, parse } from "yaml";
-import { loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, type Brain } from "../src/index.js";
+import { loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, vaultFingerprint, type Brain } from "../src/index.js";
+import { stateSlug } from "../src/state.js";
 import { claude, cleanup, tempBrain } from "./helpers.js";
 
 const FIX = resolve(import.meta.dirname, "fixtures/modules");
@@ -203,10 +204,16 @@ describe("loadModules", () => {
     expect(ra).not.toBe(rb);
     expect(modulesStateRoot(a, { HOME: home })).toBe(ra);
     expect(readFileSync(join(ra, "..", "vault-path"), "utf8").trim()).toBe(realpathSync(a.vault.root));
-    // BRAIN_STATE_DIR sem state.external: a mesma garantia de dono do estado da máquina
-    const dividido = { HOME: home, BRAIN_STATE_DIR: join(home, "estado") };
-    expect(modulesStateRoot(a, dividido)).toBe(join(home, "estado", "modules"));
-    expect(() => modulesStateRoot(b, dividido)).toThrow(/pertence a outro vault/);
+    // BRAIN_STATE_DIR sem state.external: só a raiz onde cada vault ganha a própria subpasta (com dono); a raiz nunca é reivindicada
+    const estado = join(home, "estado");
+    const comEstado = { HOME: home, BRAIN_STATE_DIR: estado };
+    const ea = modulesStateRoot(a, comEstado); const eb = modulesStateRoot(b, comEstado);
+    expect(ea).toBe(join(estado, `${stateSlug(a.config.vault_name)}-${vaultFingerprint(a.vault.root)}`, "modules"));
+    expect(eb).toBe(join(estado, `${stateSlug(b.config.vault_name)}-${vaultFingerprint(b.vault.root)}`, "modules"));
+    expect(eb).not.toBe(ea);
+    expect(readFileSync(join(ea, "..", "vault-path"), "utf8").trim()).toBe(realpathSync(a.vault.root));
+    expect(readFileSync(join(eb, "..", "vault-path"), "utf8").trim()).toBe(realpathSync(b.vault.root));
+    expect(existsSync(join(estado, "vault-path"))).toBe(false);
     rmSync(home, { recursive: true, force: true });
   });
 

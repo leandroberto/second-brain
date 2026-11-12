@@ -246,10 +246,12 @@ ctx.badge(3);   // pendências do módulo
 ## Estado
 
 `ctx.estado.dir` é uma pasta exclusiva do módulo, **fora do vault** (`<stateDir>/modules/<id>/`; sem `state.external`, em
-`~/.local/state/second-brain/<slug do vault_name>-<impressão do caminho do vault>/modules/`, ou em
-`$BRAIN_STATE_DIR/modules/`). O estado nunca viaja pelo sync do vault e nunca é dividido entre vaults: a pasta guarda o dono
-em `vault-path`, e outro vault apontando para ela é recusado. Mover a pasta do vault muda a impressão (o estado dos módulos
-recomeça vazio; copie a pasta antiga se precisar). O second-brain não interpreta o conteúdo.
+`~/.local/state/second-brain/<slug do vault_name>-<impressão do caminho do vault>/modules/<id>/`). Sem `state.external`,
+`BRAIN_STATE_DIR` só troca a raiz `~/.local/state/second-brain/`: cada vault ganha a sua subpasta
+`<slug>-<impressão>/` dentro dele, e a pasta de `BRAIN_STATE_DIR` em si nunca é usada nem reivindicada (ela pode ser o
+estado de outro vault, externo). O estado nunca viaja pelo sync do vault e nunca é dividido entre vaults: a pasta do vault
+guarda o dono em `vault-path`, e outro vault apontando para ela é recusado. Mover a pasta do vault muda a impressão (o
+estado dos módulos recomeça vazio; copie a pasta antiga se precisar). O second-brain não interpreta o conteúdo.
 
 - `lerJson(nome)` e `gravarJson(nome, valor)` (escrita atômica);
 - `lock(nome, fn)`: exclusão mútua em volta de leitura + gravação. Use sempre que ler e depois gravar, porque rota e tarefa

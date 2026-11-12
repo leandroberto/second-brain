@@ -105,7 +105,7 @@ describe("ferramentas MCP de módulo", () => {
       const r = await call(c, "ok_eco", { texto: "oi" });
       expect(r.isError).toBe(true);
       expect(r.text).toBe("o brain serve não está rodando; a ferramenta ok_eco precisa dele");
-    } finally { rmSync(join(dir, "state", "serve.json"), { force: true }); await fechar(outro); }
+    } finally { rmSync(join(root, "..", "serve.json"), { force: true }); await fechar(outro); }
   });
 
   it("serve anunciado que não responde: erro claro, sem cair no fallback", async () => {
@@ -118,7 +118,7 @@ describe("ferramentas MCP de módulo", () => {
       expect(r.isError).toBe(true);
       expect(r.text).toMatch(new RegExp(`^o brain serve em http://127\\.0\\.0\\.1:${porta} \\(pid ${process.ppid}\\) não respondeu .*; a ferramenta ok_eco precisa dele$`));
       expect(r.text).not.toContain(token);
-    } finally { rmSync(join(dir, "state", "serve.json"), { force: true }); await fechar(mudo); }
+    } finally { rmSync(join(root, "..", "serve.json"), { force: true }); await fechar(mudo); }
   });
 
   it("sem serve devolve erro claro", async () => {

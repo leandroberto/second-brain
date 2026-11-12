@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -123,6 +123,71 @@ describe("liveness do serve e serve duplicado", () => {
   });
 });
 
+describe("BRAIN_STATE_DIR em vault sem state.external", () => {
+  /** roda `fn` com BRAIN_STATE_DIR = `estado` e uma pasta temporária; restaura o ambiente e apaga a pasta no fim */
+  async function comEstado(fn: (base: string, estado: string) => Promise<void>) {
+    const antes = process.env.BRAIN_STATE_DIR;
+    const base = mkdtempSync(join(tmpdir(), "brain-estado-raiz-"));
+    const estado = join(base, "estado");
+    process.env.BRAIN_STATE_DIR = estado;
+    try { await fn(base, estado); } finally {
+      rmSync(base, { recursive: true, force: true });
+      if (antes === undefined) delete process.env.BRAIN_STATE_DIR; else process.env.BRAIN_STATE_DIR = antes;
+    }
+  }
+
+  it("apontando para o estado de um vault externo: o serve do não externo sobe sem tocar nele, e o externo continua abrindo", async () => {
+    await comEstado(async (base, estado) => {
+      const vaultExt = join(base, "externo");
+      mkdirSync(join(vaultExt, ".brain"), { recursive: true });
+      writeFileSync(join(vaultExt, ".brain", "config.yaml"), "state:\n  external: true\n");
+      const ext = await Brain.init(vaultExt);
+      const nao = await Brain.init(join(base, "nao-externo"));
+      try {
+        expect(ext.vault.stateDir).toBe(estado);
+        const se = await startServe(ext, { port: 0, sessions: sessions() });
+        try {
+          const arquivos = ["vault-path", "api-token", "serve.lock", "serve.json"];
+          const ler = () => Object.fromEntries(arquivos.map((f) => [f, readFileSync(join(estado, f), "utf8")]));
+          const antes = ler();
+          const sn = await startServe(nao, { port: 0, sessions: sessions() });
+          try {
+            const rn = modulesStateRoot(nao);
+            expect(rn).toBe(join(estado, basename(dirname(rn)), "modules"));
+            expect(basename(dirname(rn))).toMatch(new RegExp(`-${vaultFingerprint(nao.vault.root)}$`));
+            expect(readServeInfo(rn)).toEqual({ url: sn.url, pid: process.pid });
+            expect(ler()).toEqual(antes);
+            expect(await serveEstado(modulesStateRoot(ext), ext.vault)).toMatchObject({ estado: "vivo", url: se.url });
+          } finally { await sn.close(); }
+          expect(ler()).toEqual(antes);
+        } finally { await se.close(); }
+      } finally { nao.close(); ext.close(); }
+      const deNovo = await Brain.open(vaultExt);
+      expect(deNovo.vault.stateDir).toBe(estado);
+      deNovo.close();
+    });
+  });
+
+  it("apontando para uma pasta sem dono: nenhum vault-path na raiz dela, só na subpasta do vault", async () => {
+    await comEstado(async (base, estado) => {
+      mkdirSync(estado);
+      const nao = await Brain.init(join(base, "nao-externo"));
+      try {
+        const sn = await startServe(nao, { port: 0, sessions: sessions() });
+        try {
+          const rn = modulesStateRoot(nao);
+          expect(existsSync(join(estado, "vault-path"))).toBe(false);
+          expect(existsSync(join(estado, "serve.json"))).toBe(false);
+          expect(existsSync(join(estado, "serve.lock"))).toBe(false);
+          expect(dirname(dirname(rn))).toBe(estado);
+          expect(readFileSync(join(rn, "..", "vault-path"), "utf8").trim()).toBe(realpathSync(nao.vault.root));
+        } finally { await sn.close(); }
+        expect(existsSync(join(estado, "vault-path"))).toBe(false);
+      } finally { nao.close(); }
+    });
+  });
+});
+
 describe("vaults diferentes com o mesmo vault_name", () => {
   it("cada vault tem o próprio estado de módulos; o serve do segundo não toca no lock, no serve.json nem no marcador do primeiro", async () => {
     const antes = { home: process.env.HOME, estado: process.env.BRAIN_STATE_DIR };
@@ -149,14 +214,22 @@ describe("vaults diferentes com o mesmo vault_name", () => {
         expect(readServeInfo(ra)).toEqual({ url: sa.url, pid: process.pid });
         rmSync(join(ra, "_executando.json"), { force: true });
       } finally { await sa.close(); }
-      // BRAIN_STATE_DIR dividido (sem state.external): o segundo serve é recusado antes de tocar em qualquer coisa
-      process.env.BRAIN_STATE_DIR = join(base, "estado-dividido");
+      // o mesmo BRAIN_STATE_DIR (sem state.external): é só a raiz; cada vault ganha a própria subpasta e os dois sobem
+      const comum = join(base, "estado-comum");
+      process.env.BRAIN_STATE_DIR = comum;
+      const ca = modulesStateRoot(a); const cb = modulesStateRoot(b);
+      expect(ca).not.toBe(cb);
+      expect(dirname(dirname(ca))).toBe(comum); expect(dirname(dirname(cb))).toBe(comum);
       const sa2 = await startServe(a, { port: 0, sessions: sessions() });
       try {
-        const info = readFileSync(join(base, "estado-dividido", "serve.json"), "utf8");
-        await expect(startServe(b, { port: 0, sessions: sessions() })).rejects.toThrow(/pertence a outro vault/);
-        expect(readFileSync(join(base, "estado-dividido", "serve.json"), "utf8")).toBe(info);
-        expect(existsSync(join(base, "estado-dividido", "serve.lock"))).toBe(true);
+        const sb2 = await startServe(b, { port: 0, sessions: sessions() });
+        try {
+          expect(readServeInfo(ca)).toEqual({ url: sa2.url, pid: process.pid });
+          expect(readServeInfo(cb)).toEqual({ url: sb2.url, pid: process.pid });
+          expect(existsSync(join(comum, "vault-path"))).toBe(false);
+          expect(existsSync(join(comum, "serve.json"))).toBe(false);
+          expect(existsSync(join(comum, "serve.lock"))).toBe(false);
+        } finally { await sb2.close(); }
       } finally { await sa2.close(); }
     } finally {
       a.close(); b.close(); rmSync(base, { recursive: true, force: true });
