@@ -110,7 +110,7 @@ export function ModulesPage() {
               {verErros[id] && m && (m.erros.length ? <div style={{ marginTop: 8 }}>{m.erros.map((x, i) => <div key={i} className="small" style={{ padding: "3px 0" }}><span className="muted">{quando(x.em)}</span> <code className="mono">{x.onde}</code> {x.mensagem}</div>)}</div> : <div className="small muted" style={{ marginTop: 8 }}>Sem erros recentes.</div>)}
 
               {editando === id && <ConfigurarModulo
-                nome={nome} atual={e?.config ?? {}} configJson={m?.configJson} ocupado={ocupado}
+                nome={nome} atual={e?.config ?? {}} configJson={m?.configJson} ativo={m?.status === "ativo"} ocupado={ocupado}
                 onCancelar={() => setEditando(undefined)}
                 onSalvar={(config, setErros) => {
                   if (!confirmar("Salvar configuração de", nome)) return;
@@ -140,7 +140,7 @@ export function ModulesPage() {
  * "Configurar": os mesmos campos da etapa 3 do assistente, pelo schema que o serve já tem do módulo carregado (`configJson`);
  * sem ele (desligado, falho, ausente) ou com schema que não cabe em campos simples, o editor JSON da config atual.
  */
-function ConfigurarModulo({ nome, atual, configJson, ocupado, onSalvar, onCancelar }: { nome: string; atual: Record<string, unknown>; configJson?: Record<string, unknown>; ocupado: boolean; onSalvar: (config: Record<string, unknown>, setErros: (e: ErroDeCampo[]) => void) => void; onCancelar: () => void }) {
+function ConfigurarModulo({ nome, atual, configJson, ativo, ocupado, onSalvar, onCancelar }: { nome: string; atual: Record<string, unknown>; configJson?: Record<string, unknown>; ativo: boolean; ocupado: boolean; onSalvar: (config: Record<string, unknown>, setErros: (e: ErroDeCampo[]) => void) => void; onCancelar: () => void }) {
   const campos = camposDoSchema(configJson);
   const [valores, setValores] = useState(() => (campos ? valoresIniciais(campos, atual) : {}));
   const [json, setJson] = useState(JSON.stringify(atual, null, 2));
@@ -152,7 +152,7 @@ function ConfigurarModulo({ nome, atual, configJson, ocupado, onSalvar, onCancel
   };
   return (
     <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }} aria-label={`Configurar ${nome}`}>
-      <EditorDeConfig campos={campos} valores={valores} onValores={setValores} json={json} onJson={setJson} erros={erros} nota={configJson ? undefined : "O formulário aparece quando o módulo estiver ativo."} />
+      <EditorDeConfig campos={campos} valores={valores} onValores={setValores} json={json} onJson={setJson} erros={erros} nota={configJson ? undefined : ativo ? "Este módulo não descreve os campos da configuração; edite em JSON." : "O formulário aparece quando o módulo estiver carregado; por enquanto, edite em JSON."} />
       <div className="actions"><button className="btn primary sm" disabled={ocupado} onClick={salvar}>Salvar e reiniciar</button><button className="btn ghost sm" disabled={ocupado} onClick={onCancelar}>Cancelar</button></div>
     </div>
   );

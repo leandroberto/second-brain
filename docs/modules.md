@@ -423,7 +423,8 @@ está configurado (outra pasta do mesmo módulo) é recusado e nada é gravado.
   janela correr, mesmo com a frase certa. A tentativa é registrada antes de a frase ser conferida, e o contador persiste no
   estado, então reiniciar o `serve` não o zera. Depois de uma frase errada, **adicionar, configurar, remover e reiniciar**
   também respondem 429 por até 60 s. Se o registro de tentativas (`_frase-erros.json`, na pasta de estado dos módulos) fica
-  ilegível, tudo isso responde 429 até apagar o arquivo que a mensagem indica.
+  ilegível, tudo isso responde 429 até apagar o arquivo que a mensagem indica (com a frase gravada; com a frase exigida e
+  ausente nesta máquina prevalece o 403 `ausente`).
 - No máximo **2 conferências ao mesmo tempo**; a 3ª recebe 429 ("tente de novo em instantes").
 - A conferência roda o `brain modules check <pasta> --json` num **processo filho descartável**: estado em diretório
   temporário, sem `iniciar`, sem herdar o api-token nem o arquivo de sessões pelo ambiente, com tempo limite de 30 s. O `serve` em execução não
@@ -440,7 +441,9 @@ Se o módulo exporta `configJson` (JSON Schema da config), a tela monta campos p
 booleano, opção e objeto raso) e mostra a `description` de cada um. Sem `configJson`, ou com um tipo fora desses, aparece um
 editor de texto JSON. Em qualquer caso a validação final é a do `configSchema` do módulo, no processo filho, e o detector de
 segredos continua recusando valores sensíveis (credencial não vai na config: use variável de ambiente ou o cofre do sistema).
-O formulário só aparece com o módulo **ativo**; desligado, inativo nesta máquina, falho ou ausente abrem o editor JSON.
+O formulário aparece quando o `serve` tem o schema do módulo carregado (`configJson`), inclusive num módulo que falhou por
+configuração inválida, que é justamente quando ele ajuda. Sem o schema (módulo desligado, inativo nesta máquina, ausente,
+que falhou ao importar, ou que não exporta `configJson`) abre o editor JSON.
 Quando o módulo não carrega (falho ou ausente), o editor traz o aviso de que não deu para validar agora: a config é
 gravada sem o `configSchema` e conferida quando o módulo voltar a carregar.
 
