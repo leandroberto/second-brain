@@ -23,18 +23,19 @@ const sessions = () => ({ file: join(dir, "sessions.json") });
 const env = () => ({ ...process.env, HOME: dir, BRAIN_VAULT: "", BRAIN_STATE_DIR: join(dir, "state"), BRAIN_SESSIONS_FILE: sessions().file });
 const brainCli = (args: string[]) => run(process.execPath, [BIN, ...args, "--vault", brain.vault.root], { env: env(), timeout: 60_000 });
 
-/** Grava `modules` no config.yaml como o usuário faria (JSON é YAML válido). */
-function gravarModulos(modules: Record<string, unknown>) {
-  const atual = readFileSync(brain.vault.configPath, "utf8").replace(/^modules:.*$/m, "");
-  writeFileSync(brain.vault.configPath, `${atual.trimEnd()}\nmodules: ${JSON.stringify(modules)}\n`, "utf8");
-  (brain as unknown as { reloadConfig(): void }).reloadConfig();
+/** Escreve `modules` no config.yaml como o usuário faria (JSON é YAML válido); vale para o `Brain.open` seguinte. */
+function gravarModulos(vault: string, modules: Record<string, unknown>) {
+  const cfg = join(vault, ".brain", "config.yaml");
+  writeFileSync(cfg, `${readFileSync(cfg, "utf8").replace(/^modules:.*$/m, "").trimEnd()}\nmodules: ${JSON.stringify(modules)}\n`, "utf8");
 }
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "brain-mod-cli-"));
   process.env.BRAIN_STATE_DIR = join(dir, "state");
-  brain = await Brain.init(join(dir, "vault"));
-  gravarModulos({ ok: { path: join(API_FIX, "ok"), config: { cor: "azul" } } });
+  const vault = join(dir, "vault");
+  (await Brain.init(vault)).close();
+  gravarModulos(vault, { ok: { path: join(API_FIX, "ok"), config: { cor: "azul" } } });
+  brain = await Brain.open(vault);
   root = modulesStateRoot(brain);
   // URL de uma porta onde ninguém escuta (conexão recusada)
   const s = createServer(); await new Promise<void>((ok) => s.listen(0, "127.0.0.1", () => ok()));
@@ -549,6 +550,29 @@ describe("brain modules (processo real)", () => {
         "rota inválida: POST /x/:id/:id (um :param ocupa o segmento inteiro e o nome não se repete)",
       ]);
     } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  describe("check dá uma causa só por rota", () => {
+    const checar = async (caminho: string) => {
+      const d = mkdtempSync(join(tmpdir(), "brain-check-rota-dupla-"));
+      try {
+        writeFileSync(join(d, "package.json"), JSON.stringify({ name: "x", type: "module", exports: { ".": "./index.js" } }));
+        writeFileSync(join(d, "index.js"), `export default { sdk: 1, id: "rota-dupla", nome: "R", versao: "1.0.0", rotas: [
+          { metodo: "GET", caminho: ${JSON.stringify(caminho)}, rodar: () => null }, { metodo: "POST", caminho: "/ok", rodar: () => null } ] };`);
+        return (await checarModulo(d)).causas.filter((c) => c.startsWith("rota inválida:"));
+      } finally { rmSync(d, { recursive: true, force: true }); }
+    };
+
+    it("sem \"/\" e que também não compila (:param colado)", async () => {
+      expect(await checar("x:id")).toEqual(["rota inválida: GET x:id (um :param ocupa o segmento inteiro e o nome não se repete)"]);
+    });
+    it("caminho longo: a causa do carregador sai truncada, mas a rota aparece uma vez só (inteira)", async () => {
+      const longo = `/${"a".repeat(400)}:id`;
+      expect(await checar(longo)).toEqual([`rota inválida: GET ${longo} (um :param ocupa o segmento inteiro e o nome não se repete)`]);
+    });
+    it("sem \"/\" mas que compila: só a causa do formato geral", async () => {
+      expect(await checar("sem-barra")).toEqual(['rota inválida: GET sem-barra (metodo GET/POST/PUT/DELETE, caminho com "/" e rodar)']);
+    });
   });
 
   it("modules check aceita um módulo válido", async () => {

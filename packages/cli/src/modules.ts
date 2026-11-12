@@ -236,7 +236,9 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
     const m = (await loadModules(b, { modo: "definicoes", validarConfig: false })).get(id);
     const causas: string[] = [];
     if (!MODULE_ID_RE.test(id)) causas.push(`id do módulo inválido: "${id}" (use ${MODULE_ID_RE.source})`);
-    if (!m || m.status !== "ativo" || !m.def) { causas.push(m?.causa ?? "módulo não carregado", ...rotasRuins); return { id, versao: m?.versao, causas: [...new Set(causas)] }; }
+    if (!m || m.status !== "ativo" || !m.def) { // a causa de rota do carregador é a primeira rota inválida, truncada pela higiene de mensagem: `rotasRuins` já cobre todas, inteiras
+      const causaDoCarregador = m?.causa?.startsWith("rota inválida:") ? undefined : m?.causa;
+      causas.push(causaDoCarregador ?? "módulo não carregado", ...rotasRuins); return { id, versao: m?.versao, causas: [...new Set(causas)] }; }
     const def = m.def;
     if (typeof def.nome !== "string" || !def.nome.trim()) causas.push("nome ausente");
     if (typeof def.versao !== "string" || !def.versao.trim()) causas.push("versao ausente");
@@ -248,10 +250,14 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
       if (nomes.has(f!.nome)) causas.push(`ferramenta ${f!.nome} repetida`);
       nomes.add(f!.nome);
     }
+    const jaCitadas = new Set<string>(); // uma causa por rota: a do formato geral cobre o caminho sem "/" que também não compila
     for (const r of Array.isArray(def.rotas) ? def.rotas : def.rotas === undefined ? [] : [null]) {
-      if (!r || !["GET", "POST", "PUT", "DELETE"].includes(r.metodo) || typeof r.caminho !== "string" || !r.caminho.startsWith("/") || typeof r.rodar !== "function") causas.push(`rota inválida: ${r ? `${String(r.metodo)} ${String(r.caminho)}` : String(r)} (metodo GET/POST/PUT/DELETE, caminho com "/" e rodar)`);
+      if (!r || !["GET", "POST", "PUT", "DELETE"].includes(r.metodo) || typeof r.caminho !== "string" || !r.caminho.startsWith("/") || typeof r.rodar !== "function") {
+        causas.push(`rota inválida: ${r ? `${String(r.metodo)} ${String(r.caminho)}` : String(r)} (metodo GET/POST/PUT/DELETE, caminho com "/" e rodar)`);
+        if (r) for (const c of rotasComCaminhoInvalido([r])) jaCitadas.add(c);
+      }
     }
-    causas.push(...rotasRuins);
+    causas.push(...rotasRuins.filter((c) => !jaCitadas.has(c)));
     const tarefas = new Set<string>();
     for (const t of Array.isArray(def.tarefas) ? def.tarefas : def.tarefas === undefined ? [] : [null]) {
       if (!t || typeof t.id !== "string" || !t.id || typeof t.rodar !== "function") { causas.push(`tarefa inválida: ${t ? String(t.id) : String(t)} (id e rodar)`); continue; }
