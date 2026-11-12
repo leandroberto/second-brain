@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModuleContext, ModuleDef, Tarefa, TarefaContext } from "@brain/module-sdk";
 import { ModuleRegistry, Scheduler, parseCron } from "../src/index.js";
 
@@ -12,9 +12,11 @@ beforeAll(() => { process.env.TZ = "America/New_York"; });
 afterAll(() => { if (tzAntes === undefined) delete process.env.TZ; else process.env.TZ = tzAntes; });
 
 const U = (a: number, m: number, d: number, h: number, mi: number) => new Date(Date.UTC(a, m - 1, d, h, mi));
-const esperar = (ms = 60) => new Promise((r) => setTimeout(r, ms));
+// timers falsos (a data fica real: o agendador usa o relógio injetado): `esperar` avança o tempo sem dormir
+const esperar = (ms = 60) => vi.advanceTimersByTimeAsync(ms);
 const abertos: Scheduler[] = [];
-afterEach(async () => { await Promise.all(abertos.splice(0).map((s) => s.stop())); });
+beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] }); });
+afterEach(async () => { await Promise.all(abertos.splice(0).map((s) => s.stop())); vi.useRealTimers(); });
 
 function montar(t: Tarefa, inicial: Date, estado: Record<string, unknown>) {
   const root = mkdtempSync(join(tmpdir(), "brain-dst-"));

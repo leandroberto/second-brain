@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { connect as conectarTcp } from "node:net";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -39,6 +40,23 @@ const call = async (c: Client, name: string, args: Record<string, unknown> = {})
 const ouvir = (s: Server) => new Promise<number>((ok) => s.listen(0, "127.0.0.1", () => ok((s.address() as { port: number }).port)));
 const fechar = (s: Server) => new Promise<void>((ok) => { s.close(() => ok()); s.closeAllConnections?.(); });
 
+/**
+ * Porta onde NINGUÉM escuta, confirmada: reserva uma porta efêmera, a fecha e tenta conectar nela; só devolve quando a conexão é
+ * recusada (se algo a tomou nesse intervalo, sorteia outra). Pega-se perto do uso para o intervalo entre a prova e o uso ser mínimo.
+ */
+async function portaFechada(): Promise<number> {
+  for (let i = 0; i < 20; i++) {
+    const s = createServer(); const porta = await ouvir(s); await fechar(s);
+    const recusada = await new Promise<boolean>((ok) => {
+      const c = conectarTcp({ port: porta, host: "127.0.0.1" });
+      c.once("connect", () => { c.destroy(); ok(false); });
+      c.once("error", (e: NodeJS.ErrnoException) => ok(e.code === "ECONNREFUSED"));
+    });
+    if (recusada) return porta;
+  }
+  throw new Error("não achei uma porta fechada");
+}
+
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "brain-mod-mcp-"));
   process.env.BRAIN_STATE_DIR = join(dir, "state");
@@ -51,7 +69,7 @@ beforeAll(async () => {
   token = loadOrCreateToken(b.vault);
   b.close();
   // porta sem ninguém escutando: o fallback BRAIN_PORT não pode achar um serve de verdade da máquina
-  const s = createServer(); portaLivre = await ouvir(s); await fechar(s);
+  portaLivre = await portaFechada();
 });
 afterAll(async () => {
   await Promise.all(clients.map((c) => c.close().catch(() => undefined)));
@@ -123,7 +141,7 @@ describe("ferramentas MCP de módulo", () => {
 
   it("sem serve devolve erro claro", async () => {
     clearServeInfo(root);
-    const c = await connect();
+    const c = await connect({ BRAIN_PORT: String(await portaFechada()) }); // porta confirmada como recusada, tomada agora e não no beforeAll
     const r = await call(c, "ok_eco", { texto: "oi" });
     expect(r.isError).toBe(true);
     expect(r.text).toBe("o brain serve não está rodando; a ferramenta ok_eco precisa dele");

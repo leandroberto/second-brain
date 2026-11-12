@@ -1,15 +1,21 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModuleContext, ModuleDef, Tarefa, TarefaContext } from "@brain/module-sdk";
 import { ModuleRegistry, Scheduler, parseCron } from "../src/index.js";
 
 const L = (a: number, m: number, d: number, h = 0, mi = 0) => new Date(a, m - 1, d, h, mi, 0, 0);
-const esperar = (ms = 60) => new Promise((r) => setTimeout(r, ms));
+// Relógio dos timers falso (a data fica real: o agendador usa o relógio injetado): `esperar` avança o tempo sem dormir.
+// Sem espera real, o resultado não depende da carga da máquina.
+const esperar = (ms = 60) => vi.advanceTimersByTimeAsync(ms);
 
 const abertos: Scheduler[] = [];
-afterEach(async () => { await Promise.all(abertos.splice(0).map((s) => s.stop())); });
+beforeEach(() => { vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] }); });
+afterEach(async () => {
+  await Promise.all(abertos.splice(0).map((s) => s.stop()));
+  vi.useRealTimers();
+});
 
 function montar(tarefa: Partial<Tarefa> & { rodar: Tarefa["rodar"] }, inicial: Date, estado?: Record<string, unknown>) {
   const root = mkdtempSync(join(tmpdir(), "brain-sched-"));
@@ -125,7 +131,11 @@ describe("Scheduler", () => {
   it("timeout aborta o sinal", async () => {
     let sinal!: AbortSignal;
     const { s } = montar({ timeoutS: 0.05, rodar: (c: TarefaContext) => { sinal = c.sinal; return new Promise<void>(() => undefined); } }, L(2026, 11, 11, 9));
-    const r = await s.runNow("mod", "t");
+    const p = s.runNow("mod", "t");
+    await esperar(49);
+    expect(sinal.aborted).toBe(false); // ainda dentro do prazo
+    await esperar(1);
+    const r = await p;
     expect(r.resultado).toBe("timeout");
     expect(sinal.aborted).toBe(true);
     expect(s.status("mod")[0]!.resultado).toBe("timeout");
@@ -171,6 +181,17 @@ describe("Scheduler", () => {
     await expect(s.runNow("mod", "nao")).rejects.toMatchObject({ code: "not_found" });
     reg.get("mod")!.status = "falho";
     await expect(s.runNow("mod", "t")).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("stop() não deixa timers vivos (nem o do tick, nem o de timeout de tarefa)", async () => {
+    expect(vi.getTimerCount()).toBe(0);
+    const { s } = montar({ timeoutS: 30, rodar: () => new Promise<void>(() => undefined) }, L(2026, 11, 11, 9));
+    s.start();
+    void s.runNow("mod", "t");
+    await esperar(5);
+    expect(vi.getTimerCount()).toBeGreaterThanOrEqual(2); // tick + timeout da execução
+    await s.stop();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("stop aborta execuções em andamento e aguarda", async () => {
