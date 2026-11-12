@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -9,6 +9,38 @@ const nova = () => mkdtempSync(join(tmpdir(), "brain-avisos-"));
 const TOKEN = `ghp_${"a1B2c3D4e5".repeat(4)}`;
 
 describe("AvisosStore", () => {
+  it("o índice fica em memória: listar e marcarVisto não releem o arquivo (o disco só é lido na construção)", async () => {
+    const root = nova();
+    const s = new AvisosStore(root);
+    const a = await s.avisar("m", { titulo: "um" });
+    const b = await s.avisar("m", { titulo: "dois" });
+    writeFileSync(join(root, "_avisos.jsonl"), ""); // se listar relesse o disco, veria vazio
+    expect(s.listar().avisos.map((x) => x.id)).toEqual([a.id, b.id]);
+    s.marcarVisto(a.id);
+    expect(s.listar().avisos.map((x) => x.id)).toEqual([b.id]);
+    expect(s.listar(a.id).avisos.map((x) => x.id)).toEqual([b.id]);
+    const c = await s.avisar("m", { titulo: "tres" });
+    expect(s.listar().avisos.map((x) => x.id)).toEqual([b.id, c.id]);
+  });
+
+  it("as escritas chegam ao disco: uma instância nova vê vistos, avisos novos e a chave deduplicada", async () => {
+    const root = nova();
+    const s = new AvisosStore(root);
+    const a = await s.avisar("m", { titulo: "um", chave: "k" });
+    const b = await s.avisar("m", { titulo: "dois", chave: "k" }); // substitui `a`
+    const c = await s.avisar("m", { titulo: "tres" });
+    s.marcarVisto(c.id);
+    expect(new AvisosStore(root).listar().avisos.map((x) => x.id)).toEqual([b.id]);
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it("listar devolve cópias: alterar o resultado não muda o índice", async () => {
+    const s = new AvisosStore(nova());
+    await s.avisar("m", { titulo: "um" });
+    s.listar().avisos[0]!.titulo = "adulterado";
+    expect(s.listar().avisos[0]!.titulo).toBe("um");
+  });
+
   it("chave deduplica", async () => {
     const s = new AvisosStore(nova());
     await s.avisar("m", { titulo: "um", chave: "d1" });

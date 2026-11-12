@@ -39,7 +39,11 @@ function validar(a: Aviso): void {
   }
 }
 
-/** Avisos (`<root>/_avisos.jsonl`, só-acréscimo com compactação atômica) e badges (memória + `<root>/_badges.json`). */
+/**
+ * Avisos (`<root>/_avisos.jsonl`, só-acréscimo com compactação atômica) e badges (memória + `<root>/_badges.json`).
+ * O `serve` é o único escritor: o índice dos avisos fica em memória, é lido do disco só na construção e atualizado pelas
+ * próprias escritas (disco primeiro, memória depois). Outro processo que grave no arquivo só é visto por uma instância nova.
+ */
 export class AvisosStore implements AvisosSink {
   private readonly arq: string;
   private readonly arqBadges: string;
@@ -47,6 +51,8 @@ export class AvisosStore implements AvisosSink {
   private readonly ouvintes = new Set<Ouvinte>();
   private ultimoTs = 0;
   private linhas = 0;
+  /** avisos (com a marca de visto aplicada) em ordem de gravação (= ordem de id) */
+  private indice: AvisoGravado[];
 
   constructor(private readonly root: string, onChange?: Ouvinte) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -57,8 +63,8 @@ export class AvisosStore implements AvisosSink {
       const b = JSON.parse(readFileSync(this.arqBadges, "utf8")) as Record<string, unknown>;
       for (const [k, v] of Object.entries(b)) if (typeof v === "number" && Number.isFinite(v) && v > 0) this.badges[k] = Math.floor(v);
     } catch { /* sem badges gravados */ }
-    const todos = this.ler();
-    const ult = todos[todos.length - 1];
+    this.indice = this.ler();
+    const ult = this.indice[this.indice.length - 1];
     if (ult) this.ultimoTs = parseInt(ult.id.slice(0, 9), 36) || 0;
   }
 
@@ -99,11 +105,14 @@ export class AvisosStore implements AvisosSink {
     return [...avisos.values()].map((a) => (vistos.has(a.id) ? { ...a, visto: true } : a));
   }
 
+  /** Grava a linha e, só depois, aplica no índice em memória (se a gravação falhar, a memória fica como estava). */
   private acrescentar(l: Linha): void {
     const novo = !existsSync(this.arq);
     appendFileSync(this.arq, `${JSON.stringify(l)}\n`, { mode: 0o600 });
     if (novo) { try { chmodSync(this.arq, 0o600); } catch { /* best effort */ } }
     this.linhas++;
+    if ("marca" in l) this.indice = this.indice.map((a) => (a.id === l.id ? { ...a, visto: true } : a));
+    else this.indice.push({ ...l });
   }
 
   /**
@@ -111,7 +120,7 @@ export class AvisosStore implements AvisosSink {
    * Um não visto só sai se os não vistos sozinhos passarem do limite (ficam os mais recentes), com aviso no stderr.
    */
   private compactar(): void {
-    const todos = this.ler();
+    const todos = this.indice;
     const naoVistos = todos.filter((a) => !a.visto);
     if (naoVistos.length > MANTER) {
       console.error(`[brain] avisos dos módulos: mais de ${MANTER} avisos não vistos; os mais antigos foram descartados (ficam os ${MANTER} mais recentes)`);
@@ -120,6 +129,7 @@ export class AvisosStore implements AvisosSink {
     const mantidos = todos.filter((a) => manter.has(a.id));
     writeFileAtomic(this.arq, mantidos.map((a) => `${JSON.stringify(a)}\n`).join(""));
     this.linhas = mantidos.length;
+    this.indice = mantidos;
   }
 
   async avisar(modulo: string, a: Aviso): Promise<AvisoGravado> {
@@ -130,7 +140,7 @@ export class AvisosStore implements AvisosSink {
     if (a.chave !== undefined) g.chave = a.chave;
     // a mesma chave substitui o aviso anterior ainda não visto: o novo é gravado ANTES de o anterior ser marcado como visto
     // (falha no meio deixa uma duplicata, nunca perde o aviso)
-    const anteriores = g.chave === undefined ? [] : this.ler().filter((ant) => !ant.visto && ant.modulo === modulo && ant.chave === g.chave);
+    const anteriores = g.chave === undefined ? [] : this.indice.filter((ant) => !ant.visto && ant.modulo === modulo && ant.chave === g.chave);
     this.acrescentar(g);
     let falha: unknown;
     try { for (const ant of anteriores) this.acrescentar({ id: ant.id, visto: true, marca: true }); } catch (e) { falha = e; }
@@ -141,15 +151,15 @@ export class AvisosStore implements AvisosSink {
   }
 
   listar(depois?: string): { avisos: AvisoGravado[]; cursor: string; badges: Record<string, number>; total: number } {
-    const todos = this.ler();
-    const avisos = todos.filter((a) => !a.visto && (depois === undefined || a.id > depois));
+    const todos = this.indice;
+    const avisos = todos.filter((a) => !a.visto && (depois === undefined || a.id > depois)).map((a) => ({ ...a }));
     const cursor = todos.length ? todos[todos.length - 1]!.id : (depois ?? "");
     const total = Object.values(this.badges).reduce((s, n) => s + n, 0);
     return { avisos, cursor, badges: { ...this.badges }, total };
   }
 
   marcarVisto(id: string): void {
-    if (!this.ler().some((a) => a.id === id && !a.visto)) return;
+    if (!this.indice.some((a) => a.id === id && !a.visto)) return;
     this.acrescentar({ id, visto: true, marca: true });
   }
 
