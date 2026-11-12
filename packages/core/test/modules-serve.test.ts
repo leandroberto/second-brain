@@ -129,4 +129,23 @@ describe("vaultFingerprint", () => {
     symlinkSync(d, join(base, "cOFRE")); // simula /mnt/c ou macOS: a outra caixa resolve para o mesmo ino/dev
     expect(vaultFingerprint(d)).toBe(sha(realpathSync.native(d).toLowerCase()));
   });
+
+  it("pasta do vault sem letras: a sonda usa outra entrada da mesma pasta", () => {
+    const base = mkdtempSync(join(tmpdir(), "brain-fp-"));
+    mkdirSync(join(base, "Irmao"));
+    symlinkSync(join(base, "Irmao"), join(base, "iRMAO")); // a pasta que contém o vault não diferencia caixa
+    const d = join(base, "2024"); mkdirSync(d);
+    expect(vaultFingerprint(d)).toBe(sha(realpathSync.native(d).toLowerCase()));
+  });
+
+  it("pasta do vault sem letras e sozinha: a sonda sobe para o primeiro componente com letras", () => {
+    const base = mkdtempSync(join(tmpdir(), "brain-fp-"));
+    const pai = join(base, "Cofre"); mkdirSync(pai);
+    symlinkSync(pai, join(base, "cOFRE"));
+    const d = join(pai, "2024"); mkdirSync(d);
+    expect(vaultFingerprint(d)).toBe(sha(realpathSync.native(d).toLowerCase()));
+    // num FS que diferencia caixa, continua o caminho como está
+    const outro = join(mkdtempSync(join(tmpdir(), "brain-fp-")), "Pasta", "2024"); mkdirSync(outro, { recursive: true });
+    expect(vaultFingerprint(outro)).toBe(sha(realpathSync.native(outro)));
+  });
 });

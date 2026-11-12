@@ -1,20 +1,31 @@
 import { createServer, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Sequências da trava do serve difíceis de provocar de verdade: o uptime da máquina (relógio do WSL depois de o host dormir)
-// e um terceiro processo criando o lock no meio de uma retomada (gancho antes do `link`).
+// e outros processos agindo no meio de uma retomada (ganchos antes do `link`, do `mkdir` do mutex e da remoção do mutex velho).
+// `eventos` registra a ordem de `fsync` e `link` (o conteúdo do lock vai a disco antes de o lock aparecer).
 const relogio = { uptimeS: undefined as number | undefined };
 vi.mock("node:os", async (original) => {
   const os = await original<typeof import("node:os")>();
   return { ...os, uptime: () => relogio.uptimeS ?? os.uptime() };
 });
-const ganchos = { antesDoLink: undefined as ((origem: string, destino: string) => void) | undefined };
+type Gancho = ((...caminhos: string[]) => void) | undefined;
+const ganchos = { antesDoLink: undefined as Gancho, antesDoMkdir: undefined as Gancho, antesDeRemoverMutex: undefined as Gancho };
+const eventos: string[] = [];
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, linkSync: (...a: Parameters<typeof fs.linkSync>) => { ganchos.antesDoLink?.(String(a[0]), String(a[1])); return fs.linkSync(...a); } };
+  const ehMutex = (p: unknown) => String(p).endsWith(".retomando");
+  return {
+    ...fs,
+    linkSync: (...a: Parameters<typeof fs.linkSync>) => { ganchos.antesDoLink?.(String(a[0]), String(a[1])); eventos.push(`link ${String(a[1])}`); return fs.linkSync(...a); },
+    fsyncSync: (...a: Parameters<typeof fs.fsyncSync>) => { eventos.push("fsync"); return fs.fsyncSync(...a); },
+    mkdirSync: ((...a: Parameters<typeof fs.mkdirSync>) => { if (ehMutex(a[0])) ganchos.antesDoMkdir?.(String(a[0])); return fs.mkdirSync(...a); }) as typeof fs.mkdirSync,
+    renameSync: (...a: Parameters<typeof fs.renameSync>) => { if (ehMutex(a[0])) ganchos.antesDeRemoverMutex?.(String(a[0])); return fs.renameSync(...a); },
+    rmdirSync: (...a: Parameters<typeof fs.rmdirSync>) => { if (ehMutex(a[0])) ganchos.antesDeRemoverMutex?.(String(a[0])); return fs.rmdirSync(...a); },
+  };
 });
 
 const { acquireServeLock, writeServeInfo } = await import("../src/index.js");
@@ -31,7 +42,7 @@ const nonceDe = (arq: string) => (JSON.parse(readFileSync(arq, "utf8")) as { non
 
 const servidores: Server[] = [];
 afterEach(async () => {
-  relogio.uptimeS = undefined; ganchos.antesDoLink = undefined;
+  relogio.uptimeS = undefined; ganchos.antesDoLink = undefined; ganchos.antesDoMkdir = undefined; ganchos.antesDeRemoverMutex = undefined; eventos.length = 0;
   await Promise.all(servidores.splice(0).map((s) => new Promise<void>((ok) => { s.close(() => ok()); s.closeAllConnections(); })));
 });
 
@@ -88,11 +99,14 @@ describe("serve.lock: retomadas serializadas por serve.lock.retomando", () => {
     expect(nonceDe(lock)).toBe("LA"); // o lock de A continua no lugar
   });
 
-  it("mutex de retomada recente (outra retomada em curso): não retoma e não apaga o mutex", async () => {
+  it("mutex de retomada recente (outra retomada em curso): não retoma, não apaga o mutex e a mensagem diz o que fazer", async () => {
     const { root, vault, lock, mutex } = montar();
     writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 4242, nonce: "morto", desde: "" }));
     mkdirSync(mutex);
-    await expect(acquireServeLock(root, vault)).rejects.toMatchObject({ code: "locked" });
+    await expect(acquireServeLock(root, vault)).rejects.toMatchObject({
+      code: "locked",
+      message: `outra subida está retomando o lock (serve.lock.retomando); espere até 30 s e tente de novo, ou apague ${mutex} se nenhum brain serve estiver subindo`,
+    });
     expect(nonceDe(lock)).toBe("morto");
     expect(existsSync(mutex)).toBe(true);
   });
@@ -106,6 +120,49 @@ describe("serve.lock: retomadas serializadas por serve.lock.retomando", () => {
     const l = await acquireServeLock(root, vault);
     expect(JSON.parse(readFileSync(lock, "utf8")).pid).toBe(process.pid);
     expect(existsSync(mutex)).toBe(false);
+    l.liberar();
+  });
+
+  it("mutex velho: dois processos o acham velho; quem chega depois não apaga o mutex novo do outro", async () => {
+    const { root, vault, lock, mutex } = montar();
+    writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 4242, nonce: "morto", desde: "" }));
+    mkdirSync(mutex);
+    const velho = new Date(Date.now() - 31_000);
+    utimesSync(mutex, velho, velho);
+    // entre a avaliação (velho) e a remoção, o outro processo removeu o velho e criou o seu (está retomando agora)
+    let inoDoOutro = 0;
+    ganchos.antesDeRemoverMutex = (m) => {
+      ganchos.antesDeRemoverMutex = undefined;
+      rmdirSync(m); mkdirSync(m); inoDoOutro = statSync(m).ino;
+    };
+    await expect(acquireServeLock(root, vault)).rejects.toThrow(/outra subida está retomando o lock/);
+    expect(statSync(mutex).ino).toBe(inoDoOutro); // o mutex do outro continua no lugar
+    expect(nonceDe(lock)).toBe("morto"); // e só ele retoma
+  });
+});
+
+describe("serve.lock: identidade do lock avaliado (FS sem hard link: lock vazio não tem nonce)", () => {
+  it("B avaliou um lock velho vazio; A o retomou e criou o seu, ainda vazio (wx): B não remove o lock de A", async () => {
+    const { root, vault, lock } = montar();
+    writeFileSync(lock, "");
+    utimesSync(lock, minutosAtras(11), minutosAtras(11));
+    let inoDeA = 0;
+    ganchos.antesDoMkdir = () => { // B entra no mutex depois de A ter retomado o velho e criado o novo
+      ganchos.antesDoMkdir = undefined;
+      rmSync(lock); writeFileSync(lock, ""); inoDeA = statSync(lock).ino;
+    };
+    await expect(acquireServeLock(root, vault)).rejects.toThrow(/lock vazio ou ilegível recente/);
+    expect(statSync(lock).ino).toBe(inoDeA);
+  });
+});
+
+describe("serve.lock: conteúdo em disco antes de o lock aparecer", () => {
+  it("o tmp passa por fsync antes do link", async () => {
+    const { root, vault, lock } = montar();
+    const l = await acquireServeLock(root, vault);
+    const iLink = eventos.indexOf(`link ${lock}`);
+    expect(iLink).toBeGreaterThan(0);
+    expect(eventos.slice(0, iLink)).toContain("fsync");
     l.liberar();
   });
 });

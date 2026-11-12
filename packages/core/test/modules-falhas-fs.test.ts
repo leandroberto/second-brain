@@ -10,9 +10,14 @@ vi.mock("../src/fs-atomic.js", async (original) => ({
   preservarCorrompido: () => { throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }); },
 }));
 const erroDoLink = { code: "" };
+const fsyncs = { n: 0 };
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, linkSync: (...a: Parameters<typeof fs.linkSync>) => { if (erroDoLink.code) throw Object.assign(new Error(`${erroDoLink.code}: link`), { code: erroDoLink.code }); return fs.linkSync(...a); } };
+  return {
+    ...fs,
+    linkSync: (...a: Parameters<typeof fs.linkSync>) => { if (erroDoLink.code) throw Object.assign(new Error(`${erroDoLink.code}: link`), { code: erroDoLink.code }); return fs.linkSync(...a); },
+    fsyncSync: (...a: Parameters<typeof fs.fsyncSync>) => { fsyncs.n++; return fs.fsyncSync(...a); },
+  };
 });
 
 const { ConfigSchema, ModuleRegistry, Scheduler, acquireServeLock, createModuleIa } = await import("../src/index.js");
@@ -64,8 +69,10 @@ describe("serve.lock em FS sem hard link", () => {
       const root = join(base, "modules"); mkdirSync(root);
       const vault = { root: base, tokenPath: join(base, "t") };
       erroDoLink.code = code;
+      fsyncs.n = 0;
       try {
         const l = await acquireServeLock(root, vault);
+        expect(fsyncs.n).toBe(2); // o tmp (antes do link que falhou) e o lock criado por wx
         expect(JSON.parse(readFileSync(join(base, "serve.lock"), "utf8"))).toMatchObject({ pid: process.pid, nonce: expect.any(String) });
         expect(readdirSync(base).sort()).toEqual(["modules", "serve.lock"]); // sem tmp
         // a exclusão continua valendo para um segundo serve

@@ -1,4 +1,4 @@
-import { linkSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, opendirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeSync, type Stats } from "node:fs";
 import { uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -69,15 +69,55 @@ export function vaultFingerprint(vaultRoot: string, sonda?: SondaCaixa): string 
   return createHash("sha256").update(normalizadorDeCaixa(vaultRoot, sonda)(caminhoReal(vaultRoot))).digest("hex").slice(0, 16);
 }
 
-/** Sonda o FS do vault: o nome da pasta com a caixa trocada resolve para o mesmo arquivo (mesmo `ino`/`dev`)? */
-function semDiferencaDeCaixa(p: string): boolean {
-  const nome = basename(p);
-  const trocado = [...nome].map((c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase())).join("");
-  if (trocado === nome) return false; // sem letras: não dá para sondar
+/** Resultado da sonda por caminho real (a sonda faz `stat`/`readdir`; o FS de um caminho não muda durante o processo). */
+const cacheDaSonda = new Map<string, boolean>();
+const temLetras = (nome: string): boolean => nome.toLowerCase() !== nome.toUpperCase();
+const caixaTrocada = (nome: string): string => [...nome].map((c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase())).join("");
+
+/** A pasta `dir` não diferencia caixa: a entrada `nome` (com letras) com a caixa trocada é o mesmo arquivo (mesmo `ino`/`dev`)? */
+function pastaSemDiferencaDeCaixa(dir: string, nome: string): boolean {
   try {
-    const a = statSync(p); const b = statSync(join(dirname(p), trocado));
+    const a = statSync(join(dir, nome)); const b = statSync(join(dir, caixaTrocada(nome)));
     return a.ino === b.ino && a.dev === b.dev;
   } catch { return false; }
+}
+
+/** Primeira entrada com letras de `dir` que dá para sondar (`stat` ok; entre as primeiras 200), ou `undefined`. */
+function entradaComLetras(dir: string): string | undefined {
+  const sondavel = (nome: string): boolean => { try { statSync(join(dir, nome)); return true; } catch { return false; } };
+  try {
+    const d = opendirSync(dir);
+    try { for (let i = 0, e = d.readSync(); e && i < 200; i++, e = d.readSync()) if (temLetras(e.name) && sondavel(e.name)) return e.name; }
+    finally { d.closeSync(); }
+  } catch { /* sem leitura: não dá para sondar por aqui */ }
+  return undefined;
+}
+
+/**
+ * Sonda o FS do vault (caminho real `p`): o FS não diferencia caixa? Testa a pasta que contém o vault pelo nome do vault ou,
+ * se ele não tiver letras (`C:\2024`), por outra entrada com letras dessa pasta; sem nenhuma, sobe pelos componentes do
+ * caminho até o primeiro com letras, sem sair do sistema de arquivos do vault. Nada a sondar: diferencia. Em cache por caminho.
+ */
+function semDiferencaDeCaixa(p: string): boolean {
+  const memo = cacheDaSonda.get(p);
+  if (memo !== undefined) return memo;
+  const r = sondar(p);
+  cacheDaSonda.set(p, r);
+  return r;
+}
+
+function sondar(p: string): boolean {
+  const pai = dirname(p);
+  if (temLetras(basename(p))) return pastaSemDiferencaDeCaixa(pai, basename(p));
+  const irmao = entradaComLetras(pai);
+  if (irmao) return pastaSemDiferencaDeCaixa(pai, irmao);
+  let dev: number; try { dev = statSync(pai).dev; } catch { return false; }
+  for (let c = pai; dirname(c) !== c; c = dirname(c)) {
+    let mesmoFs = false; try { mesmoFs = statSync(dirname(c)).dev === dev; } catch { /* sem acesso */ }
+    if (!mesmoFs) return false; // a pasta acima é de outro FS: a caixa dela não diz nada sobre a do vault
+    if (temLetras(basename(c))) return pastaSemDiferencaDeCaixa(dirname(c), basename(c));
+  }
+  return false;
 }
 
 /**
@@ -162,7 +202,7 @@ const SEM_HARD_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"]);
 function criarLock(alvo: string, conteudo: string): boolean {
   const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
   try {
-    writeFileSync(tmp, conteudo, { mode: 0o600 });
+    gravarEmDisco(tmp, conteudo, "w");
     linkSync(tmp, alvo);
     return true;
   } catch (e) {
@@ -176,8 +216,17 @@ function criarLock(alvo: string, conteudo: string): boolean {
 }
 
 function criarLockSemHardLink(alvo: string, conteudo: string): boolean {
-  try { writeFileSync(alvo, conteudo, { flag: "wx", mode: 0o600 }); return true; }
+  try { gravarEmDisco(alvo, conteudo, "wx"); return true; }
   catch (e) { if ((e as NodeJS.ErrnoException).code === "EEXIST") return false; throw e; }
+}
+
+/**
+ * Abre (`w` ou `wx`), escreve e faz `fsync` antes de fechar: uma queda de energia/VM logo depois de o lock aparecer não o deixa
+ * vazio (lock vazio recusa por 10 min).
+ */
+function gravarEmDisco(arq: string, conteudo: string, flag: "w" | "wx"): void {
+  const fd = openSync(arq, flag, 0o600);
+  try { writeSync(fd, conteudo); fsyncSync(fd); } finally { closeSync(fd); }
 }
 
 const pidExiste = (pid: number): boolean => {
@@ -214,6 +263,7 @@ const lerLock = (arq: string): { pid: number; nonce?: string } => {
 export async function acquireServeLock(root: string, vault: { root: string; tokenPath: string }): Promise<{ liberar(): void }> {
   const alvo = arquivoLock(root);
   const nonce = randomBytes(8).toString("hex");
+  let mutexOcupado = false;
   for (let tentativa = 0; tentativa < 5; tentativa++) {
     if (criarLock(alvo, JSON.stringify({ pid: process.pid, nonce, desde: new Date().toISOString() }))) {
       noncesDoProcesso.add(nonce);
@@ -229,8 +279,11 @@ export async function acquireServeLock(root: string, vault: { root: string; toke
         },
       };
     }
+    // stat ANTES da leitura: se o arquivo mudar depois (lock novo, ou o conteúdo do `wx` chegando), a identidade avaliada já
+    // não bate na retomada, que então recomeça
+    let avaliado: Stats; try { avaliado = statSync(alvo); } catch { continue; } // sumiu: recomeça
     const dono = lerLock(alvo);
-    let mtimeMs: number; try { mtimeMs = statSync(alvo).mtimeMs; } catch { continue; } // sumiu: recomeça
+    const { mtimeMs } = avaliado;
     const recusar = (motivo: string) => new BrainError("locked", `${motivo} (lock: ${alvo})`);
     // cada ramo que não recusa conclui que o lock é velho (dono morto, pid reusado, ou lock ilegível)
     if (!dono.pid) {
@@ -250,8 +303,9 @@ export async function acquireServeLock(root: string, vault: { root: string; toke
         throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
       }
     }
-    await retomar(alvo, dono.nonce);
+    mutexOcupado = (await retomar(alvo, { nonce: dono.nonce, stat: avaliado })) === "mutex ocupado";
   }
+  if (mutexOcupado) throw new BrainError("locked", `outra subida está retomando o lock (serve.lock.retomando); espere até 30 s e tente de novo, ou apague ${alvo}.retomando se nenhum brain serve estiver subindo`);
   throw new BrainError("locked", `não foi possível obter o lock do brain serve (${alvo})`);
 }
 
@@ -260,35 +314,58 @@ const MUTEX_VELHO_MS = 30_000;
 /** Espera de quem encontra outra retomada em curso, antes de recomeçar a aquisição. */
 const ESPERA_MUTEX_MS = 100;
 
-/** Cria o mutex de retomada (`mkdir` atômico). Mutex velho (dono caiu) é removido e a criação tentada de novo, uma vez. */
+/**
+ * Cria o mutex de retomada (`mkdir` atômico). Mutex velho (dono caiu) sai por `rename` para um nome único (atômico: entre dois
+ * que o acharam velho só um vence) e só então é apagado; a criação é tentada de novo, uma vez. Se o que foi renomeado já não é
+ * o mutex avaliado (outro o removeu e criou o seu entre o `stat` e o `rename`), ele volta para o lugar e quem chegou depois
+ * espera.
+ */
 function entrarNoMutex(mutex: string): boolean {
   for (let i = 0; i < 2; i++) {
     try { mkdirSync(mutex, { mode: 0o700 }); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
-    let idade: number; try { idade = Date.now() - statSync(mutex).mtimeMs; } catch { continue; } // sumiu: tenta de novo
-    if (idade <= MUTEX_VELHO_MS) return false;
-    try { rmdirSync(mutex); } catch { /* outro o removeu */ }
+    let visto: Stats; try { visto = statSync(mutex); } catch { continue; } // sumiu: tenta de novo
+    if (Date.now() - visto.mtimeMs <= MUTEX_VELHO_MS) return false;
+    const fora = `${mutex}.${randomBytes(6).toString("hex")}.velho`;
+    try { renameSync(mutex, fora); } catch { return false; } // outro venceu a remoção: espera e recomeça
+    let tirado: Stats | undefined; try { tirado = statSync(fora); } catch { /* sumiu */ }
+    // o `ino` sozinho não basta (um mutex apagado e recriado pode reaproveitá-lo): o mtime do recriado é recente
+    if (tirado && (tirado.ino !== visto.ino || tirado.dev !== visto.dev || tirado.mtimeMs !== visto.mtimeMs)) {
+      try { renameSync(fora, mutex); } catch { /* já há outro mutex no lugar */ }
+      try { rmSync(fora, { recursive: true, force: true }); } catch { /* best effort */ }
+      return false;
+    }
+    try { rmSync(fora, { recursive: true, force: true }); } catch { /* best effort */ }
   }
   return false;
 }
 
+/** Mesmo arquivo e mesmo conteúdo do lock avaliado: `ino`/`dev`, tamanho, mtime e nonce (lock vazio do `wx` não tem nonce). */
+const mesmoLock = (arq: string, avaliado: { nonce?: string; stat: Stats }): boolean => {
+  let st: Stats; try { st = statSync(arq); } catch { return false; }
+  const a = avaliado.stat;
+  return st.ino === a.ino && st.dev === a.dev && st.size === a.size && st.mtimeMs === a.mtimeMs && lerLock(arq).nonce === avaliado.nonce;
+};
+
 /**
  * Tira o lock velho do caminho por `rename`, dentro do mutex `serve.lock.retomando` (só uma retomada por vez; quem não
- * consegue entrar espera um pouco e recomeça a aquisição). Dentro do mutex, o lock só é tirado se ainda for o avaliado: quem
- * avaliou o mesmo lock velho que outro já retomou não toca no lock novo (sem isso, um terceiro processo podia criar o seu
- * lock enquanto o novo estava fora do lugar, e o novo se perdia com o dono acreditando tê-lo). O mutex sai sempre no `finally`.
+ * consegue entrar espera um pouco e recomeça a aquisição). Dentro do mutex, o lock só é tirado se ainda for o avaliado
+ * (`mesmoLock`): quem avaliou o mesmo lock velho que outro já retomou não toca no lock novo (sem isso, um terceiro processo
+ * podia criar o seu lock enquanto o novo estava fora do lugar, e o novo se perdia com o dono acreditando tê-lo; num FS sem
+ * hard link, o lock velho vazio e o novo ainda vazio do `wx` têm o mesmo nonce, nenhum). O mutex sai sempre no `finally`.
  */
-async function retomar(alvo: string, nonceAvaliado: string | undefined): Promise<void> {
+async function retomar(alvo: string, avaliado: { nonce?: string; stat: Stats }): Promise<"mutex ocupado" | "recomeçar"> {
   const mutex = `${alvo}.retomando`;
-  if (!entrarNoMutex(mutex)) { await new Promise((ok) => setTimeout(ok, ESPERA_MUTEX_MS)); return; }
+  if (!entrarNoMutex(mutex)) { await new Promise((ok) => setTimeout(ok, ESPERA_MUTEX_MS)); return "mutex ocupado"; }
   try {
-    if (lerLock(alvo).nonce !== nonceAvaliado) return; // outro já retomou: recomeça e avalia o lock novo
+    if (!mesmoLock(alvo, avaliado)) return "recomeçar"; // outro já retomou: recomeça e avalia o lock novo
     const fora = `${alvo}.${randomBytes(6).toString("hex")}.velho`;
-    try { renameSync(alvo, fora); } catch { return; } // ENOENT: o lock saiu; recomeça a aquisição
-    if (lerLock(fora).nonce !== nonceAvaliado) {
-      // trocado entre a leitura e o rename (o dono o apagou e outro o criou): devolve sem sobrescrever
+    try { renameSync(alvo, fora); } catch { return "recomeçar"; } // ENOENT: o lock saiu
+    if (!mesmoLock(fora, avaliado)) {
+      // trocado entre a conferência e o rename (o dono o apagou e outro o criou): devolve sem sobrescrever
       try { linkSync(fora, alvo); } catch { /* já há outro lock (ele decide) ou FS sem hard link */ }
     }
     try { rmSync(fora, { force: true }); } catch { /* best effort */ }
+    return "recomeçar";
   } finally {
     try { rmdirSync(mutex); } catch { /* best effort */ }
   }

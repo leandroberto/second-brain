@@ -291,13 +291,19 @@ guarda o dono em `vault-path`, e outro vault apontando para ela é recusado. Mov
 estado dos módulos recomeça vazio; copie a pasta antiga se precisar). Num sistema de arquivos que não diferencia maiúsculas
 (`/mnt/c` no WSL, macOS) a impressão e o `vault-path` usam o caminho em minúsculas: abrir o mesmo vault com outra caixa
 (`/mnt/c/Users/...` ou `/mnt/c/users/...`) dá o mesmo estado, sem recusa (um `vault-path` antigo gravado com a caixa da
-primeira abertura continua aceito). O second-brain não interpreta o conteúdo.
+primeira abertura continua aceito). A detecção testa a pasta que contém o vault (pelo nome dele ou, se o nome não tiver
+letras, como `C:\2024`, por outra entrada da pasta) e, sem nada a testar ali, o primeiro componente acima com letras no
+mesmo sistema de arquivos. O second-brain não interpreta o conteúdo.
 
 O estado deve ficar em **disco local** (ext4, APFS, NTFS). Em FAT/exFAT e compartilhamentos de rede (sem hard link) o
 `serve` sobe, mas a trava (`serve.lock`) cai para a criação exclusiva sem hard link e a exclusão mútua entre `serve`s
 concorrentes fica mais fraca: o lock existe vazio por um instante (um lock vazio ou ilegível só é considerado velho depois de
 10 min sem mudar) e, numa corrida rara durante a retomada de um lock velho, um lock novo tirado por engano não pode ser
 devolvido (a devolução usa hard link).
+
+As retomadas de um lock velho passam por `serve.lock.retomando` (uma por vez). Se uma subida cair no meio de uma retomada,
+outra subida recusa por até 30 s com "outra subida está retomando o lock"; depois disso o mutex é considerado velho e
+removido sozinho (ou apague-o, se nenhum `brain serve` estiver subindo).
 
 Esta subpasta de estado e o `serve.lock` existem **mesmo sem módulos configurados**: sem `state.external`, todo `brain serve`
 usa `<slug>-<impressão>/` (avisos, agendador, `serve.json` e a trava), porque o `serve` sem módulos mantém o mesmo ciclo de

@@ -85,4 +85,16 @@ describe("modulesStateRoot em FS que não diferencia maiúsculas", () => {
     expect(modulesStateRoot(brainFalso("/mnt/c/Users"), env)).toBe(a);
     rmSync(base, { recursive: true, force: true });
   });
+
+  // pasta do vault sem letras (C:\Windows\System32\0409): a sonda sobe até "System32"
+  const semLetras = "/mnt/c/Windows/System32/0409";
+  const temSemLetras = existsSync(semLetras) && mesmoArquivo("/mnt/c/Windows/System32", "/mnt/c/Windows/system32");
+  it.skipIf(!temSemLetras)("WSL: vault com nome sem letras em /mnt/c também normaliza a caixa", () => {
+    const base = mkdtempSync(join(tmpdir(), "brain-caixa-"));
+    const env = { HOME: base, BRAIN_STATE_DIR: join(base, "estado") };
+    const a = modulesStateRoot(brainFalso(semLetras), env);
+    expect(modulesStateRoot(brainFalso("/mnt/c/windows/system32/0409"), env)).toBe(a);
+    expect(readFileSync(join(a, "..", "vault-path"), "utf8").trim()).toBe(semLetras.toLowerCase());
+    rmSync(base, { recursive: true, force: true });
+  });
 });
