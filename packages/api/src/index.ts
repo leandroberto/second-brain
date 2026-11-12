@@ -7,7 +7,8 @@ import { Brain, type Vault, principal, sessionScopeByHash, vaultFingerprint, hum
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
-import { CORS_OPACO, CSP_DA_ABA, PREFLIGHT_OPACO, TokensDePagina, aceitaOrigemOpaca, arquivoDaAba, credencialDoPrincipal, negarAntesDoRoteamento, pastaEstaticaDoSdk, temSegmentoDePonto, tratarModulos, type Credencial, type ModulesApiOptions, type TipoCredencial } from "./modules.js";
+import { credencialDoPrincipal, negarAntesDoRoteamento, tratarModulos, type Credencial, type ModulesApiOptions, type TipoCredencial } from "./modules.js";
+import { CORS_OPACO, CSP_DA_ABA, PREFLIGHT_OPACO, TokensDePagina, aceitaOrigemOpaca, arquivoDaAba, pastaEstaticaDoSdk, temSegmentoDePonto } from "./modules-aba.js";
 export { podeChamar, credencialDeModulo, type ModulesApiOptions } from "./modules.js";
 
 export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant; modules?: ModulesApiOptions }
