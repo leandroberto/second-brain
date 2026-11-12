@@ -85,6 +85,20 @@ describe("serve.lock", () => {
   });
 });
 
+describe("serve.lock vazio ou ilegível (criação por wx no meio da escrita)", () => {
+  it("recente: recusa (outro serve pode estar escrevendo); mais velho que 10 min: retomado", async () => {
+    const { root, vault, lock } = montar();
+    writeFileSync(lock, "");
+    await expect(acquireServeLock(root, vault)).rejects.toThrow(/lock vazio ou ilegível/);
+    expect(readFileSync(lock, "utf8")).toBe("");
+    const velho = new Date(Date.now() - 11 * 60_000);
+    utimesSync(lock, velho, velho);
+    const l = await acquireServeLock(root, vault);
+    expect(JSON.parse(readFileSync(lock, "utf8")).pid).toBe(process.pid);
+    l.liberar();
+  });
+});
+
 describe("serve.lock: a hora do boot nunca anula um serve confirmado vivo", () => {
   it("trava 'anterior ao boot' (salto de relógio) com o serve dela respondendo vivo: recusa", async () => {
     const { root, vault, lock } = montar();

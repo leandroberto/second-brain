@@ -150,8 +150,9 @@ const antesDoBoot = (mtimeMs: number): boolean => mtimeMs < Date.now() - uptime(
 const SEM_HARD_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"]);
 
 /**
- * Cria o lock já com o conteúdo: tmp + `link` (atômico, falha com EEXIST se já houver lock). `false` = já existe. FS sem hard
- * link vira `state_unavailable` com a orientação (o estado precisa ficar em disco local).
+ * Cria o lock já com o conteúdo: tmp + `link` (atômico, falha com EEXIST se já houver lock). `false` = já existe. Num FS sem
+ * hard link (FAT/exFAT, compartilhamento de rede) cai para a criação exclusiva com `wx` e o conteúdo escrito logo em seguida:
+ * nesse intervalo o lock existe vazio, e o leitor trata lock vazio/ilegível recente como de um serve subindo (não como livre).
  */
 function criarLock(alvo: string, conteudo: string): boolean {
   const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
@@ -162,11 +163,16 @@ function criarLock(alvo: string, conteudo: string): boolean {
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === "EEXIST") return false;
-    if (code && SEM_HARD_LINK.has(code)) throw new BrainError("state_unavailable", "o estado do second-brain precisa ficar em disco local (ext4/NTFS); este sistema de arquivos não suporta hard links");
+    if (code && SEM_HARD_LINK.has(code)) return criarLockSemHardLink(alvo, conteudo);
     throw e;
   } finally {
     try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
   }
+}
+
+function criarLockSemHardLink(alvo: string, conteudo: string): boolean {
+  try { writeFileSync(alvo, conteudo, { flag: "wx", mode: 0o600 }); return true; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "EEXIST") return false; throw e; }
 }
 
 const pidExiste = (pid: number): boolean => {
@@ -184,9 +190,11 @@ const lerLock = (arq: string): { pid: number; nonce?: string } => {
 };
 
 /**
- * Lock exclusivo `<stateDir>/serve.lock` (`{ pid, nonce, desde }`, criado já com o conteúdo por tmp + `link`), adquirido no
- * começo do `startServe`, antes de carregar qualquer coisa, e com o mtime renovado a cada 60 s enquanto o serve vive.
+ * Lock exclusivo `<stateDir>/serve.lock` (`{ pid, nonce, desde }`, criado já com o conteúdo por tmp + `link`, ou por `wx` num
+ * FS sem hard link, ver `criarLock`), adquirido no começo do `startServe`, antes de carregar qualquer coisa, e com o mtime
+ * renovado a cada 60 s enquanto o serve vive.
  * Quando o lock existe:
+ * - vazio ou ilegível: recusa, a menos que tenha mais de 10 min sem mudar (velho);
  * - pid deste processo: só é válido se o nonce for de uma aquisição deste processo (outro `startServe` aqui); senão é velho;
  * - pid inexistente: velho;
  * - mtime anterior ao último boot, sem serve confirmado vivo: velho (o pid pode ter renascido em outro processo);
@@ -218,9 +226,12 @@ export async function acquireServeLock(root: string, vault: { root: string; toke
     let mtimeMs: number; try { mtimeMs = statSync(alvo).mtimeMs; } catch { continue; } // sumiu: recomeça
     const recusar = (motivo: string) => new BrainError("locked", `${motivo} (lock: ${alvo})`);
     // cada ramo que não recusa conclui que o lock é velho (dono morto, pid reusado, ou lock ilegível)
-    if (dono.pid === process.pid) {
+    if (!dono.pid) {
+      // vazio ou ilegível: pode ser um serve criando o lock por `wx` (FS sem hard link) que ainda não escreveu o conteúdo
+      if (Date.now() - mtimeMs <= LOCK_VELHO_MS) throw recusar("lock vazio ou ilegível recente: outro brain serve pode estar subindo para este vault; se nenhum está, apague o lock");
+    } else if (dono.pid === process.pid) {
       if (dono.nonce && noncesDoProcesso.has(dono.nonce)) throw recusar("já há um brain serve subindo ou rodando neste processo para este vault");
-    } else if (dono.pid && pidExiste(dono.pid)) {
+    } else if (pidExiste(dono.pid)) {
       // lock anterior ao último boot: o dono não existe mais, mesmo que o pid tenha renascido. Só vale quando a vivacidade NÃO
       // foi confirmada: um salto de relógio (NTP, WSL retomando) move a hora do boot, e um serve que responde vivo nunca é velho
       if (ler(root)?.pid === dono.pid) {

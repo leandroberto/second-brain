@@ -293,8 +293,14 @@ estado dos módulos recomeça vazio; copie a pasta antiga se precisar). Num sist
 (`/mnt/c/Users/...` ou `/mnt/c/users/...`) dá o mesmo estado, sem recusa (um `vault-path` antigo gravado com a caixa da
 primeira abertura continua aceito). O second-brain não interpreta o conteúdo.
 
-O estado deve ficar em **disco local** (ext4, APFS, NTFS). FAT/exFAT e compartilhamentos de rede não são suportados para o
-estado: a trava do `serve` (`serve.lock`) e sua retomada dependem de hard links e de `rename` atômico.
+O estado deve ficar em **disco local** (ext4, APFS, NTFS). Em FAT/exFAT e compartilhamentos de rede (sem hard link) o
+`serve` sobe, mas a trava (`serve.lock`) cai para a criação exclusiva sem hard link e a exclusão mútua entre `serve`s
+concorrentes fica mais fraca: o lock existe vazio por um instante (um lock vazio ou ilegível só é considerado velho depois de
+10 min sem mudar) e a retomada de um lock velho não consegue devolver um lock novo tirado por engano.
+
+Esta subpasta de estado e o `serve.lock` existem **mesmo sem módulos configurados**: sem `state.external`, todo `brain serve`
+usa `<slug>-<impressão>/` (avisos, agendador, `serve.json` e a trava), porque o `serve` sem módulos mantém o mesmo ciclo de
+vida.
 
 - `lerJson(nome)` e `gravarJson(nome, valor)` (escrita atômica). `lerJson` devolve `undefined` **só** quando o arquivo não
   existe; JSON corrompido lança um erro `invalid` ("estado <nome> do módulo <id> está corrompido") e o arquivo fica intacto.

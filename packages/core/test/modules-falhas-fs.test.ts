@@ -58,17 +58,30 @@ describe("preservação do _scheduler.json que falha", () => {
 });
 
 describe("serve.lock em FS sem hard link", () => {
-  for (const code of ["EPERM", "ENOTSUP", "EXDEV"]) {
-    it(`${code} no link vira erro claro de estado fora de disco local`, async () => {
+  for (const code of ["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"]) {
+    it(`${code} no link: cai para a criação exclusiva (wx) já com o conteúdo, e o serve sobe`, async () => {
       const base = mkdtempSync(join(tmpdir(), "brain-falha-"));
       const root = join(base, "modules"); mkdirSync(root);
+      const vault = { root: base, tokenPath: join(base, "t") };
       erroDoLink.code = code;
       try {
-        await expect(acquireServeLock(root, { root: base, tokenPath: join(base, "t") })).rejects.toMatchObject({
-          code: "state_unavailable", message: "o estado do second-brain precisa ficar em disco local (ext4/NTFS); este sistema de arquivos não suporta hard links",
-        });
+        const l = await acquireServeLock(root, vault);
+        expect(JSON.parse(readFileSync(join(base, "serve.lock"), "utf8"))).toMatchObject({ pid: process.pid, nonce: expect.any(String) });
+        expect(readdirSync(base).sort()).toEqual(["modules", "serve.lock"]); // sem tmp
+        // a exclusão continua valendo para um segundo serve
+        await expect(acquireServeLock(root, vault)).rejects.toMatchObject({ code: "locked" });
+        l.liberar();
+        expect(readdirSync(base)).toEqual(["modules"]);
       } finally { erroDoLink.code = ""; }
-      expect(readdirSync(base)).toEqual(["modules"]); // nem lock nem tmp
     });
   }
+
+  it("outro erro do link continua sendo erro", async () => {
+    const base = mkdtempSync(join(tmpdir(), "brain-falha-"));
+    const root = join(base, "modules"); mkdirSync(root);
+    erroDoLink.code = "EIO";
+    try { await expect(acquireServeLock(root, { root: base, tokenPath: join(base, "t") })).rejects.toMatchObject({ code: "EIO" }); }
+    finally { erroDoLink.code = ""; }
+    expect(readdirSync(base)).toEqual(["modules"]);
+  });
 });
