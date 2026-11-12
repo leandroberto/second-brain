@@ -1,11 +1,16 @@
 import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { appendFileSync, closeSync, fchmodSync, openSync, readFileSync, renameSync, statSync } from "node:fs";
+import { BrainError } from "@brain/shared";
 
 /** Código de saída sob systemd: ≠ 0, então a unit (`Restart=on-failure`) sobe o serve de novo (ver scripts/second-brain.service). */
 export const CODIGO_REINICIO_SYSTEMD = 75;
 /** Limite da espera do processo anterior; passado, a aquisição normal do `serve.lock` decide (recusa se ainda houver serve vivo). */
 const ESPERA_PID_MS = 30_000;
 const INTERVALO_ESPERA_MS = 100;
+/** Teto do fechamento no reinício (o `scheduler.stop()` espera as tarefas em andamento sem limite próprio). */
+const LIMITE_FECHAR_MS = 20_000;
+/** `serve.log` maior que isso vira `serve.log.1` (substituindo o anterior) antes de a cópia nova escrever nele. */
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 export interface ReiniciarOptions {
   /** fecha o serve pelo mesmo caminho do SIGTERM (`h.close()` + `b.close()`) */
@@ -15,25 +20,72 @@ export interface ReiniciarOptions {
   env?: NodeJS.ProcessEnv;
   spawnFn?: typeof spawn;
   sair?: (codigo: number) => never;
+  /** `true` = o serve começou a encerrar (sinal): não sobe a cópia */
+  cancelado?: () => boolean;
+  /** pid do processo pai e leitor de `/proc` (injetáveis nos testes): decidem se o pai é o systemd */
+  ppid?: number;
+  lerProc?: (caminho: string) => string;
+  /** teto do `fechar` (padrão 20 s); estourou, sai assim mesmo e a cópia retoma o lock do dono morto */
+  limiteFecharMs?: number;
+  /** mensagens operacionais (padrão: stderr e `serve.log`) */
+  avisar?: (mensagem: string) => void;
 }
 
 /**
+ * Sob systemd = `INVOCATION_ID` E o pai é o gerenciador (pid 1 ou `comm` = `systemd`). Só a variável não basta: ela é herdada
+ * por descendentes de uma unit (tmux como serviço, `systemd-run --pty`), e um serve iniciado à mão ali sairia com 75 sem
+ * ninguém para subi-lo de novo.
+ */
+function sobSystemd(env: NodeJS.ProcessEnv, ppid: number, lerProc: (caminho: string) => string): boolean {
+  if (!env.INVOCATION_ID) return false;
+  if (ppid === 1) return true;
+  try { return lerProc(`/proc/${ppid}/comm`).trim() === "systemd"; } catch { return false; }
+}
+
+/** `fechar` com teto: estourado, avisa e resolve (quem chama segue para `sair`). Erro do `fechar` continua propagando. */
+async function fecharComTeto(fechar: () => Promise<void>, limiteMs: number, avisar: (m: string) => void): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const teto = new Promise<void>((ok) => {
+    timer = setTimeout(() => { avisar(`fechamento passou de ${Math.round(limiteMs / 1000)} s; saindo assim mesmo`); ok(); }, limiteMs);
+  });
+  try { await Promise.race([fechar(), teto]); } finally { clearTimeout(timer); }
+}
+
+/** Abre o `serve.log` para append em 0600 (também se já existia com outro modo), girando-o para `.1` acima de 5 MB. */
+function abrirLog(logPath: string): number {
+  try { if (statSync(logPath).size > LOG_MAX_BYTES) renameSync(logPath, `${logPath}.1`); } catch { /* sem log ainda */ }
+  const fd = openSync(logPath, "a", 0o600);
+  try { fchmodSync(fd, 0o600); } catch (e) { closeSync(fd); throw e; }
+  return fd;
+}
+
+const encerrandoErro = () => new BrainError("state_unavailable", "o brain serve está encerrando");
+
+/**
  * Reinicia o `brain serve` (spec de gerenciar módulos §7.1) sem depender de como ele foi iniciado:
- * - sob systemd (`INVOCATION_ID`): fecha e sai com `CODIGO_REINICIO_SYSTEMD`; a unit sobe o serve de novo;
+ * - sob systemd (ver `sobSystemd`): fecha e sai com `CODIGO_REINICIO_SYSTEMD`; a unit sobe o serve de novo;
  * - senão: sobe uma cópia destacada de si mesmo (mesmo executável, `execArgv`, `argv`, ambiente e diretório, saída no
  *   `serve.log`) que espera este pid sumir antes de pegar o `serve.lock` (`BRAIN_SERVE_ESPERAR_PID`), e só depois de a cópia
  *   ter subido fecha e sai 0. Se a cópia não sobe, rejeita sem fechar: o serve atual continua.
+ * O fechamento tem teto (`limiteFecharMs`). Com `cancelado()` (sinal recebido) antes do spawn, rejeita sem subir a cópia.
  */
 export async function reiniciarProcesso(o: ReiniciarOptions): Promise<void> {
   const env = o.env ?? process.env;
   const sair = o.sair ?? ((codigo: number) => process.exit(codigo));
-  if (env.INVOCATION_ID) {
-    try { await o.fechar(); } finally { sair(CODIGO_REINICIO_SYSTEMD); }
+  const avisar = o.avisar ?? ((m: string) => {
+    console.error(m);
+    try { appendFileSync(o.logPath, `[${new Date().toISOString()}] ${m}\n`); } catch { /* best effort */ }
+  });
+  const fechar = () => fecharComTeto(o.fechar, o.limiteFecharMs ?? LIMITE_FECHAR_MS, avisar);
+  if (o.cancelado?.()) throw encerrandoErro();
+  if (sobSystemd(env, o.ppid ?? process.ppid, o.lerProc ?? ((c) => readFileSync(c, "utf8")))) {
+    try { await fechar(); } finally { sair(CODIGO_REINICIO_SYSTEMD); }
     return;
   }
   const spawnFn = o.spawnFn ?? spawn;
-  const fd = openSync(o.logPath, "a", 0o600);
+  const fd = abrirLog(o.logPath);
   try {
+    if (o.cancelado?.()) throw encerrandoErro();
     const filho = spawnFn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
       detached: true,
       stdio: ["ignore", fd, fd],
@@ -43,8 +95,38 @@ export async function reiniciarProcesso(o: ReiniciarOptions): Promise<void> {
     await new Promise<void>((ok, erro) => { filho.once("spawn", () => ok()); filho.once("error", erro); });
     filho.unref();
   } finally { closeSync(fd); } // a cópia tem o seu próprio descritor do log
+  // daqui em diante a cópia existe: um sinal no meio não a desfaz, só fecha este processo (o `fechar` é o mesmo)
   if (process.stdout.isTTY) console.log(`brain serve reiniciado em segundo plano; saída em ${o.logPath}`);
-  try { await o.fechar(); } finally { sair(0); }
+  try { await fechar(); } finally { sair(0); }
+}
+
+export interface ControleDeReinicio {
+  /** o `reiniciarServe` repassado à API: recusa enquanto o serve sobe ou encerra; um reinício por vez */
+  reiniciarServe(): Promise<void>;
+  /** o `startServe` terminou (o handle existe e o `fechar` libera lock e `serve.json`) */
+  pronto(): void;
+  /** sinal recebido: recusa reinícios novos e cancela o que ainda não subiu a cópia */
+  encerrando(): void;
+}
+
+/**
+ * Estado do reinício no `bin.ts`. Antes de `pronto()` a API já escuta (dentro do `startServe`), mas o `fechar` ainda não teria
+ * o handle para liberar o lock e o `serve.json`: recusa. Depois de `encerrando()`, recusa (e `cancelado` impede o spawn de um
+ * reinício já pedido). Um segundo pedido recebe a mesma promise; falha libera nova tentativa.
+ */
+export function controleDeReinicio(o: Omit<ReiniciarOptions, "cancelado"> & { reiniciar?: typeof reiniciarProcesso }): ControleDeReinicio {
+  const reiniciar = o.reiniciar ?? reiniciarProcesso;
+  let subiu = false; let parando = false;
+  let emCurso: Promise<void> | undefined;
+  return {
+    async reiniciarServe() {
+      if (parando) throw encerrandoErro();
+      if (!subiu) throw new BrainError("state_unavailable", "o brain serve ainda está subindo; tente de novo em instantes");
+      return (emCurso ??= reiniciar({ ...o, cancelado: () => parando }).catch((e: unknown) => { emCurso = undefined; throw e; }));
+    },
+    pronto() { subiu = true; },
+    encerrando() { parando = true; },
+  };
 }
 
 const pidExiste = (pid: number): boolean => {
