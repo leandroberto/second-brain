@@ -1,10 +1,10 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
 import type { ModuleState } from "@brain/module-sdk";
 import type { Brain } from "../brain.js";
+import { writeFileAtomic } from "../fs-atomic.js";
 import { withFileLock } from "../lock.js";
 import { claimStateOwner, stateSlug } from "../state.js";
 import { vaultFingerprint } from "./serve-info.js";
@@ -50,10 +50,7 @@ export function createModuleState(root: string, id: string): ModuleState {
       catch (e) { if (e instanceof BrainError) throw e; return undefined; }
     },
     gravarJson(nome: string, v: unknown): void {
-      const alvo = join(dir, `${nomeSeguro(nome)}.json`);
-      const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
-      writeFileSync(tmp, JSON.stringify(v), { mode: 0o600 });
-      renameSync(tmp, alvo);
+      writeFileAtomic(join(dir, `${nomeSeguro(nome)}.json`), JSON.stringify(v));
     },
     lock<T>(nome: string, fn: () => Promise<T>): Promise<T> {
       return withFileLock(join(dir, `${nomeSeguro(nome)}.lock.d`), fn);

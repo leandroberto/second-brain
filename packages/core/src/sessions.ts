@@ -1,9 +1,10 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { BrainError, type Principal } from "@brain/shared";
 import { isHumanReviewer, isPrincipal } from "./authz.js";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 /**
  * Sessões HUMANAS da UI (quem pode revisar). O `.brain/api-token` do vault continua existindo, mas agora identifica um AGENTE
@@ -32,7 +33,8 @@ const keyOf = (vault: string) => { try { return realpathSync(vault); } catch { r
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 
 function load<T>(f: string, empty: T): T { try { return JSON.parse(readFileSync(f, "utf8")) as T; } catch { return empty; } }
-function save(f: string, data: unknown) { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, JSON.stringify(data, null, 2), { mode: 0o600 }); try { chmodSync(f, 0o600); } catch { /* fs sem chmod */ } }
+/** Escrita atômica (tmp + rename): um leitor concorrente nunca vê o arquivo vazio ou parcial. Modo 0600. */
+function save(f: string, data: unknown) { mkdirSync(dirname(f), { recursive: true }); writeFileAtomic(f, JSON.stringify(data, null, 2), 0o600); }
 
 /**
  * Emite uma sessão humana da UI. Só para quem JÁ provou ser o revisor num terminal (`humanFromTerminal`): sem isso, negado.

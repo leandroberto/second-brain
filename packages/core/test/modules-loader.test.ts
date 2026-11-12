@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { stringify, parse } from "yaml";
-import { loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, vaultFingerprint, type Brain } from "../src/index.js";
+import { ModuleRegistry, loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, vaultFingerprint, type Brain } from "../src/index.js";
 import { stateSlug } from "../src/state.js";
 import { claude, cleanup, tempBrain } from "./helpers.js";
 
@@ -267,6 +267,17 @@ describe("registry de erros", () => {
     expect(a[0]!.mensagem).toBe("e10");
     expect(a[49]!.mensagem).toBe("e59");
     expect(reg.errors("b")).toHaveLength(1);
+  });
+
+  it("compactação do _erros.jsonl é atômica (arquivo trocado por rename, sem tmp)", () => {
+    const root = mkdtempSync(join(tmpdir(), "brain-erros-"));
+    const reg = new ModuleRegistry(root);
+    for (let i = 0; i < 50; i++) reg.recordError("a", "rota", new Error(`e${i}`));
+    const antes = statSync(join(root, "_erros.jsonl")).ino;
+    reg.recordError("a", "rota", new Error("e50"));
+    expect(statSync(join(root, "_erros.jsonl")).ino).not.toBe(antes);
+    expect(reg.errors("a")).toHaveLength(50);
+    expect(readdirSync(root).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 });
 

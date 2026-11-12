@@ -1,8 +1,8 @@
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
 import type { Tarefa, TarefaContext } from "@brain/module-sdk";
+import { writeFileAtomic } from "../fs-atomic.js";
 import { parseCron, type Cron } from "./cron.js";
 import type { ModuleRegistry } from "./registry.js";
 
@@ -226,13 +226,10 @@ export class Scheduler {
 
   /** Devolve a mensagem de erro (ou `undefined` se gravou). Falha de disco nunca lança; registra no máximo uma vez por ciclo. */
   private gravar(id?: string, onde = "scheduler"): string | undefined {
-    const tmp = `${this.arq}.${randomBytes(6).toString("hex")}.tmp`;
     try {
-      writeFileSync(tmp, JSON.stringify(this.estado, null, 2), { mode: 0o600 });
-      renameSync(tmp, this.arq);
+      writeFileAtomic(this.arq, JSON.stringify(this.estado, null, 2));
       return undefined;
     } catch (e) {
-      try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
       const msg = e instanceof Error ? e.message : String(e);
       const alvo = id ?? this.reg.list()[0]?.id;
       if (alvo && !this.erroGravacaoVisto) { this.erroGravacaoVisto = true; this.reg.recordError(alvo, onde, new Error(`falha ao gravar _scheduler.json: ${msg}`)); }

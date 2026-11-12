@@ -1,8 +1,9 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
 import type { Aviso } from "@brain/module-sdk";
+import { writeFileAtomic } from "../fs-atomic.js";
 import { scanSecrets } from "../secrets.js";
 import type { AvisosSink } from "./context.js";
 
@@ -106,9 +107,7 @@ export class AvisosStore implements AvisosSink {
 
   private compactar(): void {
     const todos = this.ler().slice(-MANTER);
-    const tmp = `${this.arq}.${randomBytes(6).toString("hex")}.tmp`;
-    writeFileSync(tmp, todos.map((a) => `${JSON.stringify(a)}\n`).join(""), { mode: 0o600 });
-    renameSync(tmp, this.arq);
+    writeFileAtomic(this.arq, todos.map((a) => `${JSON.stringify(a)}\n`).join(""));
     this.linhas = todos.length;
   }
 
@@ -144,9 +143,7 @@ export class AvisosStore implements AvisosSink {
   badge(modulo: string, n: number): void {
     const v = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
     if (v === 0) delete this.badges[modulo]; else this.badges[modulo] = v;
-    const tmp = `${this.arqBadges}.${randomBytes(6).toString("hex")}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.badges), { mode: 0o600 });
-    renameSync(tmp, this.arqBadges);
+    writeFileAtomic(this.arqBadges, JSON.stringify(this.badges));
     const total = Object.values(this.badges).reduce((s, x) => s + x, 0);
     this.emitir("module.badge", { modulo, n: v, total });
   }

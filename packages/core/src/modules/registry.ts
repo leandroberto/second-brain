@@ -1,7 +1,7 @@
-import { appendFileSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import type { ModuleContext, ModuleDef } from "@brain/module-sdk";
+import { writeFileAtomic } from "../fs-atomic.js";
 import { scanSecrets } from "../secrets.js";
 
 export type ModuleStatus = "ativo" | "falho" | "inativo" | "ausente";
@@ -114,9 +114,7 @@ export class ModuleRegistry {
     const arq = join(this.root, MARCADOR);
     try {
       if (!this.emCurso.size) { rmSync(arq, { force: true }); return; }
-      const tmp = `${arq}.${randomBytes(6).toString("hex")}.tmp`;
-      writeFileSync(tmp, JSON.stringify([...this.emCurso.values()]), { mode: 0o600 });
-      renameSync(tmp, arq);
+      writeFileAtomic(arq, JSON.stringify([...this.emCurso.values()]));
     } catch { /* o marcador é diagnóstico: falha de disco nunca impede a execução */ }
   }
 
@@ -132,7 +130,7 @@ export class ModuleRegistry {
     return out;
   }
 
-  /** mantém só os 50 últimos de cada módulo (reescreve só quando passa do limite) */
+  /** mantém só os 50 últimos de cada módulo (reescreve, de forma atômica, só quando passa do limite) */
   private compactar(arq: string): void {
     const todas = this.ler();
     const cont = new Map<string, number>();
@@ -140,6 +138,6 @@ export class ModuleRegistry {
     if (![...cont.values()].some((n) => n > MAX_ERROS)) return;
     const resto = new Map(cont);
     const mantidas = todas.filter((l) => { const n = resto.get(l.id)!; resto.set(l.id, n - 1); return n <= MAX_ERROS; });
-    writeFileSync(arq, mantidas.map((l) => JSON.stringify(l)).join("\n") + "\n", { mode: 0o600 });
+    writeFileAtomic(arq, mantidas.map((l) => JSON.stringify(l)).join("\n") + "\n");
   }
 }

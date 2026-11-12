@@ -1,7 +1,8 @@
-import { chmodSync, linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
+import { writeFileAtomic } from "../fs-atomic.js";
 
 /**
  * Endereço do `brain serve` vivo (spec de módulos §7.10): `<stateDir>/serve.json` (`{ url, pid, iniciado }`), ao lado da pasta
@@ -13,11 +14,7 @@ export interface ServeInfo { url: string; pid: number; iniciado: string }
 
 /** Escrita atômica (tmp + rename), modo 0600. Só depois de a API estar escutando. */
 export function writeServeInfo(root: string, info: ServeInfo): void {
-  const alvo = arquivo(root);
-  const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(tmp, JSON.stringify(info), { mode: 0o600 });
-  try { chmodSync(tmp, 0o600); } catch { /* fs sem chmod */ }
-  renameSync(tmp, alvo);
+  writeFileAtomic(arquivo(root), JSON.stringify(info));
 }
 
 const vivo = (pid: number): boolean => {

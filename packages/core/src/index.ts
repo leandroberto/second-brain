@@ -15,6 +15,7 @@ export * from "./text.js";
 export * from "./vault.js";
 export * from "./watcher.js";
 export * from "./lock.js";
+export * from "./fs-atomic.js";
 export * from "./paths.js";
 export type { SyncResult } from "./indexer.js";
 export * from "./doctor.js";

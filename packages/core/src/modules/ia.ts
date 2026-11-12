@@ -1,9 +1,9 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import type { ModuleIa } from "@brain/module-sdk";
 import type { AssistantEngine } from "../assistant/engine.js";
 import type { BrainConfig } from "../config.js";
+import { writeFileAtomic } from "../fs-atomic.js";
 
 /** Quantos dias de gasto ficam gravados por módulo em `_ia.json`. */
 const DIAS_GUARDADOS = 31;
@@ -34,9 +34,7 @@ function ler(arquivo: string): Gastos {
 }
 
 function gravar(arquivo: string, g: Gastos): void {
-  const tmp = `${arquivo}.${randomBytes(4).toString("hex")}.tmp`;
-  writeFileSync(tmp, JSON.stringify(g), { mode: 0o600 });
-  renameSync(tmp, arquivo);
+  writeFileAtomic(arquivo, JSON.stringify(g));
 }
 
 /** Gasto de IA do módulo no dia local (de `<root>/_ia.json`), em US$. Para o doctor e a lista de módulos. */
