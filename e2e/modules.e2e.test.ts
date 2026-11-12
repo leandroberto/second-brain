@@ -121,16 +121,16 @@ const TEXTO_CONFIANCA = "Para conferir, o código desta pasta será carregado no
 
 describe.skipIf(!pronto)("gerenciar módulos pela UI (browser real)", () => {
   let d: string; let b: Brain; let sv: ServeHandle; let br: Browser; let pg: Page; let token: string; let porta = 0; let sess: { file: string };
-  let reinicios = 0; let religando: Promise<void> | undefined;
+  let reinicios = 0; let religou = 0; let religando: Promise<void> | undefined;
   const vaultDir = () => join(d, "vault");
   const montar = (brainAberto: Brain) => startServe(brainAberto, { port: porta, sessions: sess, agendador: false, webRoot, conferir: conferirNoBin, reiniciarServe });
   // `reiniciarServe` de teste: registra a chamada e, depois da resposta, fecha o serve e sobe outro na mesma porta (o `Brain` é reaberto: o bloco `modules` é lido na abertura)
   const reiniciarServe = async () => {
     reinicios++;
-    religando = new Promise<void>((ok, falha) => { setTimeout(() => { void (async () => { await sv.close(); b.close(); b = await Brain.open(vaultDir()); sv = await montar(b); })().then(ok, falha); }, 150); });
+    religando = new Promise<void>((ok, falha) => { setTimeout(() => { void (async () => { await sv.close(); b.close(); b = await Brain.open(vaultDir()); sv = await montar(b); })().then(() => { religou++; ok(); }, falha); }, 150); });
   };
   const pagina = (url: string) => pg.goto(`${url}/#token=${token}`);
-  const reiniciosVistos = () => reinicios;
+  const reiniciosVistos = () => religou; // só conta depois de o serve religado estar de pé
 
   beforeAll(async () => {
     d = mkdtempSync(join(tmpdir(), "brain-mod-add-"));
