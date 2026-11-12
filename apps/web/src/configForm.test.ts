@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { camposDoSchema, configDoFormulario, esperarReinicio, valoresIniciais } from "./configForm";
+import { AVISO_SEM_VALIDAR, avisoDeValidacao, camposDoSchema, configDoFormulario, esperarReinicio, valoresIniciais } from "./configForm";
 
 // `configJson` do exemplo `lembrete` (examples/modules/lembrete/src), como o módulo o publica
 const SCHEMA_LEMBRETE = {
@@ -56,6 +56,27 @@ describe("configDoFormulario", () => {
     const campos = camposDoSchema({ type: "object", properties: { n: { type: "number" }, t: { type: "string" }, b: { type: "boolean" } } })!;
     expect(configDoFormulario(campos, { n: "4.5", t: "", b: true })).toEqual({ n: 4.5, b: true });
     expect(configDoFormulario(campos, { n: "abc", t: "x" })).toEqual({ n: "abc", t: "x" }); // o servidor recusa; não inventa valor
+  });
+
+  it("mescla sobre a config atual: chaves fora do schema ficam; campo do schema esvaziado sai", () => {
+    const campos = camposDoSchema({ type: "object", properties: { t: { type: "string" }, n: { type: "number" } } })!;
+    const atual = { t: "antes", n: 3, extra: { a: 1 }, outra: "x" };
+    expect(configDoFormulario(campos, { t: "", n: "7" }, atual)).toEqual({ n: 7, extra: { a: 1 }, outra: "x" });
+    expect(atual).toEqual({ t: "antes", n: 3, extra: { a: 1 }, outra: "x" }); // não muda a original
+  });
+});
+
+describe("avisoDeValidacao", () => {
+  it("falho ou ausente sem schema, e o que não roda aqui num vault com frase: não dá para validar agora", () => {
+    const sem = { temSchema: false, desligado: false, fraseSenha: false };
+    expect(avisoDeValidacao({ ...sem, status: "falho" })).toBe(AVISO_SEM_VALIDAR);
+    expect(avisoDeValidacao({ ...sem, status: "ausente" })).toBe(AVISO_SEM_VALIDAR);
+    expect(avisoDeValidacao({ ...sem, status: "falho", temSchema: true })).toBeUndefined(); // falhou pela config: o schema valida
+    expect(avisoDeValidacao({ ...sem, status: "ativo" })).toBeUndefined();
+    expect(avisoDeValidacao({ ...sem, status: undefined, desligado: true })).toBeUndefined(); // sem frase: a conferência valida
+    expect(avisoDeValidacao({ ...sem, status: undefined, desligado: true, fraseSenha: true })).toBe(AVISO_SEM_VALIDAR);
+    expect(avisoDeValidacao({ ...sem, status: "inativo", fraseSenha: true })).toBe(AVISO_SEM_VALIDAR);
+    expect(AVISO_SEM_VALIDAR).toBe("Não foi possível validar agora: a configuração será conferida quando o módulo voltar a carregar.");
   });
 });
 

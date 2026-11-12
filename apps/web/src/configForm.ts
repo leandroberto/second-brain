@@ -58,16 +58,32 @@ export function valoresIniciais(campos: Campo[], config?: Record<string, unknown
 
 /**
  * Config a enviar: números digitados viram número (texto que não é número segue como está, o servidor recusa com o erro do
- * campo) e texto vazio sai (campo não preenchido).
+ * campo) e texto vazio sai (campo não preenchido). Com `atual` (Configurar um módulo já instalado), as chaves dela que o
+ * formulário não mostra (fora de `properties`) seguem como estão: salvar pelo formulário não as apaga.
  */
-export function configDoFormulario(campos: Campo[], valores: Record<string, unknown>): Record<string, unknown> {
+export function configDoFormulario(campos: Campo[], valores: Record<string, unknown>, atual?: Record<string, unknown>): Record<string, unknown> {
+  const nomes = new Set(campos.map((c) => c.nome));
   const cfg: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(atual ?? {})) if (!nomes.has(k)) cfg[k] = v;
   for (const c of campos) {
     const v = valores[c.nome];
     if (v === undefined || v === "") continue;
     cfg[c.nome] = c.tipo === "numero" && typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : v;
   }
   return cfg;
+}
+
+export const AVISO_SEM_VALIDAR = "Não foi possível validar agora: a configuração será conferida quando o módulo voltar a carregar.";
+
+/**
+ * Aviso de Configurar quando o servidor grava sem validar pelo schema do módulo (só o detector de segredos): o módulo não
+ * carrega (falho sem schema, ausente) ou não roda nesta máquina (desligado, inativo) num vault com frase-senha, onde o código
+ * dele só roda para conferir depois da frase. `status` indefinido = o serve não conhece o módulo (desligado).
+ */
+export function avisoDeValidacao(m: { status?: "ativo" | "falho" | "inativo" | "ausente"; temSchema: boolean; desligado: boolean; fraseSenha: boolean }): string | undefined {
+  if (!m.temSchema && (m.status === "falho" || m.status === "ausente")) return AVISO_SEM_VALIDAR;
+  if (m.fraseSenha && (m.desligado || m.status === "inativo")) return AVISO_SEM_VALIDAR;
+  return undefined;
 }
 
 const dorme = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

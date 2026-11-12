@@ -108,4 +108,6 @@ export const inspecionarModulo = (caminho: string, fraseSenha?: string) => api<C
 export const adicionarModulo = (b: { ticket: string; config: Record<string, unknown>; soNestaMaquina: boolean }) => api<RespostaGerenciar>(`${GER}/adicionar`, { method: "POST", body: b });
 export const atualizarModulo = (id: string, b: { enabled?: boolean; config?: Record<string, unknown>; soNestaMaquina?: boolean; fraseSenha?: string }) => api<RespostaGerenciar>(`${GER}/${encodeURIComponent(id)}`, { method: "PUT", body: b });
 export const removerModulo = (id: string) => api<RespostaGerenciar>(`${GER}/${encodeURIComponent(id)}`, { method: "DELETE" });
+/** Se o vault tem (ou exige) a frase-senha: com ela, configurar um desligado grava sem validar pelo schema do módulo. */
+export const ESTADO_GERENCIAR = `${GER}/estado`;
 export const reiniciarServe = () => api<RespostaGerenciar>(`${GER}/reiniciar`, { method: "POST", body: {} });

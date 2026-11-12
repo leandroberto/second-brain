@@ -3,7 +3,7 @@ import { api, setToken, getToken, type Analysis } from "./api";
 import { ClassBadge, ErrorBox, Skeleton, TYPE_LABEL, errMsg, go, href, useData, useDebounced, useModulos, useToast } from "./lib";
 
 interface Settings {
-  config: { vault_name: string; embeddings: { provider: string; external_opt_in: boolean; base_url: string; model: string; dimensions: number; api_key_env: string }; governance: { duplicate_threshold: number; candidate_threshold: number; stale_days: number }; agents: { commit_policy: string; can_link: boolean; per_type?: Record<string, string> }; git: { auto_commit: boolean; auto_commit_external: boolean }; limits: { max_chars: number; max_code_lines: number }; retention: { activity_days: number } };
+  config: { vault_name: string; embeddings: { provider: string; external_opt_in: boolean; base_url: string; model: string; dimensions: number; api_key_env: string }; governance: { duplicate_threshold: number; candidate_threshold: number; stale_days: number }; agents: { commit_policy: string; can_link: boolean; per_type?: Record<string, string> }; git: { auto_commit: boolean; auto_commit_external: boolean }; limits: { max_chars: number; max_code_lines: number }; retention: { activity_days: number }; modules?: Record<string, unknown> };
   vault: string; embedder: { id: string; external: boolean };
 }
 interface Check { id: string; name: string; status: "ok" | "warn" | "fail"; detail: string; fix?: string }
@@ -36,7 +36,7 @@ export function SettingsPage() {
             {checks && <div style={{ marginTop: 12 }} role="list" aria-label="Resultado do diagnóstico">{checks.map((k) => <div key={k.id} role="listitem" style={{ padding: "6px 0", borderTop: "1px solid var(--line)" }}><span className={`badge ${k.status === "ok" ? "ok" : k.status === "warn" ? "warn" : "danger"}`}>{k.status === "ok" ? "ok" : k.status === "warn" ? "aviso" : "falha"}</span> <b>{k.name}</b> <span className="muted small">{k.detail}</span>{k.status !== "ok" && k.fix && <div className="small" style={{ marginTop: 2 }}>↳ correção: <code className="mono">{k.fix}</code></div>}</div>)}</div>}
             {log && <div style={{ marginTop: 14 }}><h2>Últimos commits</h2>{log.map((l) => <div key={l.hash} className="small" style={{ padding: "3px 0", display: "flex", gap: 8 }}><code className="mono">{l.hash}</code><span className="grow" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.subject}</span><button className="btn sm ghost" title="Reverter (cria novo commit)" onClick={() => confirm(`Reverter ${l.hash}?`) && run("Reverter", "/api/git/revert", { rev: l.hash })}>↩</button></div>)}</div>}
           </section>
-          <ModulesSection />
+          <ModulesSection configurados={Object.keys(c.modules ?? {})} />
           <section className="card"><h2>Busca e embeddings</h2>
             <div className="field"><label htmlFor="prov">Provider de embeddings</label>
               <select id="prov" value={c.embeddings.provider} onChange={(e) => patch({ embeddings: { provider: e.target.value } })}><option value="hash">Local offline (hash) — padrão, nada sai da máquina</option><option value="openai-compatible">Endpoint OpenAI-compatível (OpenAI, Ollama, LM Studio…)</option></select></div>
@@ -75,15 +75,18 @@ export function SettingsPage() {
 }
 
 // ---------------- MÓDULOS (Saúde) ----------------
-/** Cartão que leva a Configurações › Módulos (lista, assistente de adicionar e ações); some quando não há módulos nem reinício pendente. */
-function ModulesSection() {
+/**
+ * Cartão que leva a Configurações › Módulos (lista, assistente de adicionar e ações): sempre presente, é a entrada da página.
+ * Conta os configurados (desligados inclusive, que o serve não carrega) e os carregados, como a lista da página.
+ */
+function ModulesSection({ configurados }: { configurados: string[] }) {
   const { data } = useModulos();
-  if (!data || (data.modulos.length === 0 && !data.reiniciar)) return null;
-  const falhos = data.modulos.filter((m) => m.status === "falho").length;
+  const falhos = data?.modulos.filter((m) => m.status === "falho").length ?? 0;
+  const total = new Set([...configurados, ...(data?.modulos.map((m) => m.id) ?? [])]).size;
   return (
     <section className="card" data-testid="modules-section"><h2>Módulos</h2>
-      {data.reiniciar && <div className="banner" role="status">a configuração de módulos mudou: reinicie o brain serve</div>}
-      <p className="small muted">{data.modulos.length} módulo(s){falhos > 0 && <> · <span style={{ color: "var(--danger)" }}>{falhos} falho(s)</span></>}</p>
+      {data?.reiniciar && <div className="banner" role="status">a configuração de módulos mudou: reinicie o brain serve</div>}
+      {data && <p className="small muted">{total === 0 ? "Nenhum módulo instalado" : `${total} módulo(s)`}{falhos > 0 && <> · <span style={{ color: "var(--danger)" }}>{falhos} falho(s)</span></>}</p>}
       <a className="btn" href={href("settings/modulos")}>Gerenciar módulos</a>
     </section>
   );

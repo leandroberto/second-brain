@@ -3,7 +3,10 @@ import { ApiError, adicionarModulo, inspecionarModulo, listarPastas, type Confer
 import { camposDoSchema, configDoFormulario, valoresIniciais, type Campo } from "./configForm";
 import { errMsg } from "./lib";
 
-/** Teto diário de IA de um módulo recém-adicionado: `modules.<id>.ia_max_usd_dia` ainda não existe, vale o padrão do core. */
+/**
+ * Teto diário de IA de um módulo recém-adicionado: `modules.<id>.ia_max_usd_dia` ainda não existe, vale o padrão do core. Cópia
+ * do padrão de `ConfigSchema.modules[].ia_max_usd_dia` (packages/core/src/config.ts, hoje 2): mude os dois juntos.
+ */
 const TETO_IA_PADRAO_USD = 2;
 export const TEXTO_DE_CONFIANCA = "Para conferir, o código desta pasta será carregado no seu computador. Continue só com módulos em que você confia.";
 const ETAPAS = ["Pasta", "Conferir", "Configurar", "Confirmar"];
@@ -77,14 +80,16 @@ export const errosDaConfig = (e: unknown): ErroDeCampo[] | undefined => {
 
 /**
  * Edita a config de um módulo: formulário quando há `campos`, senão editor JSON. `valores` é o estado controlado do formulário;
- * `json` o texto do editor. Erro por campo ao lado dele; `campo: ""` (e campos sem correspondência) ficam no topo.
+ * `json` o texto do editor. Erro por campo ao lado dele; `campo: ""` (e campos sem correspondência) ficam no topo. `aviso` (no
+ * topo) diz que o servidor não vai validar pelo schema agora.
  */
-export function EditorDeConfig({ campos, valores, onValores, json, onJson, erros, nota }: { campos?: Campo[]; valores: Record<string, unknown>; onValores: (v: Record<string, unknown>) => void; json: string; onJson: (t: string) => void; erros: ErroDeCampo[]; nota?: string }) {
+export function EditorDeConfig({ campos, valores, onValores, json, onJson, erros, nota, aviso }: { campos?: Campo[]; valores: Record<string, unknown>; onValores: (v: Record<string, unknown>) => void; json: string; onJson: (t: string) => void; erros: ErroDeCampo[]; nota?: string; aviso?: string }) {
   const nomes = new Set((campos ?? []).map((c) => c.nome));
   const gerais = erros.filter((e) => !nomes.has(e.campo));
   const set = (nome: string, v: unknown) => onValores({ ...valores, [nome]: v });
   return (
     <div>
+      {aviso && <div className="banner" role="note">{aviso}</div>}
       {gerais.length > 0 && <div className="banner danger" role="alert"><div>{gerais.map((e, i) => <div key={i}>{e.campo ? <><code className="mono">{e.campo}</code>: </> : null}{e.mensagem}</div>)}</div></div>}
       {campos ? (campos.length === 0 ? <p className="small muted">Este módulo não tem campos para configurar.</p> : campos.map((c) => {
         const id = `cfg-${c.nome}`; const erro = erros.filter((e) => e.campo === c.nome); const v = valores[c.nome];
@@ -111,9 +116,12 @@ export function EditorDeConfig({ campos, valores, onValores, json, onJson, erros
   );
 }
 
-/** Config a enviar: do formulário, ou o objeto do editor JSON (`undefined` com a mensagem se não é um objeto JSON). */
-export function configDaTela(campos: Campo[] | undefined, valores: Record<string, unknown>, json: string): { config: Record<string, unknown> } | { erro: string } {
-  if (campos) return { config: configDoFormulario(campos, valores) };
+/**
+ * Config a enviar: do formulário (mesclado sobre `atual`, quando há: chaves fora do schema ficam), ou o objeto do editor JSON
+ * (`erro` com a mensagem se não é um objeto JSON).
+ */
+export function configDaTela(campos: Campo[] | undefined, valores: Record<string, unknown>, json: string, atual?: Record<string, unknown>): { config: Record<string, unknown> } | { erro: string } {
+  if (campos) return { config: configDoFormulario(campos, valores, atual) };
   try {
     const v: unknown = JSON.parse(json.trim() || "{}");
     if (!v || typeof v !== "object" || Array.isArray(v)) return { erro: "a configuração deve ser um objeto JSON" };
@@ -178,6 +186,7 @@ export function AddModuleWizard({ onFechar, executar }: { onFechar: () => void; 
     try { await executar(() => adicionarModulo({ ticket: conf.ticket!, config: r.config, soNestaMaquina: soNesta })); }
     catch (e) {
       if (e instanceof ApiError && e.status === 409 && e.code === "ticket_invalido") { setConf(undefined); setEtapa(1); setErro("A conferência expirou. Confira a pasta de novo."); }
+      else if (e instanceof ApiError && e.status === 409 && e.code === "id_mudou") { setConf(undefined); setEtapa(1); setErro("O módulo mudou desde a conferência; confira de novo."); }
       else if (e instanceof ApiError && e.status === 409 && e.code === "id_existente") setErro(`${e.message}${typeof e.corpo?.caminho === "string" ? ` (pasta já configurada: ${e.corpo.caminho})` : ""}`);
       else if (e instanceof ApiError && e.status === 400 && e.code === "modulo_invalido") { setConf(undefined); setEtapa(1); setErro(`${e.message}. Confira a pasta de novo.`); }
       else if (errosDaConfig(e)) { setErros(errosDaConfig(e)!); setEtapa(3); }

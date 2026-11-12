@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { api, atualizarModulo, reiniciarServe, removerModulo, type EntradaDeModulo, type ErroDeCampo, type ModuloInfo, type RespostaGerenciar } from "./api";
+import { ESTADO_GERENCIAR, api, atualizarModulo, reiniciarServe, removerModulo, type EntradaDeModulo, type ErroDeCampo, type ModuloInfo, type RespostaGerenciar } from "./api";
 import { AddModuleWizard, DialogoDeFrase, EditorDeConfig, configDaTela, errosDaConfig, pedeFrase } from "./AddModuleWizard";
-import { camposDoSchema, esperarReinicio, valoresIniciais } from "./configForm";
+import { avisoDeValidacao, camposDoSchema, esperarReinicio, valoresIniciais } from "./configForm";
 import { Skeleton, errMsg, href, timeAgo, useData, useModulos, useToast } from "./lib";
 
 const STATUS: Record<ModuloInfo["status"] | "desligado", [string, string]> = { ativo: ["ok", "ativo"], falho: ["danger", "falho"], inativo: ["", "inativo nesta máquina"], ausente: ["warn", "ausente"], desligado: ["", "desligado"] };
@@ -22,6 +22,7 @@ export function ModulesPage() {
   // "rodar agora" exige a sessão humana `full` da UI (canal ui); api-token e outras credenciais recebem 403, então nem mostra
   const { data: meta } = useData<{ principal: { kind: string; channel: string } }>("/api/meta");
   const podeGerenciar = meta?.principal.kind === "human" && meta.principal.channel === "ui";
+  const { data: estado } = useData<{ fraseSenha: boolean }>(podeGerenciar ? ESTADO_GERENCIAR : null);
   const toast = useToast();
   const [adicionando, setAdicionando] = useState(false);
   const [ocupado, setOcupado] = useState(false);
@@ -41,7 +42,9 @@ export function ModulesPage() {
     setReinicio("esperando");
     if (await esperarReinicio(antes) === "ok") location.reload(); else setReinicio("tempo");
   };
+  /** Reinicia o serve (o banner e o botão do módulo falho): pede confirmação como as outras ações que reiniciam. */
   const tentarDeNovo = async () => {
+    if (!confirm("Tentar de novo? O brain serve será reiniciado.")) return;
     setOcupado(true);
     try { await aplicar(() => reiniciarServe()); } catch (e) { setReinicio("tempo"); toast(errMsg(e), true); } finally { setOcupado(false); }
   };
@@ -111,6 +114,7 @@ export function ModulesPage() {
 
               {editando === id && <ConfigurarModulo
                 nome={nome} atual={e?.config ?? {}} configJson={m?.configJson} ativo={m?.status === "ativo"} ocupado={ocupado}
+                aviso={avisoDeValidacao({ status: m?.status, temSchema: !!m?.configJson, desligado, fraseSenha: estado?.fraseSenha === true })}
                 onCancelar={() => setEditando(undefined)}
                 onSalvar={(config, setErros) => {
                   if (!confirmar("Salvar configuração de", nome)) return;
@@ -123,7 +127,7 @@ export function ModulesPage() {
                   ? <button className="btn sm" disabled={ocupado} onClick={() => { if (confirmar("Ligar", nome)) void executar((f) => atualizarModulo(id, { enabled: true, ...(f ? { fraseSenha: f } : {}) }), `Ligar ${nome}`); }}>Ligar</button>
                   : <button className="btn sm" disabled={ocupado} onClick={() => { if (confirmar("Desligar", nome)) void executar(() => atualizarModulo(id, { enabled: false }), `Desligar ${nome}`); }}>Desligar</button>}
                 {m && <button className="btn sm" disabled={ocupado} onClick={() => setVerErros((v) => ({ ...v, [id]: !v[id] }))}>Ver erros{m.erros.length ? ` (${m.erros.length})` : ""}</button>}
-                {m?.status === "falho" && <button className="btn sm" disabled={ocupado} onClick={() => { if (confirmar("Tentar de novo", nome)) void tentarDeNovo(); }}>Tentar de novo</button>}
+                {m?.status === "falho" && <button className="btn sm" disabled={ocupado} onClick={() => void tentarDeNovo()}>Tentar de novo</button>}
                 <button className="btn sm danger" disabled={ocupado} onClick={() => { if (confirmar("Remover", nome)) void executar(() => removerModulo(id), `Remover ${nome}`); }}>Remover</button>
               </div>}
             </section>
@@ -138,21 +142,22 @@ export function ModulesPage() {
 
 /**
  * "Configurar": os mesmos campos da etapa 3 do assistente, pelo schema que o serve já tem do módulo carregado (`configJson`);
- * sem ele (desligado, falho, ausente) ou com schema que não cabe em campos simples, o editor JSON da config atual.
+ * sem ele (desligado, falho, ausente) ou com schema que não cabe em campos simples, o editor JSON da config atual. `aviso`:
+ * o servidor vai gravar sem validar pelo schema (`avisoDeValidacao`).
  */
-function ConfigurarModulo({ nome, atual, configJson, ativo, ocupado, onSalvar, onCancelar }: { nome: string; atual: Record<string, unknown>; configJson?: Record<string, unknown>; ativo: boolean; ocupado: boolean; onSalvar: (config: Record<string, unknown>, setErros: (e: ErroDeCampo[]) => void) => void; onCancelar: () => void }) {
+function ConfigurarModulo({ nome, atual, configJson, ativo, aviso, ocupado, onSalvar, onCancelar }: { nome: string; atual: Record<string, unknown>; configJson?: Record<string, unknown>; ativo: boolean; aviso?: string; ocupado: boolean; onSalvar: (config: Record<string, unknown>, setErros: (e: ErroDeCampo[]) => void) => void; onCancelar: () => void }) {
   const campos = camposDoSchema(configJson);
   const [valores, setValores] = useState(() => (campos ? valoresIniciais(campos, atual) : {}));
   const [json, setJson] = useState(JSON.stringify(atual, null, 2));
   const [erros, setErros] = useState<ErroDeCampo[]>([]);
   const salvar = () => {
-    const r = configDaTela(campos, valores, json);
+    const r = configDaTela(campos, valores, json, atual);
     if ("erro" in r) { setErros([{ campo: "", mensagem: r.erro }]); return; }
     setErros([]); onSalvar(r.config, setErros);
   };
   return (
     <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }} aria-label={`Configurar ${nome}`}>
-      <EditorDeConfig campos={campos} valores={valores} onValores={setValores} json={json} onJson={setJson} erros={erros} nota={configJson ? undefined : ativo ? "Este módulo não descreve os campos da configuração; edite em JSON." : "O formulário aparece quando o módulo estiver carregado; por enquanto, edite em JSON."} />
+      <EditorDeConfig campos={campos} valores={valores} onValores={setValores} json={json} onJson={setJson} erros={erros} aviso={aviso} nota={configJson ? undefined : ativo ? "Este módulo não descreve os campos da configuração; edite em JSON." : "O formulário aparece quando o módulo estiver carregado; por enquanto, edite em JSON."} />
       <div className="actions"><button className="btn primary sm" disabled={ocupado} onClick={salvar}>Salvar e reiniciar</button><button className="btn ghost sm" disabled={ocupado} onClick={onCancelar}>Cancelar</button></div>
     </div>
   );

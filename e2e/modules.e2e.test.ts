@@ -30,6 +30,13 @@ const sessions = () => ({ file: join(dir, "sessions.json") });
 const nav = (hash: string) => page.evaluate((h) => { location.hash = h; }, hash);
 const menu = () => page.getByRole("navigation", { name: "Principal" }).getByRole("link", { name: /Lembretes/ });
 const frame = () => page.frameLocator('iframe[title="Módulo lembrete"]');
+/** Chega a Configurações › Módulos como a pessoa: Configurações no menu e o link do cartão Módulos (sempre presente). */
+async function irParaModulos(p: Page, cartao?: string) {
+  await p.getByRole("link", { name: "Configurações", exact: true }).click();
+  const sec = p.getByTestId("modules-section");
+  if (cartao) await sec.getByText(cartao).waitFor();
+  await sec.getByRole("link", { name: "Gerenciar módulos" }).click();
+}
 
 describe.skipIf(!pronto)("módulos na UI web (browser real)", () => {
   beforeAll(async () => {
@@ -100,7 +107,7 @@ describe.skipIf(!pronto)("módulos na UI web (browser real)", () => {
   });
 
   it("Configurações › Módulos mostra status e tarefa, e Rodar agora (confirmado) devolve o resultado", async () => {
-    await nav("#/settings/modulos");
+    await irParaModulos(page, "1 módulo(s)");
     const sec = page.getByTestId("modulo-lembrete");
     await sec.waitFor();
     expect(await sec.innerText()).toMatch(/Lembretes[\s\S]*lembrete[\s\S]*ativo/i);
@@ -159,7 +166,7 @@ describe.skipIf(!pronto)("gerenciar módulos pela UI (browser real)", () => {
 
   it("adiciona o lembrete pelas 4 etapas, o serve reinicia, a aba aparece; desliga e remove sem apagar a pasta", async () => {
     await pagina(`${sv.url}`);
-    await pg.evaluate(() => { location.hash = "#/settings/modulos"; });
+    await irParaModulos(pg, "Nenhum módulo instalado"); // sem módulos o cartão continua lá: é a entrada da página
     await pg.getByText("Nenhum módulo configurado.").waitFor();
     expect(await pg.getByRole("navigation", { name: "Principal" }).getByRole("link", { name: /Lembretes/ }).count()).toBe(0);
     await pg.getByRole("button", { name: "+ Adicionar módulo" }).click();
@@ -218,6 +225,9 @@ describe.skipIf(!pronto)("gerenciar módulos pela UI (browser real)", () => {
     expect(reinicios).toBe(3);
     expect(existsSync(join(LEMBRETE, "package.json"))).toBe(true);
     expect(readFileSync(join(vaultDir(), ".brain", "config.yaml"), "utf8")).not.toContain(LEMBRETE);
+    // depois de remover o último, a página continua alcançável por Configurações
+    await irParaModulos(pg, "Nenhum módulo instalado");
+    await pg.getByRole("button", { name: "+ Adicionar módulo" }).waitFor();
   });
 });
 
@@ -244,7 +254,7 @@ describe.skipIf(!pronto)("gerenciar módulos pela UI com frase-senha (browser re
 
   it("pede a frase no Continuar da etapa 1: errada é recusada, certa leva à conferência", async () => {
     await pg.goto(`${sv.url}/#token=${token}`);
-    await pg.evaluate(() => { location.hash = "#/settings/modulos"; });
+    await irParaModulos(pg);
     await pg.getByRole("button", { name: "+ Adicionar módulo" }).click();
     const wiz = pg.getByTestId("add-module-wizard");
     await wiz.getByLabel("Caminho da pasta do módulo").fill(LEMBRETE);
@@ -254,7 +264,7 @@ describe.skipIf(!pronto)("gerenciar módulos pela UI com frase-senha (browser re
     await dlg.getByLabel("Frase-senha do revisor").waitFor();
     await dlg.getByLabel("Frase-senha do revisor").fill("frase errada");
     await dlg.getByRole("button", { name: "Continuar" }).click();
-    await dlg.getByRole("alert").waitFor();
+    await dlg.getByRole("alert").filter({ hasText: "frase-senha incorreta" }).waitFor();
     await dlg.getByLabel("Frase-senha do revisor").fill("frase certa do revisor");
     await dlg.getByRole("button", { name: "Continuar" }).click();
     await wiz.locator("ul.faz").waitFor();
