@@ -66,6 +66,15 @@ describe("reiniciarProcesso", () => {
     }
   });
 
+  it("a cópia destacada não recebe INVOCATION_ID nem as outras variáveis do systemd", async () => {
+    const d = dubles();
+    const env = { INVOCATION_ID: "abc", JOURNAL_STREAM: "8:123", NOTIFY_SOCKET: "/run/x", PATH: "/usr/bin" };
+    await expect(reiniciarProcesso({ fechar: d.fechar, logPath: join(dir, "serve.log"), env, pai: { ppid: 4321, comm: "bash" }, spawnFn: d.spawnFn, sair: d.sair }))
+      .rejects.toThrow(Saiu);
+    expect(d.chamadas[0]!.opts.env).toEqual({ PATH: "/usr/bin", BRAIN_SERVE_ESPERAR_PID: String(process.pid) });
+    expect(env.INVOCATION_ID).toBe("abc"); // o ambiente do processo atual não muda
+  });
+
   it("decide pelo pai capturado na subida, não pelo atual", async () => {
     // pai original (um shell) morreu e o serve foi adotado pelo pid 1: o atual pareceria o gerenciador
     const ppid = vi.spyOn(process, "ppid", "get").mockReturnValue(1);
@@ -109,13 +118,13 @@ describe("reiniciarProcesso", () => {
   it("sem systemd sobe cópia destacada e sai 0", async () => {
     const d = dubles();
     const logPath = join(dir, "serve.log");
-    await expect(reiniciarProcesso({ fechar: d.fechar, logPath, env: { FOO: "bar" }, spawnFn: d.spawnFn, sair: d.sair })).rejects.toThrow(Saiu);
+    await expect(reiniciarProcesso({ fechar: d.fechar, logPath, env: { FOO: "bar", JOURNAL_STREAM: "8:123", NOTIFY_SOCKET: "/run/x" }, spawnFn: d.spawnFn, sair: d.sair })).rejects.toThrow(Saiu);
     expect(d.ordem).toEqual(["spawn", "unref", "fechar", "sair(0)"]);
     const [c] = d.chamadas;
     expect(c!.cmd).toBe(process.execPath);
     expect(c!.args).toEqual([...process.execArgv, ...process.argv.slice(1)]);
     expect(c!.opts).toMatchObject({ detached: true, cwd: process.cwd() });
-    // exatamente o ambiente herdado + BRAIN_SERVE_ESPERAR_PID
+    // exatamente o ambiente herdado, sem as variáveis do systemd, + BRAIN_SERVE_ESPERAR_PID
     expect(c!.opts.env).toEqual({ FOO: "bar", BRAIN_SERVE_ESPERAR_PID: String(process.pid) });
     expect(Object.keys(c!.opts.env as object).sort()).toEqual(["BRAIN_SERVE_ESPERAR_PID", "FOO"]);
     const stdio = c!.opts.stdio as unknown[];

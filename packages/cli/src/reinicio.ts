@@ -81,6 +81,18 @@ function avisoPadrao(logPath: string): (m: string) => void {
   };
 }
 
+/** Variáveis que o systemd põe no ambiente de um serviço. */
+const VARS_DO_SYSTEMD = new Set(["INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"]);
+
+/**
+ * Ambiente da cópia destacada: o herdado sem as variáveis do systemd. A cópia, por definição, não é um serviço do systemd; se
+ * herdasse `INVOCATION_ID` e fosse adotada pelo pid 1 ou pelo `systemd --user` (o serve antigo sai logo depois), o próximo
+ * reinício dela sairia com 75 sem ninguém para subi-la.
+ */
+function ambienteDaCopia(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !VARS_DO_SYSTEMD.has(k)));
+}
+
 const encerrandoErro = () => new BrainError("state_unavailable", "o brain serve está encerrando");
 
 /**
@@ -108,7 +120,7 @@ export async function reiniciarProcesso(o: ReiniciarOptions): Promise<void> {
     const filho = spawnFn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
       detached: true,
       stdio: ["ignore", fd, fd],
-      env: { ...env, BRAIN_SERVE_ESPERAR_PID: String(process.pid) },
+      env: { ...ambienteDaCopia(env), BRAIN_SERVE_ESPERAR_PID: String(process.pid) },
       cwd: process.cwd(),
     });
     await new Promise<void>((ok, erro) => { filho.once("spawn", () => ok()); filho.once("error", erro); });
