@@ -112,6 +112,12 @@ de consumo.
   `BRAIN_STATE_DIR`, que aqui é só a raiz: nunca é usado cru nem ganha dono, porque pode ser o estado de outro vault
   herdado do shell), com o mesmo `vault-path` de dono do estado da máquina nessa subpasta. Vaults com o mesmo nome (o demo
   do `dev.sh` e o vault real, por exemplo) têm cada um o seu `serve`, mesmo com o mesmo `BRAIN_STATE_DIR`.
+- **Gerenciar pela UI (2026-11-12).** Configurações › Módulos adiciona (assistente de 4 etapas), configura, liga, desliga e
+  remove módulos, só com a sessão humana `full`. Adicionar e ligar exigem a frase-senha do revisor quando ela existe, com
+  limite de 5 tentativas por 60 s; `PUT /api/settings` não grava `modules` nem `review`. A conferência roda o `brain modules
+  check --json` num processo filho descartável, depois do aviso de confiança, e devolve um ticket de 15 min que o "adicionar"
+  consome. Toda mudança reinicia o `serve` (cópia destacada com `serve.log`, ou código 75 sob systemd), o que mantém o limite
+  de "sem recarga a quente". Remover não apaga a pasta nem o estado. Guia: [`docs/modules.md`](../modules.md#gerenciar-pela-ui).
 - Sem marketplace, sem instalação remota, sem módulos em outras linguagens, sem comunicação entre módulos e sem janelas
   próprias no desktop.
 

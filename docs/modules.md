@@ -387,6 +387,93 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
   recentes e gasto de IA do dia. `brain modules list` mostra o resumo no terminal (status, versão, gasto de IA, tarefas e
   erros).
 
+## Gerenciar pela UI
+
+Em **Configurações › Módulos** (`#/settings/modulos`) o dono adiciona, configura, liga, desliga e remove módulos sem editar o
+`config.yaml`. O menu lateral continua mostrando só as abas dos módulos. Tudo aqui exige a **sessão humana `full`** (a de
+`brain ui`): api-token, desktop e páginas de módulo recebem 403. Sem módulos configurados, a página só mostra a lista vazia e
+o botão **+ Adicionar módulo**.
+
+### Adicionar: quatro etapas
+
+1. **Pasta.** Um navegador de pastas do WSL (o `serve` lista os diretórios; o navegador não entrega caminhos), começando em
+   `~/projetos` (ou `~`). Pastas que parecem módulos ganham "módulo provável" (leitura estática do `package.json`, nada
+   executa). Também dá para colar o caminho. **Continuar** mostra o aviso de confiança: "Para conferir, o código desta pasta
+   será carregado no seu computador. Continue só com módulos em que você confia." Só depois dele o código da pasta roda.
+2. **Conferir.** Nome, versão, id, `sdk` e o que o módulo vai fazer: aba, tarefas e quando rodam, ferramentas MCP
+   (`<id>_<nome>`), rotas (quantas e quantas com `humano: true`, "agem fora, só com você logado"), uso de IA e que propõe
+   notas como `module/<id>`. Pasta que não é módulo válido mostra as mesmas causas do `brain modules check` e não deixa
+   continuar.
+3. **Configurar.** Os campos que o módulo declara, com o erro ao lado do campo, e "Só nesta máquina" (grava `host` com o
+   hostname).
+4. **Confirmar.** Resumo e **Adicionar e reiniciar o serve**.
+
+Depois do OK: "Módulo adicionado. O brain serve será reiniciado para aplicar as alterações." A página volta quando o `serve`
+estiver no ar. O caminho gravado é o real (`realpath`), absoluto; pasta com espaço, acento ou symlink funciona. Um id que já
+está configurado (outra pasta do mesmo módulo) é recusado e nada é gravado.
+
+### Confiança, frase-senha e processo filho
+
+- **Adicionar e ligar** exigem a **frase-senha do revisor** quando ela existe (`brain admin passphrase`): ela é pedida no
+  Continuar da etapa 1, antes de qualquer código rodar, e ao ligar um módulo desligado. Sem frase configurada, a sessão
+  humana basta. Configurar, desligar, remover e tentar de novo pedem só a sessão `full`.
+- Frase errada: 403 "frase-senha incorreta", sem mais detalhes. São **5 tentativas por 60 s**; passado o limite, 429 até a
+  janela correr, mesmo com a frase certa. A tentativa é registrada antes de a frase ser conferida, e o contador persiste no
+  estado, então reiniciar o `serve` não o zera.
+- A conferência roda o `brain modules check <pasta> --json` num **processo filho descartável**: estado em diretório
+  temporário, sem `iniciar`, sem o api-token nem as sessões do `serve`, com tempo limite de 30 s. O `serve` em execução não
+  carrega nada da pasta. O filho executa o código do módulo (como qualquer `modules check`); o aviso de confiança existe por
+  isso.
+- A conferência devolve um **ticket** (aleatório, em memória, 15 min), ligado ao caminho real e à sessão que conferiu.
+  **Adicionar** usa o ticket e não pede a frase de novo. Se o `serve` reiniciou entre conferir e adicionar, ou o ticket
+  expirou, a resposta é 409 `ticket_invalido` e a tela volta à etapa 1 pedindo para conferir a pasta de novo.
+- `PUT /api/settings` recusa as chaves `modules` e `review` (403): a frase-senha não pode ser contornada por ali.
+
+### Configurar: formulário ou editor JSON
+
+Se o módulo exporta `configJson` (JSON Schema da config), a tela monta campos para os tipos simples (texto, número,
+booleano, opção e objeto raso) e mostra a `description` de cada um. Sem `configJson`, ou com um tipo fora desses, aparece um
+editor de texto JSON. Em qualquer caso a validação final é a do `configSchema` do módulo, no processo filho, e o detector de
+segredos continua recusando valores sensíveis (credencial não vai na config: use variável de ambiente ou o cofre do sistema).
+Módulo **falho ou ausente** (que não carrega) abre o editor JSON com o aviso de que não deu para validar agora: a config é
+gravada sem o `configSchema` e conferida quando o módulo voltar a carregar.
+
+### Lista, ligar e desligar
+
+Cada módulo é um cartão: nome, versão, situação (ativo, desligado, falho com o motivo e uma dica, inativo nesta máquina,
+ausente), pasta, próxima e última execução de cada tarefa com o resultado e o gasto de IA do dia. Ações: Configurar,
+Ligar/Desligar, Rodar agora, Ver erros, Remover e, no falho, Tentar de novo. Salvar configuração, ligar, desligar, remover e
+tentar de novo pedem confirmação ("... O brain serve será reiniciado") e reiniciam o `serve`. Qualquer gravação que deixe o
+módulo ligado a partir de desligado conta como **ligar** e pede a frase quando ela existe.
+
+### Reinício automático
+
+O `serve` sobe uma cópia de si mesmo (mesmo executável, argumentos, ambiente e diretório), destacada, e encerra a atual pelo
+mesmo caminho do SIGTERM; a cópia espera o pid antigo sumir e pega o `serve.lock`. A tela espera o `pid` de
+`GET /api/serve` mudar e recarrega. A saída da cópia vai para `<stateDir>/serve.log` (a pasta de estado do vault, ver
+[Estado](#estado)), com rotação em 5 MB. Se a cópia não subir, o processo atual
+**não** encerra.
+
+Se a tela avisar que o `serve` não reiniciou: abra o `serve.log`, corrija a causa (porta ocupada, módulo que derruba o
+processo) e use **Tentar de novo** ou rode `brain serve` no terminal. Sob systemd (`INVOCATION_ID` presente) o `serve` sai
+com o código 75 e a unit do repo o sobe de novo (`Restart=on-failure`).
+
+### Remover
+
+**Remover** só tira `modules.<id>` do `config.yaml`. A pasta do módulo e o estado dele ficam no disco; adicionar de novo
+recupera tudo. A tela nunca apaga nada do módulo.
+
+### Quando o `config.yaml` tem erro de edição
+
+Se o arquivo não é YAML válido (alguém editou à mão e quebrou), as rotas de gerenciamento recusam gravar e a tela mostra a
+mensagem do servidor, em vez de sobrescrever o arquivo. Corrija o `config.yaml` e tente de novo.
+
+### O que fica de fora
+
+Instalar a partir de link do git, URL ou marketplace; atualizar o módulo (`git pull`, build) pela tela; carregar ou
+descarregar módulo sem reiniciar o `serve`; editar o código do módulo; e o disco do Windows (`C:\...` não é navegável;
+`/mnt/c/...` funciona se colado, mas o navegador de pastas não foi pensado para ele).
+
 ## Verificar: `brain modules check`
 
 ```bash
