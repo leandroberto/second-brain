@@ -51,6 +51,8 @@ export class AvisosStore implements AvisosSink {
   private readonly ouvintes = new Set<Ouvinte>();
   private ultimoTs = 0;
   private linhas = 0;
+  /** o arquivo lido terminava no meio de uma linha (queda durante a gravação): a próxima escrita começa por uma quebra */
+  private semQuebraFinal = false;
   /** avisos (com a marca de visto aplicada) em ordem de gravação (= ordem de id) */
   private indice: AvisoGravado[];
 
@@ -102,13 +104,16 @@ export class AvisosStore implements AvisosSink {
       } catch { /* linha truncada/corrompida */ }
     }
     this.linhas = n;
+    this.semQuebraFinal = bruto.length > 0 && !bruto.endsWith("\n");
     return [...avisos.values()].map((a) => (vistos.has(a.id) ? { ...a, visto: true } : a));
   }
 
   /** Grava a linha e, só depois, aplica no índice em memória (se a gravação falhar, a memória fica como estava). */
   private acrescentar(l: Linha): void {
     const novo = !existsSync(this.arq);
-    appendFileSync(this.arq, `${JSON.stringify(l)}\n`, { mode: 0o600 });
+    // sem a quebra, a linha nova se colaria à truncada e as duas seriam descartadas na leitura
+    appendFileSync(this.arq, `${this.semQuebraFinal ? "\n" : ""}${JSON.stringify(l)}\n`, { mode: 0o600 });
+    this.semQuebraFinal = false;
     if (novo) { try { chmodSync(this.arq, 0o600); } catch { /* best effort */ } }
     this.linhas++;
     if ("marca" in l) this.indice = this.indice.map((a) => (a.id === l.id ? { ...a, visto: true } : a));
@@ -129,6 +134,7 @@ export class AvisosStore implements AvisosSink {
     const mantidos = todos.filter((a) => manter.has(a.id));
     writeFileAtomic(this.arq, mantidos.map((a) => `${JSON.stringify(a)}\n`).join(""));
     this.linhas = mantidos.length;
+    this.semQuebraFinal = false;
     this.indice = mantidos;
   }
 

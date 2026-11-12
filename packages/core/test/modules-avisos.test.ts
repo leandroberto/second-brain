@@ -154,6 +154,55 @@ describe("AvisosStore", () => {
   });
 });
 
+describe("AvisosStore: persistência", () => {
+  it("a deduplicação por chave vale depois de reabrir o store", async () => {
+    const root = nova();
+    await new AvisosStore(root).avisar("m", { titulo: "um", chave: "k" });
+    const reaberto = new AvisosStore(root);
+    const b = await reaberto.avisar("m", { titulo: "dois", chave: "k" });
+    expect(reaberto.listar().avisos.map((a) => a.id)).toEqual([b.id]);
+    expect(new AvisosStore(root).listar().avisos.map((a) => [a.id, a.titulo])).toEqual([[b.id, "dois"]]);
+  });
+
+  it("a compactação preserva o visto: depois de reabrir, só o não visto aparece", async () => {
+    const root = nova();
+    const s = new AvisosStore(root);
+    // cada aviso visto ocupa 2 linhas: passa de 1000 linhas e compacta no meio do laço
+    for (let i = 0; i < 520; i++) { const a = await s.avisar("m", { titulo: `v${i}` }); s.marcarVisto(a.id); }
+    const pendente = await s.avisar("m", { titulo: "pendente" });
+    const linhas = readFileSync(join(root, "_avisos.jsonl"), "utf8").trim().split("\n");
+    expect(linhas.length).toBeLessThan(1000); // compactou
+    expect(new AvisosStore(root).listar().avisos.map((a) => a.id)).toEqual([pendente.id]);
+  });
+
+  it("linha corrompida no .jsonl é ignorada e as demais valem", async () => {
+    const root = nova();
+    const s = new AvisosStore(root);
+    const a = await s.avisar("m", { titulo: "um" });
+    const b = await s.avisar("m", { titulo: "dois" });
+    const arq = join(root, "_avisos.jsonl");
+    const [la, lb] = readFileSync(arq, "utf8").trim().split("\n");
+    writeFileSync(arq, `${la}\n{"id":"truncada","titu\nnão é json\n\n${lb}\n{"id":"x"`, "utf8");
+    const r = new AvisosStore(root);
+    expect(r.listar().avisos.map((x) => x.id)).toEqual([a.id, b.id]);
+    r.marcarVisto(a.id); // a escrita seguinte continua funcionando sobre o arquivo com lixo
+    expect(new AvisosStore(root).listar().avisos.map((x) => x.id)).toEqual([b.id]);
+  });
+
+  it("marcarVisto com id desconhecido (ou já visto) não lança nem altera nada", async () => {
+    const root = nova();
+    const s = new AvisosStore(root);
+    const a = await s.avisar("m", { titulo: "um" });
+    s.marcarVisto(a.id);
+    const arq = join(root, "_avisos.jsonl");
+    const antes = readFileSync(arq, "utf8");
+    expect(() => s.marcarVisto("nao-existe")).not.toThrow();
+    expect(() => s.marcarVisto(a.id)).not.toThrow();
+    expect(readFileSync(arq, "utf8")).toBe(antes);
+    expect(s.listar().avisos).toEqual([]);
+  });
+});
+
 describe("AvisosStore: falhas e casos de borda", () => {
   it("chave vazia ou só com espaços é inválida", async () => {
     const s = new AvisosStore(nova());
