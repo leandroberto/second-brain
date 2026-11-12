@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { MODULE_ID_RE, caminhoRealDePasta, checkReviewerPassphrase, hasReviewerPassphrase, loadConfig, resolveModuleDir, validarConfigDoModulo, writeFileAtomic, type AcaoDeModulo, type Brain, type BrainConfig, type ModuleEntry, type ResultadoConfig, type ResumoDoModulo, type SessionStoreOptions } from "@brain/core";
 import type { ModuleDef } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
@@ -22,6 +23,7 @@ const MAX_CONFERENCIAS = 2;
 const ARQUIVO_ERROS_FRASE = "_frase-erros.json";
 const REINICIO = "O brain serve será reiniciado para aplicar as alterações.";
 const MSG_ADICIONADO = `Módulo adicionado. ${REINICIO}`;
+const MSG_NADA_MUDOU = "nada mudou";
 const MSG_YAML = "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
@@ -37,6 +39,8 @@ function responder(res: ServerResponse, status: number, data: unknown): true {
 class Recusa extends Error {
   constructor(readonly status: number, readonly corpo: Record<string, unknown>) { super(String(corpo.error)); }
 }
+/** A entrada lida dentro do lock já é a que o PUT gravaria: cancela a gravação (e a auditoria) sem erro. */
+class NadaMudou extends Error {}
 
 /** Ticket de conferência: emitido por `inspecionar` para a pasta conferida, o id que ela declarou e a sessão que conferiu. */
 interface Ticket { caminhoReal: string; id: string; sessaoHash: string; expira: number }
@@ -244,6 +248,9 @@ export class GerenciarModulos {
         ...(b.config !== undefined ? { config: b.config } : {}),
       } as ModuleEntry;
     };
+    // sem efeito (desligar um desligado, o host desta máquina que já está lá, a mesma config): sem gravar, sem auditar e sem
+    // reiniciar. Antes da frase e da janela de erros: um PUT que não muda nada não serve para reiniciar o serve
+    if (isDeepStrictEqual(aplicar(atual), atual)) return responder(r.res, 200, { mensagem: MSG_NADA_MUDOU });
     const liga = (antes: ModuleEntry) => ampliaOndeRoda(antes, aplicar(antes));
     const modo = this.modoFrase();
     let fraseValida = false;
@@ -263,12 +270,20 @@ export class GerenciarModulos {
       const erros = await this.errosDaConfig(b.config, c?.ok ? c.config : undefined);
       if (erros) throw new Recusa(400, { error: "config_invalida", erros });
     }
-    await this.gravar(id, (fresca) => {
-      if (!fresca) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
-      // a entrada mudou desde a leitura e agora este PUT ligaria o módulo: só com a frase já conferida
-      if (liga(fresca) && modo !== "nao" && !fraseValida) throw new Recusa(403, { error: "frase_senha", motivo: "exigida", message: "este vault exige a frase-senha do revisor" });
-      return aplicar(fresca);
-    }, r.who, (antes, depois) => acaoDoPut(antes, depois, b.config !== undefined));
+    try {
+      await this.gravar(id, (fresca) => {
+        if (!fresca) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
+        // a entrada mudou desde a leitura e agora este PUT ligaria o módulo: só com a frase já conferida
+        if (liga(fresca) && modo !== "nao" && !fraseValida) throw new Recusa(403, { error: "frase_senha", motivo: "exigida", message: "este vault exige a frase-senha do revisor" });
+        const proxima = aplicar(fresca);
+        // outra edição chegou antes ao mesmo resultado
+        if (isDeepStrictEqual(proxima, fresca)) throw new NadaMudou();
+        return proxima;
+      }, r.who, (antes, depois) => acaoDoPut(antes, depois, b.config !== undefined));
+    } catch (e) {
+      if (e instanceof NadaMudou) return responder(r.res, 200, { mensagem: MSG_NADA_MUDOU });
+      throw e;
+    }
     return this.responderEReiniciar(r.res, { mensagem: `Módulo atualizado. ${REINICIO}` });
   }
 

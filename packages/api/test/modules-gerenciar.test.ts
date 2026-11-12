@@ -253,6 +253,30 @@ describe("inspecionar e frase-senha", () => {
     expect(reinicios).toBe(3);
   });
 
+  it("PUT sem efeito → 200 \"nada mudou\" sem gravar, sem auditar e sem reiniciar (também com erro de frase na janela)", async () => {
+    let reinicios = 0;
+    const s = await subir({ frase: FRASE, reiniciarServe: async () => { reinicios++; } });
+    const casos: Array<[Record<string, unknown>, Record<string, unknown>]> = [
+      [{ path: pasta, enabled: false }, { enabled: false }],
+      [{ path: pasta, enabled: true, host: hostname() }, { soNestaMaquina: true }],
+      [{ path: pasta, enabled: true, config: { horario: "09:00" } }, { config: { horario: "09:00" } }],
+    ];
+    for (const comErro of [false, true]) {
+      if (comErro) expect((await inspecionar(s, pasta, { fraseSenha: "errada" })).status).toBe(403);
+      for (const [entrada, put] of casos) {
+        gravarModulos({ lembrete: entrada });
+        const antes = readFileSync(brain.vault.configPath, "utf8");
+        const desde = new Date().toISOString();
+        const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, put);
+        expect([comErro, put, r.status, await r.json()]).toEqual([comErro, put, 200, { mensagem: "nada mudou" }]);
+        expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
+        expect(brain.db.activity({ action: "config_update", since: desde })).toEqual([]);
+      }
+    }
+    await new Promise((ok) => setTimeout(ok, 100));
+    expect(reinicios).toBe(0);
+  });
+
   it("a frase certa zera os erros: quem errou uma vez e acertou segue sem esperar", async () => {
     gravarModulos({ lembrete: { path: pasta, enabled: false } });
     const s = await subir({ frase: FRASE, reiniciarServe: async () => {} });
@@ -537,6 +561,20 @@ describe("configurar, remover e reiniciar", () => {
     expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: false })).status).toBe(200);
     expect((await configurar).status).toBe(200);
     expect(modulosEmDisco().lembrete).toMatchObject({ enabled: false, config: { horario: "11:00" } });
+  });
+
+  it("outra edição chega ao mesmo resultado durante a conferência: \"nada mudou\" (leitura dentro do lock), sem auditar nem reiniciar", async () => {
+    gravarModulos({ lembrete: { path: pasta, enabled: true, config: { horario: "10:00" } } });
+    const base = conferirFalso();
+    let reinicios = 0;
+    // no meio da conferência, a mesma config chega ao arquivo por fora (edição manual)
+    const s = await subir({ reiniciarServe: async () => { reinicios++; }, conferir: async (c, cfg) => { gravarModulos({ lembrete: { path: pasta, enabled: true, config: { horario: "11:00" } } }); return base(c, cfg); } });
+    const desde = new Date().toISOString();
+    const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, { config: { horario: "11:00" } });
+    expect([r.status, await r.json()]).toEqual([200, { mensagem: "nada mudou" }]);
+    expect(brain.db.activity({ action: "config_update", since: desde })).toEqual([]);
+    await new Promise((ok) => setTimeout(ok, 100));
+    expect(reinicios).toBe(0);
   });
 
   it("configurar um módulo que carrega: valida no processo filho; soNestaMaquina grava e tira o host", async () => {

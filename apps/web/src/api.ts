@@ -100,6 +100,8 @@ export interface ResumoModulo {
 export interface Conferencia { ok: boolean; causas: string[]; resumo?: ResumoModulo; caminho: string; ticket?: string }
 export interface ErroDeCampo { campo: string; mensagem: string }
 export interface RespostaGerenciar { mensagem: string; reiniciar?: boolean }
+/** PUT de módulo sem efeito (a entrada já era a pedida): o servidor não grava nem reinicia o serve. */
+export const nadaMudou = (r: RespostaGerenciar) => r.mensagem === "nada mudou";
 export interface EntradaDeModulo { enabled?: boolean; path?: string; host?: string; config?: Record<string, unknown> }
 
 const GER = "/api/modules/_gerenciar";

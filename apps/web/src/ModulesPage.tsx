@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ESTADO_GERENCIAR, api, atualizarModulo, reiniciarServe, removerModulo, type EntradaDeModulo, type ErroDeCampo, type ModuloInfo, type RespostaGerenciar } from "./api";
+import { ESTADO_GERENCIAR, api, atualizarModulo, nadaMudou, reiniciarServe, removerModulo, type EntradaDeModulo, type ErroDeCampo, type ModuloInfo, type RespostaGerenciar } from "./api";
 import { AddModuleWizard, DialogoDeFrase, EditorDeConfig, configDaTela, errosDaConfig, pedeFrase } from "./AddModuleWizard";
 import { avisoDeValidacao, camposDoSchema, esperarReinicio, valoresIniciais } from "./configForm";
 import { Skeleton, errMsg, href, timeAgo, useData, useModulos, useToast } from "./lib";
@@ -38,6 +38,7 @@ export function ModulesPage() {
     const antes = await api<{ pid: number }>("/api/serve").then((x) => x.pid, () => undefined);
     const r = await acao();
     toast(r.mensagem);
+    if (nadaMudou(r)) { setEditando(undefined); return; } // nada gravado: o serve não reinicia, nada a esperar
     if (r.reiniciar) { reload(); recarregarCfg(); return; } // sem reinício automático (API fora do brain serve): a mensagem pede o manual
     setReinicio("esperando");
     if (await esperarReinicio(antes) === "ok") location.reload(); else setReinicio("tempo");

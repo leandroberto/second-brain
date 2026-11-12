@@ -448,6 +448,9 @@ novo."
   configuração não se altera pela UI; use o config.yaml", sem gravar nada. Nada disso pode ser contornado pela sessão do navegador.
 - Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
   `restringir_host` ou `remover`.
+- Um `PUT` que não muda a entrada (desligar um desligado, restringir ao host desta máquina o que já tem esse host, a mesma
+  config) responde 200 `{ "mensagem": "nada mudou" }`: nada é gravado nem auditado e o `serve` não reinicia, nem na janela
+  de frase errada.
 
 ### Configurar: formulário ou editor JSON
 
