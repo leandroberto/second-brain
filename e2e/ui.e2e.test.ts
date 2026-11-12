@@ -182,40 +182,47 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     await page.getByRole("button", { name: "Enviar para revisão" }).click();
     await page.getByText("Fila de revisão").waitFor();
   });
+  // O grafo 3D renderiza a cada quadro (bloom) em WebGL por software (SwiftShader): sem GPU, cada ação do Playwright fica lenta
+  // e o teste inteiro levava de 16 a 31 s, perto ou além dos 30 s padrão. Esperas por condição observável (o `data-state="ready"`
+  // que o componente já expõe depois dos dois primeiros quadros, a contagem dos rótulos) com prazo próprio, e o teste com o seu.
   it("Grafo 3D: núcleos por projeto, destaque, foco e alternância para 2D sem erros", async () => {
+    const PRONTO_MS = 30_000;
     const errors: string[] = []; const onErr = (e: Error) => errors.push(String(e)); const onCon = (m: { type(): string; text(): string }) => { if (m.type() === "error") errors.push(m.text()); };
     page.on("pageerror", onErr); page.on("console", onCon);
-    await page.evaluate(() => { try { localStorage.removeItem("brain.graph.view"); } catch { /* ok */ } });
-    await nav("#/graph");
-    const g = page.locator('[data-testid="graph3d"]');
-    await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: 20000 });
-    expect(await g.locator("canvas").count()).toBe(1);
-    const projects = new Set(brain.db.rows("status!='archived'", [], "id", 1000).map((r) => r.project ?? "_"));
-    expect(await g.locator(".g3d-chip").count()).toBe(projects.size);
-    await expect.poll(() => g.locator(".g3d-label.hub").count()).toBe(projects.size);
-    // destaque por texto conta só os nós que casam
-    await g.getByLabel("Destacar conhecimentos no grafo").fill("listings");
-    await expect.poll(async () => Number(await g.locator(".g3d-search em").textContent())).toBeGreaterThan(0);
-    await g.getByLabel("Destacar conhecimentos no grafo").fill("");
-    // foco de projeto liga/desliga
-    const chip = g.locator(".g3d-chip").first(); await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("true");
-    await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("false");
-    await g.getByRole("button", { name: /Rotação/ }).click(); expect(await g.getByRole("button", { name: /Rotação/ }).getAttribute("aria-pressed")).toBe("false");
-    // alternância 2D e volta (a preferência fica no navegador)
-    await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "2D" }).click();
-    const g2 = page.getByTestId("graph2d"); await g2.waitFor(); expect(await g.count()).toBe(0);
-    // 2D: projetos como agrupamentos; o selo da ligação explica o porquê (nota que cita o outro projeto) e o clique fixa
-    expect(await g2.locator(".g2d-label").allTextContents()).toEqual(expect.arrayContaining([expect.stringMatching(/^Promo Watcher/), expect.stringMatching(/^Second Brain/)]));
-    const badge = g2.getByTestId("xlink-badge").first(); await badge.hover();
-    const card = g2.locator(".g2d-card"); await card.waitFor();
-    expect(await card.innerText()).toMatch(/Promo Watcher → cita Second Brain[\s\S]*a decisão vai para o Second Brain/);
-    await badge.click(); await page.mouse.move(5, 5); await card.getByRole("button", { name: /abrir/ }).first().waitFor();
-    await page.reload(); await g2.waitFor();
-    await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "3D" }).click();
-    await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: 20000 });
-    page.off("pageerror", onErr); page.off("console", onCon);
+    try {
+      await page.evaluate(() => { try { localStorage.removeItem("brain.graph.view"); } catch { /* ok */ } });
+      await nav("#/graph");
+      const g = page.locator('[data-testid="graph3d"]');
+      await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: PRONTO_MS });
+      expect(await g.locator("canvas").count()).toBe(1);
+      const projects = new Set(brain.db.rows("status!='archived'", [], "id", 1000).map((r) => r.project ?? "_"));
+      expect(await g.locator(".g3d-chip").count()).toBe(projects.size);
+      await expect.poll(() => g.locator(".g3d-label.hub").count(), { timeout: PRONTO_MS }).toBe(projects.size);
+      // destaque por texto conta só os nós que casam
+      await g.getByLabel("Destacar conhecimentos no grafo").fill("listings");
+      await expect.poll(async () => Number(await g.locator(".g3d-search em").textContent()), { timeout: PRONTO_MS }).toBeGreaterThan(0);
+      await g.getByLabel("Destacar conhecimentos no grafo").fill("");
+      // foco de projeto liga/desliga
+      const chip = g.locator(".g3d-chip").first(); await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("true");
+      await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("false");
+      await g.getByRole("button", { name: /Rotação/ }).click(); expect(await g.getByRole("button", { name: /Rotação/ }).getAttribute("aria-pressed")).toBe("false");
+      // alternância 2D e volta (a preferência fica no navegador)
+      await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "2D" }).click();
+      const g2 = page.getByTestId("graph2d"); await g2.waitFor(); expect(await g.count()).toBe(0);
+      // 2D: projetos como agrupamentos; o selo da ligação explica o porquê (nota que cita o outro projeto) e o clique fixa
+      expect(await g2.locator(".g2d-label").allTextContents()).toEqual(expect.arrayContaining([expect.stringMatching(/^Promo Watcher/), expect.stringMatching(/^Second Brain/)]));
+      const badge = g2.getByTestId("xlink-badge").first(); await badge.hover();
+      const card = g2.locator(".g2d-card"); await card.waitFor();
+      expect(await card.innerText()).toMatch(/Promo Watcher → cita Second Brain[\s\S]*a decisão vai para o Second Brain/);
+      await badge.click(); await page.mouse.move(5, 5); await card.getByRole("button", { name: /abrir/ }).first().waitFor();
+      await page.reload(); await g2.waitFor();
+      await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "3D" }).click();
+      await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: PRONTO_MS });
+    } finally {
+      page.off("pageerror", onErr); page.off("console", onCon);
+    }
     expect(errors).toEqual([]);
-  });
+  }, 120_000);
 
   it("Vizinhança da nota, sugestão de relação registrada pelo revisor e filtros do 2D na URL", async () => {
     const errors: string[] = []; const onErr = (e: Error) => errors.push(String(e)); page.on("pageerror", onErr);

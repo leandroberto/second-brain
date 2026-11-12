@@ -66,19 +66,22 @@ describe.skipIf(!pronto)("módulos na UI web (browser real)", () => {
     const errors: string[] = [];
     const onErro = (e: Error) => errors.push(String(e)); const onCon = (m: { type(): string; text(): string }) => { if (m.type() === "error") errors.push(m.text()); };
     page.on("pageerror", onErro); page.on("console", onCon);
-    await menu().click();
-    const iframe = page.locator('iframe[title="Módulo lembrete"]');
-    await iframe.waitFor();
-    expect(await iframe.getAttribute("sandbox")).toBe("allow-scripts allow-forms");
-    // o `src` leva o nonce no fragmento; depois do handshake a lista aparece (o token só chega pelo `brain:init`)
-    expect(await iframe.getAttribute("src")).toMatch(/^\/modules\/lembrete\/index\.html#n=[A-Za-z0-9_-]+&r=/);
-    await frame().locator("li.card .texto").filter({ hasText: /^Lembrete de \d{4}-\d{2}-\d{2}/ }).waitFor();
-    expect(await frame().locator("#resumo").innerText()).toBe("1 pendente(s) de 1");
-    // o client reescreveu o hash do iframe para `#<resto>` (sem o nonce); o do topo do SB continua `#/m/lembrete`
-    const frm = page.frames().find((f) => f.url().includes("/modules/lembrete/index.html"))!;
-    expect(await frm.evaluate(() => location.hash)).not.toContain("n=");
-    expect(new URL(page.url()).hash).toBe("#/m/lembrete");
-    page.off("pageerror", onErro); page.off("console", onCon);
+    try {
+      await menu().click();
+      const iframe = page.locator('iframe[title="Módulo lembrete"]');
+      await iframe.waitFor();
+      expect(await iframe.getAttribute("sandbox")).toBe("allow-scripts allow-forms");
+      // o `src` leva o nonce no fragmento; depois do handshake a lista aparece (o token só chega pelo `brain:init`)
+      expect(await iframe.getAttribute("src")).toMatch(/^\/modules\/lembrete\/index\.html#n=[A-Za-z0-9_-]+&r=/);
+      await frame().locator("li.card .texto").filter({ hasText: /^Lembrete de \d{4}-\d{2}-\d{2}/ }).waitFor();
+      expect(await frame().locator("#resumo").innerText()).toBe("1 pendente(s) de 1");
+      // o client reescreveu o hash do iframe para `#<resto>` (sem o nonce); o do topo do SB continua `#/m/lembrete`
+      const frm = page.frames().find((f) => f.url().includes("/modules/lembrete/index.html"))!;
+      expect(await frm.evaluate(() => location.hash)).not.toContain("n=");
+      expect(new URL(page.url()).hash).toBe("#/m/lembrete");
+    } finally {
+      page.off("pageerror", onErro); page.off("console", onCon); // mesmo se uma asserção falhar antes
+    }
     expect(errors).toEqual([]);
   });
 
