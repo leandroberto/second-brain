@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { ConfigSchema, authorize, loadConfig } from "../src/index.js";
 import { modulePrincipal } from "../src/modules/identity.js";
-import { cleanup, human, tempBrain } from "./helpers.js";
+import { claude, cleanup, human, tempBrain } from "./helpers.js";
 
 afterAll(cleanup);
 
@@ -44,5 +44,33 @@ describe("config modules e identidade module/<id>", () => {
     const m = modulePrincipal("x1");
     for (const op of ["write", "assist", "decide", "admin"] as const) expect(() => authorize(m, op, { config: cfg })).toThrow();
     expect(authorize(m, "propose", { config: cfg })).toBe(m);
+  });
+
+  it("setModuleEntry adiciona, atualiza, remove e audita", async () => {
+    const b = await tempBrain();
+    const lido = () => parse(readFileSync(b.vault.configPath, "utf8"));
+    await b.setModuleEntry("lembrete", { enabled: true, path: "/x/lembrete", ia_max_usd_dia: 2, config: { horario: "10:00" } }, human);
+    await b.setModuleEntry("outro", { enabled: true, ia_max_usd_dia: 2 }, human);
+    expect(lido().modules.lembrete).toMatchObject({ enabled: true, path: "/x/lembrete", config: { horario: "10:00" } });
+    expect(loadConfig(b.vault.configPath).modules.lembrete?.path).toBe("/x/lembrete");
+
+    await b.setModuleEntry("lembrete", { ...b.config.modules.lembrete!, enabled: false }, human);
+    expect(lido().modules.lembrete).toMatchObject({ enabled: false, config: { horario: "10:00" } });
+
+    const cfg = await b.setModuleEntry("lembrete", null, human);
+    expect(Object.keys(cfg.modules)).toEqual(["outro"]);
+    expect(Object.keys(lido().modules)).toEqual(["outro"]);
+
+    const acts = b.db.activity({ action: "config_update" }).map((a) => a.detail);
+    expect(acts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ modulo: "lembrete", acao: "adicionar" }),
+      expect.objectContaining({ modulo: "lembrete", acao: "atualizar" }),
+      expect.objectContaining({ modulo: "lembrete", acao: "remover" }),
+    ]));
+  });
+
+  it("setModuleEntry recusa agente", async () => {
+    const b = await tempBrain();
+    await expect(b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, claude)).rejects.toMatchObject({ code: "forbidden" });
   });
 });

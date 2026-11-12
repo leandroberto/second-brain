@@ -9,7 +9,7 @@ import { ADDITIVE_RESOLUTION, INTERNAL_READER, authorize, isHumanReviewer, isPri
 const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
-import { ConfigSchema, dumpConfig, loadConfig, type BrainConfig } from "./config.js";
+import { ConfigSchema, dumpConfig, loadConfig, type BrainConfig, type ModuleEntry } from "./config.js";
 import { IndexDb } from "./db.js";
 import { HashEmbedder, OpenAICompatibleEmbedder, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
 import { VaultGit } from "./git.js";
@@ -835,6 +835,21 @@ export class Brain {
       this.config = next;
       if (providerChanged) { this._embedder = this.makeEmbedder(); await this.indexer.embedMissing(); }
       this.log(actor, "config_update", null, { keys: Object.keys(patch) });
+      return next;
+    });
+  }
+
+  /** Grava (ou remove, com `null`) uma entrada do bloco `modules`. Substitui o bloco inteiro: o `deepMerge` do updateConfig não remove chaves. */
+  async setModuleEntry(id: string, entry: ModuleEntry | null, who: Principal): Promise<BrainConfig> {
+    const actor = authorize(who, "admin", { config: this.config });
+    return this.write(async () => {
+      const modules = { ...this.config.modules };
+      const acao = entry === null ? "remover" : id in modules ? "atualizar" : "adicionar";
+      if (entry === null) delete modules[id]; else modules[id] = entry;
+      const next = ConfigSchema.parse({ ...this.config, modules });
+      writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
+      this.config = next;
+      this.log(actor, "config_update", null, { modulo: id, acao });
       return next;
     });
   }
