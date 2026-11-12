@@ -323,6 +323,9 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
   amanhã; o registro ilegível foi guardado em <arquivo>", "bloqueada: registro de gasto ilegível (será guardado na próxima
   chamada)", "bloqueada até corrigir: não foi possível guardar o registro ilegível em <pasta>; confira as permissões" ou
   "bloqueada: registro de gasto inacessível (<código>)".
+- **O teto diário não é atômico por desenho.** A conferência (antes da chamada) e a soma (depois) são passos separados, para não
+  enfileirar chamadas do mesmo módulo. Chamadas simultâneas do mesmo módulo podem, portanto, ultrapassar o teto diário em, no
+  máximo, uma chamada por chamada concorrente (cada uma, até o orçamento da própria chamada).
 - Trate a IA como opcional: sem motor, sem login ou acima do teto, `ok` é `false`. O `lembrete` a deixa **desligada por padrão**
   (`config: { ia: true }` a liga): ligada, usa a assinatura do `claude` uma vez por dia, e se falhar o aviso sai sem corpo. Gaste a
   cota do dono só com o que ele ligou.
@@ -388,6 +391,11 @@ ordem de preferência:
    ```json
    { "dependencies": { "@brain/module-sdk": "git+https://<repositório do second-brain>.git#<tag>&path:/packages/module-sdk" } }
    ```
+
+   Conferido com o pnpm 11.21.0 num repositório git local (`git+file://<repositório>#<tag>&path:/packages/module-sdk`, com o
+   `dist/` commitado na tag): `pnpm add` instala o `dist/`, o `static/` e o `package.json` do SDK, e `import "@brain/module-sdk"`
+   resolve. Um hash de commit no lugar da tag também funciona. A forma `git+https` não foi exercitada (não há rede nessa
+   conferência), mas só muda o transporte.
 
 3. **Copiar os tipos** para o módulo. O SDK quase não tem runtime (só `SDK_VERSION` e `defineModule`), então é aceitável.
 

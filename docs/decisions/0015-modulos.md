@@ -99,6 +99,9 @@ de consumo.
 - **Um laço síncrono infinito ou um `process.exit` no módulo derrubam o `serve`** (consequência de rodar no mesmo processo).
   O systemd reinicia, e Saúde mostra o módulo que estava em execução antes da queda.
 - **Sem nova tentativa automática** de tarefa que falhou (ver acima).
+- **O teto diário de IA não é atômico.** A conferência e a soma do gasto são passos separados, de propósito: chamadas do mesmo
+  módulo não esperam umas pelas outras. Chamadas simultâneas podem ultrapassar o teto em no máximo uma chamada por chamada
+  concorrente.
 - **Alterar `modules` na config exige reiniciar o `serve`.** Não há recarga a quente. Saúde avisa quando a config em disco
   difere da carregada.
 - **Um `serve` por vault.** O `serve.lock` impede um segundo `serve` no mesmo vault. A liveness vem de `GET /api/serve`:

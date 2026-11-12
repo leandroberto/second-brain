@@ -47,7 +47,7 @@ export BRAIN_VAULT="<pasta>"
 brain doctor             # tudo verde, incluindo external-state
 ```
 
-- **Diretório de estado:** `~/.local/state/second-brain/<slug do vault_name>/` (criado com permissão `0700`); `BRAIN_STATE_DIR` sobrescreve o local. Com `state.external: true`, o core recusa abrir o vault se esse diretório não puder ser usado.
+- **Diretório de estado:** `~/.local/state/second-brain/<slug do vault_name>/` (criado com permissão `0700`); `BRAIN_STATE_DIR` sobrescreve o local. Com `state.external: true`, o core recusa abrir o vault se esse diretório não puder ser usado. Sem `state.external`, o core ignora o `BRAIN_STATE_DIR` para o próprio estado, mas os módulos e o `brain serve` o usam como **raiz**: cada vault ganha ali a subpasta `<slug>-<impressão do vault>/` (estado dos módulos, `serve.json`, `serve.lock`), e a pasta de `BRAIN_STATE_DIR` em si não é usada nem reivindicada. Veja [Módulos](modules.md#estado).
 - **Um estado, um vault:** na primeira abertura o core grava `<estado>/vault-path` com o caminho real do vault e, depois, recusa (`state_unavailable`) abrir outro vault com o mesmo estado. Se usar `BRAIN_STATE_DIR`, ele precisa ser **igual em todos os pontos de entrada** do vault: o `serve` (unit do systemd), o MCP do Claude Code (`env` do servidor `second-brain`) e o timer de backup. Valores diferentes criam dois índices e dois históricos para as mesmas notas.
 - **Nunca pode aparecer na pasta sincronizada:** `.git`, `index.db*`, `api-token`, `lock.d`. O `doctor` acusa falha se aparecer. O Git roda com `--git-dir=<estado>/git --work-tree=<pasta>`.
 - `commit_policy: additive` e `keep_history_section` estão explicados em [Agentes](#agentes).
