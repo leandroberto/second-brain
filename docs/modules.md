@@ -397,6 +397,14 @@ Valida o módulo **sem ligá-lo**: carrega o `package.json#exports`, confere o c
 ferramentas MCP (nome, `entradaJson`), as tarefas (cron) e se a pasta da aba tem `index.html`. Rode antes de configurar o
 módulo no vault e a cada mudança de contrato.
 
+Com `--json` imprime uma linha `{ ok, causas, resumo?, config? }` (saída 0/1), o formato que a página de módulos usa:
+`resumo` traz id, nome, versão, aba, tarefas (com o horário em português), ferramentas MCP, rotas e `usaIa`. Com
+`--config <arquivo|->` (JSON; `-` lê da entrada padrão) valida também uma config pelo `configSchema`, recusando segredos.
+
+Dois campos opcionais do `defineModule` alimentam a tela: `configJson` (JSON Schema da config, ex.:
+`z.toJSONSchema(configSchema)`, para montar o formulário) e `usaIa: true` (o módulo usa a IA, por padrão ou conforme a
+config; a tela avisa antes de ligar).
+
 ## Distribuir o SDK
 
 O `@brain/module-sdk` não está publicado. O módulo de fora o usa só para os tipos e `defineModule`. Três formas de trazê-lo, nesta

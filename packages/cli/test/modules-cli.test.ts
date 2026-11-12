@@ -580,6 +580,37 @@ describe("brain modules (processo real)", () => {
     expect(r.stdout).toMatch(/ok/);
   });
 
+  describe("check --json", () => {
+    const LEMBRETE = resolve(import.meta.dirname, "../../../examples/modules/lembrete");
+    const json = async (args: string[], input?: string) => {
+      const p = execFile(process.execPath, [BIN, "modules", "check", ...args, "--vault", brain.vault.root], { env: env(), timeout: 60_000 });
+      const out = new Promise<{ code: number; stdout: string }>((ok) => {
+        let stdout = ""; p.stdout?.on("data", (d) => { stdout += d; }); p.on("close", (code) => ok({ code: code ?? -1, stdout }));
+      });
+      if (input !== undefined) p.stdin?.end(input);
+      const r = await out;
+      return { code: r.code, saida: JSON.parse(r.stdout.trim()) };
+    };
+
+    it("lembrete: ok com resumo", async () => {
+      const r = await json([LEMBRETE, "--json"]);
+      expect(r.code).toBe(0);
+      expect(r.saida).toMatchObject({ ok: true, causas: [], resumo: { id: "lembrete" } });
+    });
+    it("sdk2: falha com causa sobre sdk", async () => {
+      const r = await json([join(CORE_FIX, "sdk2"), "--json"]);
+      expect(r.code).toBe(1);
+      expect(r.saida.ok).toBe(false);
+      expect(r.saida.causas.join(" ")).toContain("sdk");
+    });
+    it("--config - lê a config da entrada padrão", async () => {
+      const r = await json([LEMBRETE, "--json", "--config", "-"], '{"horario":"x"}');
+      expect(r.saida.config.ok).toBe(false);
+      const ok = await json([LEMBRETE, "--json", "--config", "-"], '{"horario":"10:00"}');
+      expect(ok.saida.config).toEqual({ ok: true });
+    });
+  });
+
   it("modules list sem serve monta a lista pelo disco", async () => {
     const r = await brainCli(["modules", "list", "--port", "1"]);
     expect(r.stdout).toMatch(/ok\s+ativo/);

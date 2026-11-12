@@ -10,3 +10,4 @@ export * from "./scheduler.js";
 export * from "./avisos.js";
 export * from "./ia.js";
 export * from "./serve-info.js";
+export * from "./resumo.js";

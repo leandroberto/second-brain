@@ -69,7 +69,9 @@ Uso: brain <comando> [opções]
   modules list          módulos configurados: status, versão, tarefas, erros recentes e gasto de IA do dia
   modules run <id> <tarefa> [--ocorrencia AAAA-MM-DD]
                         roda uma tarefa de módulo agora, no brain serve (terminal interativo + prova de humano)
-  modules check <pasta> valida um módulo sem ligá-lo (contrato, sdk, id, aba, ferramentas MCP, tarefas)
+  modules check <pasta> [--json] [--config <arquivo|->]
+                        valida um módulo sem ligá-lo (contrato, sdk, id, aba, ferramentas MCP, tarefas); --json imprime uma linha
+                        { ok, causas, resumo?, config? }; --config valida um JSON de config (arquivo ou - para stdin)
 
 Opções globais: --vault <dir> (ou BRAIN_VAULT)  --agent <nome>  --port <n>
 
@@ -78,7 +80,7 @@ Governança: agentes (MCP, API com o api-token, CLI comum) leem e PROPÕEM; deci
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
-  options: { vault: { type: "string" }, agent: { type: "string" }, port: { type: "string" }, apply: { type: "boolean" }, remove: { type: "boolean" }, host: { type: "string" }, name: { type: "string" }, help: { type: "boolean", short: "h" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, max: { type: "string" }, "include-duplicates": { type: "boolean" }, "git-log": { type: "boolean" }, loose: { type: "boolean" }, "show-rejected": { type: "boolean" }, "show-evidence": { type: "boolean" }, project: { type: "string" }, eligible: { type: "boolean" }, note: { type: "string" }, type: { type: "string", multiple: true }, ocorrencia: { type: "string" } },
+  options: { vault: { type: "string" }, agent: { type: "string" }, port: { type: "string" }, apply: { type: "boolean" }, remove: { type: "boolean" }, host: { type: "string" }, name: { type: "string" }, help: { type: "boolean", short: "h" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, max: { type: "string" }, "include-duplicates": { type: "boolean" }, "git-log": { type: "boolean" }, loose: { type: "boolean" }, "show-rejected": { type: "boolean" }, "show-evidence": { type: "boolean" }, project: { type: "string" }, eligible: { type: "boolean" }, note: { type: "string" }, type: { type: "string", multiple: true }, ocorrencia: { type: "string" }, config: { type: "string" } },
 });
 
 function vaultPath(explicit?: string): string {
@@ -292,7 +294,7 @@ async function main() {
       await integrate({ vault, repoRoot: REPO_ROOT, apply: false, remove: false, policyOnly: true });
       b.close(); break;
     }
-    case "modules": process.exitCode = await modulesCommand(rest, { vault: vaultPath(), port: values.port ? Number(values.port) : undefined, ocorrencia: values.ocorrencia }); break;
+    case "modules": process.exitCode = await modulesCommand(rest, { vault: vaultPath(), port: values.port ? Number(values.port) : undefined, ocorrencia: values.ocorrencia, json: values.json, config: values.config }); break;
     case "doctor": { const checks = await runDoctor(vaultPath(), REPO_ROOT, Number(values.port ?? process.env.BRAIN_PORT ?? 3737)); if (values.json) console.log(JSON.stringify(checks, null, 2)); else printChecks(checks); if (checks.some((k) => k.status === "fail")) process.exitCode = 1; break; }
     default: console.error(`comando desconhecido: ${cmd}\n`); console.log(HELP); process.exitCode = 2;
   }

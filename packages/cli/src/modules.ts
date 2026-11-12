@@ -2,9 +2,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { EventEmitter } from "node:events";
-import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, compilarRota, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
+import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, compilarRota, importModuleDef, issueHumanSession, resumirModulo, validarConfigDoModulo, type ResumoDoModulo, type ResultadoConfig, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
+
+type ModuleDef = Awaited<ReturnType<typeof importModuleDef>>;
 
 /** Um módulo como `brain modules list` e o doctor mostram (do `serve` vivo ou do disco). */
 export interface ResumoModulo {
@@ -214,7 +216,7 @@ export function rotasComCaminhoInvalido(rotas: unknown): string[] {
  * `brain modules check <pasta>`: valida o módulo sem ligá-lo, com o carregador real em modo `definicoes` num registro isolado
  * (vault e estado temporários, nada do vault do usuário). A config do módulo não é exigida (a checagem não a tem).
  */
-export async function checarModulo(pasta: string): Promise<{ id?: string; versao?: string; causas: string[] }> {
+export async function checarModulo(pasta: string): Promise<{ id?: string; versao?: string; causas: string[]; resumo?: ResumoDoModulo; def?: ModuleDef }> {
   const dir = resolve(pasta);
   if (!existsSync(join(dir, "package.json"))) return { causas: [`não é um pacote de módulo (sem package.json): ${dir}`] };
   let id = basename(dir);
@@ -268,7 +270,8 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
       tarefas.add(t.id);
       try { parseCron(t.quando); } catch (e) { causas.push(`tarefa ${t.id}: quando inválido (${(e as Error).message})`); }
     }
-    return { id, versao: m.versao, causas };
+    // o resumo e a definição só saem de um módulo sem problemas: com causas, a definição pode estar malformada
+    return causas.length ? { id, versao: m.versao, causas } : { id, versao: m.versao, causas, resumo: resumirModulo(def), def };
   } finally {
     b?.close();
     if (estadoAntes === undefined) delete process.env.BRAIN_STATE_DIR; else process.env.BRAIN_STATE_DIR = estadoAntes;
@@ -276,15 +279,28 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
   }
 }
 
-const USO = "uso: brain modules list | run <id> <tarefa> [--ocorrencia AAAA-MM-DD] | check <pasta>";
+const USO = "uso: brain modules list | run <id> <tarefa> [--ocorrencia AAAA-MM-DD] | check <pasta> [--json] [--config <arquivo|->]";
 
 /** `brain modules <list|run|check>`; devolve o código de saída. */
-export async function modulesCommand(args: string[], o: { vault: string; port?: number; ocorrencia?: string }): Promise<number> {
+export async function modulesCommand(args: string[], o: { vault: string; port?: number; ocorrencia?: string; json?: boolean; config?: string }): Promise<number> {
   const [sub, ...rest] = args;
   switch (sub) {
     case "check": {
       if (!rest[0]) { console.error(USO); return 2; }
       const r = await checarModulo(rest[0]);
+      if (o.json) {
+        // uma linha JSON, a interface que a API chama como processo filho; com --config, valida também a config informada
+        let config: ResultadoConfig | undefined;
+        if (o.config !== undefined && r.def) {
+          let bruto: unknown;
+          try { bruto = JSON.parse(o.config === "-" ? readFileSync(0, "utf8") : readFileSync(o.config, "utf8")); }
+          catch (e) { config = { ok: false, erros: [{ campo: "", mensagem: `config ilegível: ${(e as Error).message}` }] }; }
+          config ??= await validarConfigDoModulo(r.def, bruto);
+        }
+        const ok = !r.causas.length;
+        console.log(JSON.stringify({ ok, causas: r.causas, ...(r.resumo ? { resumo: r.resumo } : {}), ...(config ? { config } : {}) }));
+        return ok ? 0 : 1;
+      }
       if (!r.causas.length) { console.log(`✔ módulo ${r.id}${r.versao ? ` v${r.versao}` : ""}: ok`); return 0; }
       console.log(`✘ módulo ${r.id ?? rest[0]}: ${r.causas.length} problema(s)`);
       for (const c of r.causas) console.log(`  - ${c}`);
