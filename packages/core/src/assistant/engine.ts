@@ -6,8 +6,9 @@ import type { CaptureEntry } from "./captures.js";
  * implementa a mesma interface.
  */
 export type AssistantErrorKind = "auth" | "timeout" | "orcamento" | "erro";
-/** `custoUsd`: custo informado pelo claude mesmo na falha (só o motor preenche; os modos atuais o ignoram). */
-export type AssistantError = { ok: false; tipo: AssistantErrorKind; mensagem: string; custoUsd?: number };
+export type AssistantError = { ok: false; tipo: AssistantErrorKind; mensagem: string };
+/** Falha com o custo informado pelo claude mesmo assim: só o modo `complete` (módulos) o devolve, para somar ao teto diário. */
+export type AssistantErrorComCusto = AssistantError & { custoUsd?: number };
 
 export type CaptureAction = "criada" | "complementada" | "na_fila" | "ignorada";
 export const CAPTURE_ACTIONS: readonly CaptureAction[] = ["criada", "complementada", "na_fila", "ignorada"];
@@ -30,7 +31,7 @@ export interface CompleteParams {
   /** libera as ferramentas de leitura do MCP do vault (as mesmas do `ask`); sem isso, nenhuma ferramenta */
   comNotas: boolean;
 }
-export type CompleteResult = { ok: true; dados: unknown; custoUsd?: number } | AssistantError;
+export type CompleteResult = { ok: true; dados: unknown; custoUsd?: number } | AssistantErrorComCusto;
 
 export interface AssistantEngine {
   capture(entry: CaptureEntry): Promise<CaptureResult>;

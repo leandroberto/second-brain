@@ -9,7 +9,7 @@ import type { Brain } from "../brain.js";
 import { CAPTURE_ID, type CaptureEntry } from "./captures.js";
 import {
   ASK_SCHEMA, CAPTURE_ACTIONS, CAPTURE_SCHEMA, NOT_NOTED,
-  type AskResult, type AssistantEngine, type AssistantError, type CaptureAction, type CaptureResult, type CompleteParams, type CompleteResult,
+  type AskResult, type AssistantEngine, type AssistantError, type AssistantErrorComCusto, type CaptureAction, type CaptureResult, type CompleteParams, type CompleteResult,
 } from "./engine.js";
 
 /**
@@ -26,7 +26,10 @@ export type ExecutorClaude = (
   opcoes: { cwd: string; entrada: string; timeoutMs: number },
 ) => Promise<SaidaProcesso>;
 
-export type ResultadoClaude<T> = { ok: true; dados: T; custoUsd?: number } | AssistantError;
+export type ResultadoClaude<T> = { ok: true; dados: T; custoUsd?: number } | AssistantErrorComCusto;
+
+/** capture/ask não expõem o custo: o campo sai do objeto de erro (só `complete` o devolve). */
+const semCusto = ({ ok, tipo, mensagem }: AssistantErrorComCusto): AssistantError => ({ ok, tipo, mensagem });
 
 /** Como iniciar `brain mcp`: o adapter (serve) informa, o core não depende do pacote cli. */
 export interface McpCommand { command: string; args: string[] }
@@ -234,7 +237,7 @@ export function createClaudeEngine(brain: Brain, exec: ExecutorClaude = executar
     async capture(entry: CaptureEntry): Promise<CaptureResult> {
       if (!CAPTURE_ID.test(entry.id)) return { ok: false, tipo: "erro", mensagem: `id de captura inválido: ${entry.id}` };
       const r = await run("capture", `assistant/${entry.id}`, entry.text);
-      return r.ok ? normalizeCapture(r.dados) : r;
+      return r.ok ? normalizeCapture(r.dados) : semCusto(r);
     },
 
     async ask(q: string, conversationId?: string): Promise<AskResult> {
@@ -249,7 +252,7 @@ export function createClaudeEngine(brain: Brain, exec: ExecutorClaude = executar
         // a sessão sumiu (apagada, outro cwd): a conversa continua com uma sessão nova
         if (!r.ok && s.iniciada && SESSAO_INEXISTENTE.test(r.mensagem)) { s = { id: randomUUID(), iniciada: false }; r = await tentar(); }
       }
-      if (!r.ok) return r;
+      if (!r.ok) return semCusto(r);
       const d = r.dados;
       if (!isObj(d) || typeof d.resposta !== "string" || !Array.isArray(d.fontes)) return SEM_FORMATO;
       if (conversationId && s) sessoes.set(conversationId, { id: s.id, iniciada: true });
