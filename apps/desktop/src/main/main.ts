@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { garantirAtalhos } from './atalhos-windows';
+import { criarVigiaAvisos } from './avisos-modulos';
 import { criarBandeja } from './bandeja';
 import { criarClienteApi, MENSAGEM_PAREAMENTO, type ClienteApi, type EstadoApi, type RespostaAnotar } from './cliente-api';
 import { criarCredencial } from './credencial';
@@ -320,7 +321,20 @@ function iniciar(): void {
   setInterval(() => void renovarCredencial(), INTERVALO_RENOVACAO_MS);
 
   app.on('second-instance', () => abrir());
-  app.on('will-quit', () => globalShortcut.unregisterAll());
+  // `cliente` é trocado na renovação do token: o vigia sempre usa o atual
+  const vigiaAvisos = criarVigiaAvisos({
+    cliente: { avisos: (depois) => cliente.avisos(depois), marcarVisto: (id) => cliente.marcarVisto(id) },
+    notificar: (n) => notificar({ titulo: n.titulo, corpo: n.corpo, desfazer: false }, { aoClicar: n.aoClicar }),
+    abrir: (url) => void shell.openExternal(url),
+    base: BASE,
+    aoTotal: (n) => bandeja.definirTotalAvisos(n),
+  });
+  vigiaAvisos.iniciar();
+
+  app.on('will-quit', () => {
+    vigiaAvisos.parar();
+    globalShortcut.unregisterAll();
+  });
   app.on('window-all-closed', () => {
     /* continua residente */
   });

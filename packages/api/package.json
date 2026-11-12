@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@brain/core": "workspace:*",
+    "@brain/module-sdk": "workspace:*",
     "@brain/shared": "workspace:*"
   },
   "devDependencies": {

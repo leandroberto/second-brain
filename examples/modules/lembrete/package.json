@@ -1,0 +1,22 @@
+{
+  "name": "@brain/example-lembrete",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Módulo de exemplo do second-brain: lembrete diário com aba, rota, tarefa agendada, ferramenta MCP e aviso.",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "ui"],
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@brain/module-sdk": "workspace:*",
+    "zod": "^4"
+  }
+}

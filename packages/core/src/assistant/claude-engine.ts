@@ -9,7 +9,7 @@ import type { Brain } from "../brain.js";
 import { CAPTURE_ID, type CaptureEntry } from "./captures.js";
 import {
   ASK_SCHEMA, CAPTURE_ACTIONS, CAPTURE_SCHEMA, NOT_NOTED,
-  type AskResult, type AssistantEngine, type AssistantError, type CaptureAction, type CaptureResult,
+  type AskResult, type AssistantEngine, type AssistantError, type AssistantErrorComCusto, type CaptureAction, type CaptureResult, type CompleteParams, type CompleteResult,
 } from "./engine.js";
 
 /**
@@ -26,12 +26,17 @@ export type ExecutorClaude = (
   opcoes: { cwd: string; entrada: string; timeoutMs: number },
 ) => Promise<SaidaProcesso>;
 
-export type ResultadoClaude<T> = { ok: true; dados: T } | AssistantError;
+export type ResultadoClaude<T> = { ok: true; dados: T; custoUsd?: number } | AssistantErrorComCusto;
+
+/** capture/ask não expõem o custo: o campo sai do objeto de erro (só `complete` o devolve). */
+const semCusto = ({ ok, tipo, mensagem }: AssistantErrorComCusto): AssistantError => ({ ok, tipo, mensagem });
 
 /** Como iniciar `brain mcp`: o adapter (serve) informa, o core não depende do pacote cli. */
 export interface McpCommand { command: string; args: string[] }
 
 export type AssistantMode = "capture" | "ask";
+/** `complete` não usa prompt de sistema do assistente nem sessão; é a chamada genérica dos módulos. */
+export type ClaudeMode = AssistantMode | "complete";
 
 /** Prompts padrão; o vault sobrescreve com `<vault>/.brain/assistant/{capture,ask}.md`. */
 export const ASSISTANT_TEMPLATES_DIR = fileURLToPath(new URL("../../../../templates/assistant/", import.meta.url));
@@ -60,24 +65,19 @@ const SESSAO_INEXISTENTE = /no conversation found|session[^\n]*not found/i;
 export const assistantCwd = (brain: Brain): string => join(brain.vault.stateDir ?? join(brain.vault.root, ".brain"), "assistant-cwd");
 
 export function montarArgs(o: {
-  mode: AssistantMode; model: string; maxBudgetUsd: number; promptFile: string; mcpConfig: string;
-  session?: { id: string; nova: boolean };
+  mode: ClaudeMode; model: string; maxBudgetUsd: number; promptFile?: string; mcpConfig?: string;
+  session?: { id: string; nova: boolean }; schemaJson?: object; comNotas?: boolean;
 }): string[] {
-  const args = [
-    "-p",
-    "--restricted",
-    "--permission-prompts", "none",
-    "--max-budget-usd", String(o.maxBudgetUsd),
-    "--model", o.model,
-    "--output-format", "json",
-    "--append-system-prompt-file", o.promptFile,
-    "--tools", "",
-    "--strict-mcp-config",
-    "--mcp-config", o.mcpConfig,
-    "--allowedTools", (o.mode === "capture" ? CAPTURE_TOOLS : ASK_TOOLS).join(","),
-    "--disallowedTools", complement(o.mode === "capture" ? CAPTURE_TOOLS : ASK_TOOLS).join(","),
-    "--json-schema", JSON.stringify(o.mode === "capture" ? CAPTURE_SCHEMA : ASK_SCHEMA),
-  ];
+  const complete = o.mode === "complete";
+  // complete sem notas: nenhum MCP nem ferramenta; com notas (ou capture/ask): MCP do vault e as ferramentas do modo
+  const comMcp = !complete || !!o.comNotas;
+  const liberadas = o.mode === "capture" ? CAPTURE_TOOLS : ASK_TOOLS;
+  const schema = complete ? o.schemaJson : o.mode === "capture" ? CAPTURE_SCHEMA : ASK_SCHEMA;
+  const args = ["-p", "--restricted", "--permission-prompts", "none", "--max-budget-usd", String(o.maxBudgetUsd), "--model", o.model, "--output-format", "json"];
+  if (!complete) args.push("--append-system-prompt-file", o.promptFile!);
+  args.push("--tools", "", "--strict-mcp-config");
+  if (comMcp) args.push("--mcp-config", o.mcpConfig!, "--allowedTools", liberadas.join(","), "--disallowedTools", complement(liberadas).join(","));
+  if (schema) args.push("--json-schema", JSON.stringify(schema));
   if (o.mode === "capture" || !o.session) args.push("--no-session-persistence");
   else args.push(o.session.nova ? "--session-id" : "--resume", o.session.id);
   return args;
@@ -128,10 +128,10 @@ const PARECE_ORCAMENTO = /budget|orçamento/i;
  * citar "tokens". Só os campos de resultado são examinados (nunca o JSON inteiro, que sempre traz estatísticas como
  * `subagent_stats.refused.budget`).
  */
-export function interpretarSaida<T>(s: SaidaProcesso): ResultadoClaude<T> {
+export function interpretarSaida<T>(s: SaidaProcesso, opcoes: { semSchema?: boolean } = {}): ResultadoClaude<T> {
   if (s.estourouTempo) return { ok: false, tipo: "timeout", mensagem: "O Claude demorou demais para responder." };
 
-  let obj: { is_error?: boolean; subtype?: string; result?: string; errors?: unknown; terminal_reason?: string; structured_output?: T };
+  let obj: { is_error?: boolean; subtype?: string; result?: string; errors?: unknown; terminal_reason?: string; structured_output?: T; total_cost_usd?: unknown };
   try {
     obj = JSON.parse(s.stdout) as typeof obj;
     if (!obj || typeof obj !== "object") throw new Error("não é objeto");
@@ -140,19 +140,24 @@ export function interpretarSaida<T>(s: SaidaProcesso): ResultadoClaude<T> {
     return { ok: false, tipo: PARECE_ORCAMENTO.test(detalhe) ? "orcamento" : "erro", mensagem: detalhe };
   }
 
+  const custoUsd = typeof obj.total_cost_usd === "number" && Number.isFinite(obj.total_cost_usd) ? { custoUsd: obj.total_cost_usd } : {};
   const errors = Array.isArray(obj.errors) ? obj.errors.filter((e): e is string => typeof e === "string").join("; ") : "";
   if (obj.subtype === "error_max_budget_usd" || PARECE_ORCAMENTO.test(obj.terminal_reason ?? "")) {
-    return { ok: false, tipo: "orcamento", mensagem: `O limite de gasto da chamada (assistant.max_budget_usd) estourou.${errors ? ` ${errors}` : ""}` };
+    return { ok: false, tipo: "orcamento", mensagem: `O limite de gasto da chamada (assistant.max_budget_usd) estourou.${errors ? ` ${errors}` : ""}`, ...custoUsd };
   }
   if (obj.is_error || s.codigo !== 0 || (obj.subtype && obj.subtype !== "success")) {
     const mensagem = (obj.result || errors || s.stderr || `saída ${s.codigo}`).trim();
     const tipo = PARECE_ORCAMENTO.test(mensagem) ? "orcamento" : PARECE_AUTH.test(mensagem) || PARECE_AUTH.test(s.stderr) ? "auth" : "erro";
-    return { ok: false, tipo, mensagem };
+    return { ok: false, tipo, mensagem, ...custoUsd };
+  }
+  if (opcoes.semSchema && (obj.structured_output === undefined || obj.structured_output === null)) {
+    if (typeof obj.result !== "string") return { ok: false, tipo: "erro", mensagem: "O Claude respondeu sem texto." };
+    return { ok: true, dados: obj.result as T, ...custoUsd };
   }
   if (obj.structured_output === undefined || obj.structured_output === null) {
     return { ok: false, tipo: "erro", mensagem: "O Claude respondeu sem o formato esperado." };
   }
-  return { ok: true, dados: obj.structured_output };
+  return { ok: true, dados: obj.structured_output, ...custoUsd };
 }
 
 const SEM_FORMATO: AssistantError = { ok: false, tipo: "erro", mensagem: "O Claude respondeu sem o formato esperado." };
@@ -182,36 +187,57 @@ export function createClaudeEngine(brain: Brain, exec: ExecutorClaude = executar
     return existsSync(own) ? own : join(ASSISTANT_TEMPLATES_DIR, `${mode}.md`);
   };
 
-  /** Escreve o `--mcp-config` temporário (o MCP do vault com a identidade do agente), roda e apaga. */
-  async function run(mode: AssistantMode, agent: string, texto: string, session?: { id: string; nova: boolean }): Promise<ResultadoClaude<unknown>> {
+  /** Roda o claude com um mcp.json temporário (o MCP do vault com a identidade do agente) e o apaga ao fim. */
+  async function executar(o: {
+    mode: ClaudeMode; agent: string; entrada: string; maxBudgetUsd: number; timeoutS: number; model: string;
+    promptFile?: string; session?: { id: string; nova: boolean }; schemaJson?: object; comNotas?: boolean;
+  }): Promise<ResultadoClaude<unknown>> {
     const cfg = brain.config.assistant;
-    const prompt = promptFile(mode);
-    if (!existsSync(prompt)) return { ok: false, tipo: "erro", mensagem: `prompt do assistente não encontrado: ${prompt}` };
-    const dir = mkdtempSync(join(tmpdir(), "brain-assistant-"));
+    if (o.promptFile && !existsSync(o.promptFile)) return { ok: false, tipo: "erro", mensagem: `prompt do assistente não encontrado: ${o.promptFile}` };
+    const comMcp = o.mode !== "complete" || !!o.comNotas;
+    const dir = comMcp ? mkdtempSync(join(tmpdir(), "brain-assistant-")) : undefined;
     try {
-      const env: Record<string, string> = { BRAIN_VAULT: brain.vault.root, BRAIN_AGENT_NAME: agent };
-      if (process.env.BRAIN_STATE_DIR) env.BRAIN_STATE_DIR = process.env.BRAIN_STATE_DIR;
-      const mcpConfig = join(dir, "mcp.json");
-      writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { "second-brain": { type: "stdio", command: mcpCommand.command, args: mcpCommand.args, env } } }), { mode: 0o600 });
-      const args = montarArgs({ mode, model: cfg.model, maxBudgetUsd: cfg.max_budget_usd, promptFile: prompt, mcpConfig, session });
+      let mcpConfig: string | undefined;
+      if (dir) {
+        // BRAIN_MCP_SEM_MODULOS: o assistente só usa as brain_* (as demais ficam negadas); o MCP nem importa módulos
+        const env: Record<string, string> = { BRAIN_VAULT: brain.vault.root, BRAIN_AGENT_NAME: o.agent, BRAIN_MCP_SEM_MODULOS: "1" };
+        if (o.mode === "complete") env.BRAIN_AGENT_CHANNEL = "module";
+        if (process.env.BRAIN_STATE_DIR) env.BRAIN_STATE_DIR = process.env.BRAIN_STATE_DIR;
+        mcpConfig = join(dir, "mcp.json");
+        writeFileSync(mcpConfig, JSON.stringify({ mcpServers: { "second-brain": { type: "stdio", command: mcpCommand.command, args: mcpCommand.args, env } } }), { mode: 0o600 });
+      }
+      const args = montarArgs({ mode: o.mode, model: o.model, maxBudgetUsd: o.maxBudgetUsd, promptFile: o.promptFile, mcpConfig, session: o.session, schemaJson: o.schemaJson, comNotas: o.comNotas });
       // cwd ESTÁVEL e vazio: o claude guarda as sessões por diretório de projeto (o --resume precisa do mesmo cwd) e nenhum
       // CLAUDE.md ou settings de projeto entra na chamada. Fica no estado (externo) ou em .brain/, ignorado pelo git.
       const cwd = assistantCwd(brain);
       mkdirSync(cwd, { recursive: true });
-      const saida = await exec(cfg.claude_path, args, { cwd, entrada: montarPrompt(mode, texto), timeoutMs: cfg.timeout_s * 1000 });
-      return interpretarSaida<unknown>(saida);
+      const saida = await exec(cfg.claude_path, args, { cwd, entrada: o.entrada, timeoutMs: o.timeoutS * 1000 });
+      return interpretarSaida<unknown>(saida, { semSchema: o.mode === "complete" && !o.schemaJson });
     } catch (e) {
       return { ok: false, tipo: "erro", mensagem: (e as Error)?.message || String(e) };
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      if (dir) rmSync(dir, { recursive: true, force: true });
     }
   }
 
+  function run(mode: AssistantMode, agent: string, texto: string, session?: { id: string; nova: boolean }): Promise<ResultadoClaude<unknown>> {
+    const cfg = brain.config.assistant;
+    return executar({ mode, agent, entrada: montarPrompt(mode, texto), maxBudgetUsd: cfg.max_budget_usd, timeoutS: cfg.timeout_s, model: cfg.model, promptFile: promptFile(mode), session });
+  }
+
   return {
+    async complete(p: CompleteParams): Promise<CompleteResult> {
+      const cfg = brain.config.assistant;
+      return executar({
+        mode: "complete", agent: p.agente, entrada: p.prompt, maxBudgetUsd: p.orcamentoUsd, timeoutS: p.timeoutS,
+        model: p.modelo || cfg.model, schemaJson: p.schemaJson, comNotas: p.comNotas,
+      });
+    },
+
     async capture(entry: CaptureEntry): Promise<CaptureResult> {
       if (!CAPTURE_ID.test(entry.id)) return { ok: false, tipo: "erro", mensagem: `id de captura inválido: ${entry.id}` };
       const r = await run("capture", `assistant/${entry.id}`, entry.text);
-      return r.ok ? normalizeCapture(r.dados) : r;
+      return r.ok ? normalizeCapture(r.dados) : semCusto(r);
     },
 
     async ask(q: string, conversationId?: string): Promise<AskResult> {
@@ -226,7 +252,7 @@ export function createClaudeEngine(brain: Brain, exec: ExecutorClaude = executar
         // a sessão sumiu (apagada, outro cwd): a conversa continua com uma sessão nova
         if (!r.ok && s.iniciada && SESSAO_INEXISTENTE.test(r.mensagem)) { s = { id: randomUUID(), iniciada: false }; r = await tentar(); }
       }
-      if (!r.ok) return r;
+      if (!r.ok) return semCusto(r);
       const d = r.dados;
       if (!isObj(d) || typeof d.resposta !== "string" || !Array.isArray(d.fontes)) return SEM_FORMATO;
       if (conversationId && s) sessoes.set(conversationId, { id: s.id, iniciada: true });

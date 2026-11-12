@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Assistant, Brain, createClaudeEngine, bundleHistory, loadConfig, auditTitles, migrateFlat, importPath, importText, knowledgeAudit, reconcilePending, revalidateNotes, type ImportReport } from "@brain/core";
 import type { Freshness } from "@brain/shared";
-import { startApi } from "@brain/api";
 import { humanFromTerminal, issueHumanSession, principal } from "@brain/core";
 import { runStdio } from "@brain/mcp";
 import { BrainError, NOTE_TYPES, type NoteType } from "@brain/shared";
@@ -15,6 +14,8 @@ import { integrate, policyPlan } from "./integrate.js";
 import { printChecks, runDoctor } from "./doctor.js";
 import { seedDemo } from "./seed.js";
 import { adminCommand, realIO, requireHuman } from "./admin.js";
+import { modulesCommand } from "./modules.js";
+import { startServe } from "./serve.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(here, "../../..");
@@ -65,6 +66,10 @@ Uso: brain <comando> [opções]
                         dry-run por padrão (mostra a tabela e o type sugerido); --apply grava num único commit (só humano, em terminal);
                         --type id=tipo corrige o tipo sugerido (repetível)
   integrate             dry-run da integração Claude Code/Codex; --apply aplica (com backup); --remove desfaz
+  modules list          módulos configurados: status, versão, tarefas, erros recentes e gasto de IA do dia
+  modules run <id> <tarefa> [--ocorrencia AAAA-MM-DD]
+                        roda uma tarefa de módulo agora, no brain serve (terminal interativo + prova de humano)
+  modules check <pasta> valida um módulo sem ligá-lo (contrato, sdk, id, aba, ferramentas MCP, tarefas)
 
 Opções globais: --vault <dir> (ou BRAIN_VAULT)  --agent <nome>  --port <n>
 
@@ -73,7 +78,7 @@ Governança: agentes (MCP, API com o api-token, CLI comum) leem e PROPÕEM; deci
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
-  options: { vault: { type: "string" }, agent: { type: "string" }, port: { type: "string" }, apply: { type: "boolean" }, remove: { type: "boolean" }, host: { type: "string" }, name: { type: "string" }, help: { type: "boolean", short: "h" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, max: { type: "string" }, "include-duplicates": { type: "boolean" }, "git-log": { type: "boolean" }, loose: { type: "boolean" }, "show-rejected": { type: "boolean" }, "show-evidence": { type: "boolean" }, project: { type: "string" }, eligible: { type: "boolean" }, note: { type: "string" }, type: { type: "string", multiple: true } },
+  options: { vault: { type: "string" }, agent: { type: "string" }, port: { type: "string" }, apply: { type: "boolean" }, remove: { type: "boolean" }, host: { type: "string" }, name: { type: "string" }, help: { type: "boolean", short: "h" }, json: { type: "boolean" }, "dry-run": { type: "boolean" }, max: { type: "string" }, "include-duplicates": { type: "boolean" }, "git-log": { type: "boolean" }, loose: { type: "boolean" }, "show-rejected": { type: "boolean" }, "show-evidence": { type: "boolean" }, project: { type: "string" }, eligible: { type: "boolean" }, note: { type: "string" }, type: { type: "string", multiple: true }, ocorrencia: { type: "string" } },
 });
 
 function vaultPath(explicit?: string): string {
@@ -124,8 +129,10 @@ async function main() {
       const b = await Brain.open(vaultPath());
       const webRoot = join(REPO_ROOT, "apps/web/dist");
       // assistente: o motor roda `claude -p` com o MCP deste mesmo cli (`brain mcp`) como única fonte de ferramentas
-      const assistant = new Assistant(b, createClaudeEngine(b, undefined, { command: process.execPath, args: [fileURLToPath(import.meta.url), "mcp"] }));
-      const h = await startApi(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo(), assistant });
+      const engine = createClaudeEngine(b, undefined, { command: process.execPath, args: [fileURLToPath(import.meta.url), "mcp"] });
+      const assistant = new Assistant(b, engine);
+      // módulos, agendador, API e serve.json (o motor do assistente também serve a IA dos módulos)
+      const h = await startServe(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo(), assistant, engine });
       // só um humano num terminal recebe a URL de REVISÃO; iniciado por agente/script, a API sobe sem emitir sessão humana
       const io = realIO(); let reviewUrl: string | undefined;
       if (process.stdin.isTTY && process.stdout.isTTY) { try { const who = await requireHuman(io, "brain serve", b); reviewUrl = `${h.url}/#token=${issueHumanSession(b.vault.root, who, { label: "brain serve" })}`; } catch (e) { console.error(`(sem sessão de revisão: ${(e as Error).message})`); } }
@@ -135,7 +142,8 @@ async function main() {
         (n) => { console.log(`assistente: ${n} captura(s) pendente(s) processada(s) na subida`); },
         (e) => { console.error(`assistente: falha ao reprocessar capturas pendentes: ${(e as Error).message}`); },
       );
-      const stop = async () => { await h.close(); b.close(); process.exit(0); };
+      // scheduler.stop(), stopModules() e clearServeInfo() ficam dentro de h.close()
+      const stop = async () => { try { await h.close(); } finally { b.close(); process.exit(0); } };
       process.on("SIGINT", stop); process.on("SIGTERM", stop);
       break;
     }
@@ -284,6 +292,7 @@ async function main() {
       await integrate({ vault, repoRoot: REPO_ROOT, apply: false, remove: false, policyOnly: true });
       b.close(); break;
     }
+    case "modules": process.exitCode = await modulesCommand(rest, { vault: vaultPath(), port: values.port ? Number(values.port) : undefined, ocorrencia: values.ocorrencia }); break;
     case "doctor": { const checks = await runDoctor(vaultPath(), REPO_ROOT, Number(values.port ?? process.env.BRAIN_PORT ?? 3737)); if (values.json) console.log(JSON.stringify(checks, null, 2)); else printChecks(checks); if (checks.some((k) => k.status === "fail")) process.exitCode = 1; break; }
     default: console.error(`comando desconhecido: ${cmd}\n`); console.log(HELP); process.exitCode = 2;
   }

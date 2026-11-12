@@ -1,0 +1,39 @@
+/*
+ * Tokens de cor e tipografia do Second Brain para as páginas de módulo (spec de módulos §7.7).
+ * Servido em /modules/_sdk/base.css. Escuro por padrão; claro com <html data-theme="light"> (o brain-module-client.js
+ * aplica o tema que o SB envia). Os valores acompanham apps/web/src/styles.css.
+ */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c10; --bg-2: #0e1116; --panel: #12161d; --panel-2: #181d27; --hover: #1b212c;
+  --line: #222836; --line-2: #2d3547;
+  --text: #e8ebf1; --text-2: #b6bdcc; --muted: #8590a6; --faint: #5a6479;
+  --accent: #5eead4; --accent-ink: #04201c; --accent-soft: rgba(94,234,212,.12);
+  --warn: #fbbf24; --warn-soft: rgba(251,191,36,.12); --danger: #f87171; --danger-soft: rgba(248,113,113,.12);
+  --ok: #4ade80; --ok-soft: rgba(74,222,128,.12); --info: #a5b4fc; --info-soft: rgba(165,180,252,.12);
+  --radius: 10px; --radius-sm: 7px;
+  --font: ui-sans-serif, system-ui, "Segoe UI Variable Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f7f9; --bg-2: #fff; --panel: #fff; --panel-2: #f1f3f6; --hover: #eceff4; --line: #e2e6ee; --line-2: #cfd5e1;
+  --text: #14171f; --text-2: #3b4357; --muted: #667089; --faint: #98a1b5;
+  --accent: #0d9488; --accent-ink: #fff; --accent-soft: rgba(13,148,136,.1);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+button, input, textarea, select { font: inherit; color: inherit; }
+h1 { font-size: 26px; letter-spacing: -.02em; margin: 0 0 4px; font-weight: 650; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; margin: 0 0 10px; }
+code, pre { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 18px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+.btn:disabled { opacity: .45; pointer-events: none; }
+input, textarea, select { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

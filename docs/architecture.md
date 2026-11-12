@@ -77,5 +77,8 @@ Atividade operacional (consultas, leituras, propostas, decisões, edições exte
 ## Diagnóstico e operação
 `brain doctor` (e *Configurações → Executar diagnóstico*) roda 12+ verificações — vault, config, Git, SQLite `quick_check`, FTS, consistência índice × arquivos (somente leitura), embeddings, API, watcher, **handshake MCP real** e estado das integrações Claude/Codex — e mostra a causa provável + o comando de correção. A fachada `Brain` é a única porta de escrita; o importador só produz **propostas**.
 
+## Módulos
+Extensões de outros repositórios, instaladas pelo dono e ligadas pela chave `modules` da config do vault: aba na UI (iframe com origem opaca e token de página), rotas, tarefas agendadas, estado próprio, ferramentas MCP, IA e avisos. Rodam dentro do `brain serve`, com um contexto restrito e escrita de conhecimento sempre como agente `module/<id>`; um módulo com falha não derruba os outros. O código vive em `packages/module-sdk` (contrato) e `packages/core/src/modules/`. Guia de autoria em [`modules.md`](modules.md) e decisão no [ADR 0015](decisions/0015-modulos.md).
+
 ## Import Assistant
 `packages/core/src/importer/` (scan seguro → extração heurística → `processCandidates` → fila). Ver [`import.md`](import.md).

@@ -31,15 +31,25 @@ export function resolveStateDir(vaultRoot: string, cfg: BrainConfig, env: NodeJS
   } catch (e) {
     throw new BrainError("state_unavailable", `diretório de estado indisponível ou sem permissão de escrita: ${dir} (${(e as Error).message})`);
   }
-  const vault = (() => { try { return realpathSync(vaultRoot); } catch { return resolve(vaultRoot); } })();
+  claimStateOwner(dir, vaultRoot);
+  return dir;
+}
+
+/**
+ * Garantia de dono de um diretório de estado: na primeira vez grava `<dir>/vault-path` com o realpath do vault; depois, um
+ * vault diferente apontando para o mesmo diretório é recusado (`state_unavailable`). Usada pelo estado da máquina e pelo
+ * estado dos módulos (com o `serve.json` e o `serve.lock`). `normalizar` (padrão: identidade) é aplicado ao caminho gravado e
+ * aos dois lados da comparação; o estado dos módulos passa a regra de caixa do FS do vault (`normalizadorDeCaixa`).
+ */
+export function claimStateOwner(dir: string, vaultRoot: string, normalizar: (caminho: string) => string = (p) => p): void {
+  const vault = normalizar((() => { try { return realpathSync(vaultRoot); } catch { return resolve(vaultRoot); } })());
   const owner = join(dir, STATE_OWNER_FILE);
   if (existsSync(owner)) {
     const dono = readFileSync(owner, "utf8").trim();
-    if (dono !== vault) {
+    if (normalizar(dono) !== vault) {
       throw new BrainError("state_unavailable", `o diretório de estado ${dir} pertence a outro vault (${dono}), não a ${vault}. Use outro BRAIN_STATE_DIR para este vault, e o mesmo BRAIN_STATE_DIR em todos os pontos de entrada de um vault (serve, MCP, timer). Se a pasta do vault só mudou de lugar, corrija o caminho em ${owner}.`);
     }
   } else {
     writeFileSync(owner, `${vault}\n`, { mode: 0o600 });
   }
-  return dir;
 }

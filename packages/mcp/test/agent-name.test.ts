@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Brain } from "@brain/core";
-import { agentNameFromEnv } from "../src/index.js";
+import { agentChannelFromEnv, agentNameFromEnv } from "../src/index.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const human = await terminalHuman("t");
@@ -30,6 +31,22 @@ describe("nome do agente do MCP vindo de BRAIN_AGENT_NAME", () => {
     expect(agentNameFromEnv({ BRAIN_AGENT_NAME: "" }, warn)).toBeUndefined();
   });
 
+  it("canal module aceito só com nome module/<id>", () => {
+    const avisos: string[] = [];
+    const warn = (m: string) => { avisos.push(m); };
+    expect(agentChannelFromEnv({ BRAIN_AGENT_NAME: "module/xy", BRAIN_AGENT_CHANNEL: "module" }, "module/xy", warn)).toBe("module");
+    expect(avisos).toEqual([]);
+    expect(agentChannelFromEnv({ BRAIN_AGENT_NAME: "claude-code", BRAIN_AGENT_CHANNEL: "module" }, "claude-code", warn)).toBe("mcp");
+    expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: "module" }, undefined, warn)).toBe("mcp");
+    expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: "module" }, "module/X", warn)).toBe("mcp");
+    for (const c of ["ui", "cli-admin", "desktop", "bobagem"]) expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: c }, "module/xy", warn)).toBe("mcp");
+    expect(avisos).toHaveLength(7);
+    expect(avisos[0]).toContain("BRAIN_AGENT_CHANNEL");
+    expect(agentChannelFromEnv({}, "module/xy", warn)).toBe("mcp");
+    expect(agentChannelFromEnv({ BRAIN_AGENT_CHANNEL: "" }, "module/xy", warn)).toBe("mcp");
+    expect(avisos).toHaveLength(7);
+  });
+
   it("o MCP grava como agent/<BRAIN_AGENT_NAME>, mesmo com outro nome de cliente", async () => {
     const vault = join(dir, "vault");
     const b = await Brain.init(vault);
@@ -47,5 +64,25 @@ describe("nome do agente do MCP vindo de BRAIN_AGENT_NAME", () => {
     b2.close();
     expect(p.proposed_by).toEqual({ kind: "agent", name: "assistant/20261110-153012-a1b2" });
     expect(p.decided?.by).toEqual({ kind: "agent", name: "assistant/20261110-153012-a1b2" });
+  });
+
+  it("createServer grava com o canal module só quando o env traz BRAIN_AGENT_CHANNEL=module e nome module/<id> (o commit registra o canal)", async () => {
+    const trailer = async (n: number, env: Record<string, string>) => {
+      const vault = join(dir, `vault-canal-${n}`);
+      const b = await Brain.init(vault);
+      await b.updateConfig({ agents: { commit_policy: "additive" } }, human);
+      b.close();
+      const c = new Client({ name: "claude-code", version: "1.0.0" });
+      await c.connect(new StdioClientTransport({ command: process.execPath, args: [BIN, "mcp"], env: { ...(process.env as Record<string, string>), BRAIN_VAULT: vault, ...env } }));
+      clients.push(c);
+      const r = await c.callTool({ name: "brain_propose", arguments: { title: `Observação inédita sobre jacarés ${n}`, type: "learning", body: "Jacarés regulam a temperatura corporal alternando entre sol e água, o que muda o ritmo da digestão." } }) as { isError?: boolean };
+      expect(r.isError).toBeFalsy();
+      return execFileSync("git", ["-C", vault, "log", "-1", "--format=%B"], { encoding: "utf8" });
+    };
+    const modulo = await trailer(1, { BRAIN_AGENT_NAME: "module/lembrete", BRAIN_AGENT_CHANNEL: "module" });
+    expect(modulo).toContain("Brain-Proposed-By: agent/module/lembrete");
+    expect(modulo).toContain("Brain-Channel: module");
+    // só o nome, sem o canal: continua mcp
+    expect(await trailer(2, { BRAIN_AGENT_NAME: "module/lembrete" })).toContain("Brain-Channel: mcp");
   });
 });

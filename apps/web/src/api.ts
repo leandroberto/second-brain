@@ -36,12 +36,18 @@ function openEvents(): void {
   api<{ ticket: string }>("/api/events/ticket", { method: "POST" })
     .then(({ ticket }) => {
       es = new EventSource(`/api/events?ticket=${ticket}`);
-      for (const ev of ["notes", "proposals"]) es.addEventListener(ev, () => listeners.forEach((f) => f(ev)));
+      for (const ev of ["notes", "proposals", "module.badge", "module.notification"]) es.addEventListener(ev, () => listeners.forEach((f) => f(ev)));
       es.onerror = () => { es?.close(); es = undefined; setTimeout(openEvents, 3000); };
     })
     .catch(() => { setTimeout(openEvents, 5000); })
     .finally(() => { opening = false; });
 }
+/** Eventos que recarregam as consultas comuns (notas, propostas). `module.*` não: não mudam grafo nem notas. */
+export const EVENTOS_PADRAO: readonly string[] = ["notes", "proposals"];
+/** Eventos que só as consultas de módulos (menu, aba, seção Módulos) acompanham. */
+export const EVENTOS_MODULOS: readonly string[] = ["module.badge", "module.notification"];
+export const recarregaCom = (eventos: readonly string[], ev: string): boolean => eventos.includes(ev);
+
 export function subscribe(l: Listener): () => void {
   listeners.add(l);
   openEvents();
@@ -76,3 +82,7 @@ export type CaptureOutcome =
   | { ok: false; tipo: AssistantErrorKind; mensagem: string };
 export interface CaptureResponse { capture_id: string; state: "pendente" | "processada" | "desfeita"; result: CaptureOutcome }
 export type AskOutcome = { ok: true; resposta: string; fontes: string[] } | { ok: false; tipo: AssistantErrorKind; mensagem: string };
+
+export interface ModuloTarefa { tarefa: string; quando: string; proxima: string; ultimaOcorrencia?: string; inicio?: string; fim?: string; resultado?: "ok" | "erro" | "timeout"; erro?: string; suspensa: boolean; errosSeguidos: number }
+export interface ModuloInfo { id: string; nome: string; icone?: string; aba: boolean; badge: number; status: "ativo" | "falho" | "inativo" | "ausente"; causa?: string; versao?: string; sdk?: number; pasta: string; iaHojeUsd: number; iaBloqueada?: boolean; iaBloqueio?: string; tarefas: ModuloTarefa[]; erros: Array<{ em: string; onde: string; mensagem: string }> }
+export interface ModulosResp { modulos: ModuloInfo[]; reiniciar: boolean }

@@ -52,6 +52,20 @@ function execQuePropoe(b: Brain, titulo: string, corpo: string): ExecutorClaude 
   };
 }
 
+describe("custoUsd só no modo complete", () => {
+  it("erro de capture e de ask não traz custoUsd; o de complete traz", async () => {
+    const b = await tempBrain();
+    const motor = createClaudeEngine(b, async () => saidaOrcamento, MCP);
+    const cap = await motor.capture({ id: "20261111-120000-abcd", text: "texto", origin: "ui", state: "pendente", ids: [] });
+    expect(cap).toMatchObject({ ok: false, tipo: "orcamento" });
+    expect(cap).not.toHaveProperty("custoUsd");
+    const ask = await motor.ask("pergunta");
+    expect(ask).toMatchObject({ ok: false, tipo: "orcamento" });
+    expect(ask).not.toHaveProperty("custoUsd");
+    expect(await motor.complete({ agente: "module/x", prompt: "p", orcamentoUsd: 0.5, timeoutS: 10, comNotas: false })).toMatchObject({ ok: false, custoUsd: 0.53 });
+  });
+});
+
 describe("registro de capturas e motor de assistente", () => {
   it("captura grava o texto antes de chamar o motor", async () => {
     const b = await tempBrain();
@@ -104,6 +118,7 @@ describe("registro de capturas e motor de assistente", () => {
     expect(srv.args).toEqual(MCP.args);
     expect(srv.env.BRAIN_VAULT).toBe(b.vault.root);
     expect(srv.env.BRAIN_AGENT_NAME).toBe(`assistant/${r.capture.id}`);
+    expect(srv.env.BRAIN_MCP_SEM_MODULOS).toBe("1"); // ferramentas de módulo nem são importadas no MCP do assistente
     expect(existsSync(c.mcpPath)).toBe(false); // arquivo temporário apagado ao terminar
   });
 

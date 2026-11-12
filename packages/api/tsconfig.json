@@ -1,5 +1,5 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "outDir": "dist", "rootDir": "src", "composite": true },
-  "include": ["src"],"references":[{"path":"../shared"},{"path":"../core"}]
+  "include": ["src"],"references":[{"path":"../shared"},{"path":"../module-sdk"},{"path":"../core"}]
 }

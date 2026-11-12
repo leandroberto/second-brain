@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { Brain, principal } from "../packages/core/src/index.js";
 import { issueHumanSession, startApi, type ApiHandle } from "../packages/api/src/index.js";
@@ -37,10 +37,23 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     page = await browser.newPage({ viewport: { width: 1360, height: 860 } });
   });
   afterAll(async () => { await browser?.close(); await api?.close(); brain?.close(); rmSync(dir, { recursive: true, force: true }); cleanupRepos(); });
+  // cada teste parte de um estado conhecido: documento novo com a sessão humana e sem ouvintes de um teste anterior que falhou
+  // no meio (diálogo pendente, coletores de erro), para que uma falha não deixe a página no meio do fluxo para o seguinte
+  beforeEach(async () => {
+    for (const ev of ["dialog", "pageerror", "console"] as const) page.removeAllListeners(ev);
+    await page.goto("about:blank");
+    await page.goto(`${api.url}/#token=${humanToken}`);
+    await page.getByRole("navigation", { name: "Principal" }).waitFor();
+  });
+  /** Espera o toast de uma decisão (some em 3,5 s: espere logo depois da ação). */
+  const toast = (texto: RegExp) => page.locator(".toasts .toast").filter({ hasText: texto }).first().waitFor({ timeout: 15000 });
+  /** Espera a UI sair da proposta decidida (ela navega para a próxima ou para a lista). */
+  const saiuDe = (hash: string) => page.waitForFunction((h) => location.hash !== h, hash, { timeout: 15000 });
 
   it("abre o dashboard sem erros de console", async () => {
     const errors: string[] = []; page.on("pageerror", (e) => errors.push(String(e))); page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
-    // token de AGENTE (api-token do vault): a UI abre só para leitura/proposta e avisa
+    // token de AGENTE (api-token do vault): a UI abre só para leitura/proposta e avisa (documento novo: o token do hash vale)
+    await page.goto("about:blank");
     await page.goto(`${api.url}/#token=${api.token}`);
     await page.getByTestId("readonly-banner").waitFor();
     await page.goto(`${api.url}/#token=${humanToken}`);
@@ -64,23 +77,27 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     await page.getByRole("link", { name: /Versão do Python do projeto/ }).click();
     await page.getByRole("button", { name: /^Atualizar Corrige/ }).click();
     await page.getByText("Prévia do resultado").waitFor();
+    const naProposta = await page.evaluate(() => location.hash);
     await page.getByRole("button", { name: /Atualizar e persistir/ }).click();
+    await toast(/^Persistido/);
+    await saiuDe(naProposta); // a UI concluiu a navegação pós-decisão
     const note = brain.db.getRow("fact-promo-watcher-versao-do-python-do-projeto")!;
     await vi.waitFor(() => expect(readFileSync(join(brain.vault.root, note.path), "utf8")).toContain("Python 3.13"), { timeout: 10000 });
     const file = readFileSync(join(brain.vault.root, note.path), "utf8");
     expect(file).toContain("Python 3.13");
     expect(file).not.toContain("Python 3.12");
     await vi.waitFor(async () => expect((await brain.git.log(note.path, 1))[0]!.subject).toMatch(/^brain: update fact/), { timeout: 10000 });
-    await page.waitForTimeout(600); // deixa a UI concluir a navegação pós-decisão
   });
 
   it("Review Queue: substituir preserva o antigo como superseded", async () => {
     await nav("#/review");
     await page.getByRole("link", { name: /Janela de cancelamento/ }).click();
     await page.getByRole("button", { name: /^Substituir Novo/ }).click();
+    const naProposta = await page.evaluate(() => location.hash);
     await page.getByRole("button", { name: /Substituir e persistir/ }).click();
+    await toast(/^Persistido/);
+    await saiuDe(naProposta);
     await vi.waitFor(() => expect(brain.loadNote("decision-menu-litoral-janela-de-cancelamento-de-pedidos").status).toBe("superseded"), { timeout: 10000 });
-    await page.waitForTimeout(600);
     const old = brain.loadNote("decision-menu-litoral-janela-de-cancelamento-de-pedidos");
     expect(old.status).toBe("superseded");
     expect(old.relations.superseded_by?.length).toBe(1);
@@ -129,11 +146,13 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     await nav("#/inbox");
     await page.getByRole("button", { name: /Selecionar elegíveis/ }).click();
     const before = brain.db.rows("1=1", [], "id", 1000).length;
-    page.once("dialog", (d) => { expect(d.message()).toMatch(/Criar \d+ conhecimento/); void d.accept(); });
+    let confirmacao = ""; // aceita sempre (uma asserção no ouvinte deixaria o diálogo aberto); a mensagem é conferida depois
+    page.once("dialog", (d) => { confirmacao = d.message(); void d.accept(); });
     await page.getByRole("button", { name: /Aprovar \d+ em lote/ }).click();
+    await toast(/^\d+ criado\(s\)/); // a UI recebeu a resposta e recarregou a lista
+    expect(confirmacao).toMatch(/Criar \d+ conhecimento/);
     await vi.waitFor(async () => { await brain.sync(); expect(brain.db.rows("1=1", [], "id", 1000).length).toBeGreaterThan(before); }, { timeout: 10000 });
     await vi.waitFor(async () => expect((await brain.git.log(undefined, 1))[0]!.subject).toMatch(/bulk approve/), { timeout: 10000 });
-    await page.waitForTimeout(600);
   });
 
   it("Home mostra Entrou recentemente e Desfazer remove a nota", async () => {
@@ -182,40 +201,47 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     await page.getByRole("button", { name: "Enviar para revisão" }).click();
     await page.getByText("Fila de revisão").waitFor();
   });
+  // O grafo 3D renderiza a cada quadro (bloom) em WebGL por software (SwiftShader): sem GPU, cada ação do Playwright fica lenta
+  // e o teste inteiro levava de 16 a 31 s, perto ou além dos 30 s padrão. Esperas por condição observável (o `data-state="ready"`
+  // que o componente já expõe depois dos dois primeiros quadros, a contagem dos rótulos) com prazo próprio, e o teste com o seu.
   it("Grafo 3D: núcleos por projeto, destaque, foco e alternância para 2D sem erros", async () => {
+    const PRONTO_MS = 30_000;
     const errors: string[] = []; const onErr = (e: Error) => errors.push(String(e)); const onCon = (m: { type(): string; text(): string }) => { if (m.type() === "error") errors.push(m.text()); };
     page.on("pageerror", onErr); page.on("console", onCon);
-    await page.evaluate(() => { try { localStorage.removeItem("brain.graph.view"); } catch { /* ok */ } });
-    await nav("#/graph");
-    const g = page.locator('[data-testid="graph3d"]');
-    await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: 20000 });
-    expect(await g.locator("canvas").count()).toBe(1);
-    const projects = new Set(brain.db.rows("status!='archived'", [], "id", 1000).map((r) => r.project ?? "_"));
-    expect(await g.locator(".g3d-chip").count()).toBe(projects.size);
-    await expect.poll(() => g.locator(".g3d-label.hub").count()).toBe(projects.size);
-    // destaque por texto conta só os nós que casam
-    await g.getByLabel("Destacar conhecimentos no grafo").fill("listings");
-    await expect.poll(async () => Number(await g.locator(".g3d-search em").textContent())).toBeGreaterThan(0);
-    await g.getByLabel("Destacar conhecimentos no grafo").fill("");
-    // foco de projeto liga/desliga
-    const chip = g.locator(".g3d-chip").first(); await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("true");
-    await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("false");
-    await g.getByRole("button", { name: /Rotação/ }).click(); expect(await g.getByRole("button", { name: /Rotação/ }).getAttribute("aria-pressed")).toBe("false");
-    // alternância 2D e volta (a preferência fica no navegador)
-    await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "2D" }).click();
-    const g2 = page.getByTestId("graph2d"); await g2.waitFor(); expect(await g.count()).toBe(0);
-    // 2D: projetos como agrupamentos; o selo da ligação explica o porquê (nota que cita o outro projeto) e o clique fixa
-    expect(await g2.locator(".g2d-label").allTextContents()).toEqual(expect.arrayContaining([expect.stringMatching(/^Promo Watcher/), expect.stringMatching(/^Second Brain/)]));
-    const badge = g2.getByTestId("xlink-badge").first(); await badge.hover();
-    const card = g2.locator(".g2d-card"); await card.waitFor();
-    expect(await card.innerText()).toMatch(/Promo Watcher → cita Second Brain[\s\S]*a decisão vai para o Second Brain/);
-    await badge.click(); await page.mouse.move(5, 5); await card.getByRole("button", { name: /abrir/ }).first().waitFor();
-    await page.reload(); await g2.waitFor();
-    await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "3D" }).click();
-    await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: 20000 });
-    page.off("pageerror", onErr); page.off("console", onCon);
+    try {
+      await page.evaluate(() => { try { localStorage.removeItem("brain.graph.view"); } catch { /* ok */ } });
+      await nav("#/graph");
+      const g = page.locator('[data-testid="graph3d"]');
+      await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: PRONTO_MS });
+      expect(await g.locator("canvas").count()).toBe(1);
+      const projects = new Set(brain.db.rows("status!='archived'", [], "id", 1000).map((r) => r.project ?? "_"));
+      expect(await g.locator(".g3d-chip").count()).toBe(projects.size);
+      await expect.poll(() => g.locator(".g3d-label.hub").count(), { timeout: PRONTO_MS }).toBe(projects.size);
+      // destaque por texto conta só os nós que casam
+      await g.getByLabel("Destacar conhecimentos no grafo").fill("listings");
+      await expect.poll(async () => Number(await g.locator(".g3d-search em").textContent()), { timeout: PRONTO_MS }).toBeGreaterThan(0);
+      await g.getByLabel("Destacar conhecimentos no grafo").fill("");
+      // foco de projeto liga/desliga
+      const chip = g.locator(".g3d-chip").first(); await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("true");
+      await chip.click(); expect(await chip.getAttribute("aria-pressed")).toBe("false");
+      await g.getByRole("button", { name: /Rotação/ }).click(); expect(await g.getByRole("button", { name: /Rotação/ }).getAttribute("aria-pressed")).toBe("false");
+      // alternância 2D e volta (a preferência fica no navegador)
+      await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "2D" }).click();
+      const g2 = page.getByTestId("graph2d"); await g2.waitFor(); expect(await g.count()).toBe(0);
+      // 2D: projetos como agrupamentos; o selo da ligação explica o porquê (nota que cita o outro projeto) e o clique fixa
+      expect(await g2.locator(".g2d-label").allTextContents()).toEqual(expect.arrayContaining([expect.stringMatching(/^Promo Watcher/), expect.stringMatching(/^Second Brain/)]));
+      const badge = g2.getByTestId("xlink-badge").first(); await badge.hover();
+      const card = g2.locator(".g2d-card"); await card.waitFor();
+      expect(await card.innerText()).toMatch(/Promo Watcher → cita Second Brain[\s\S]*a decisão vai para o Second Brain/);
+      await badge.click(); await page.mouse.move(5, 5); await card.getByRole("button", { name: /abrir/ }).first().waitFor();
+      await page.reload(); await g2.waitFor();
+      await page.getByRole("group", { name: "Visualização" }).getByRole("button", { name: "3D" }).click();
+      await g.and(page.locator('[data-state="ready"]')).waitFor({ timeout: PRONTO_MS });
+    } finally {
+      page.off("pageerror", onErr); page.off("console", onCon);
+    }
     expect(errors).toEqual([]);
-  });
+  }, 120_000);
 
   it("Vizinhança da nota, sugestão de relação registrada pelo revisor e filtros do 2D na URL", async () => {
     const errors: string[] = []; const onErr = (e: Error) => errors.push(String(e)); page.on("pageerror", onErr);

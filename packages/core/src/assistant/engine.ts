@@ -7,6 +7,8 @@ import type { CaptureEntry } from "./captures.js";
  */
 export type AssistantErrorKind = "auth" | "timeout" | "orcamento" | "erro";
 export type AssistantError = { ok: false; tipo: AssistantErrorKind; mensagem: string };
+/** Falha com o custo informado pelo claude mesmo assim: só o modo `complete` (módulos) o devolve, para somar ao teto diário. */
+export type AssistantErrorComCusto = AssistantError & { custoUsd?: number };
 
 export type CaptureAction = "criada" | "complementada" | "na_fila" | "ignorada";
 export const CAPTURE_ACTIONS: readonly CaptureAction[] = ["criada", "complementada", "na_fila", "ignorada"];
@@ -17,9 +19,24 @@ export type CaptureResult =
 
 export type AskResult = { ok: true; resposta: string; fontes: string[] } | AssistantError;
 
+/** Chamada genérica (módulos): o prompt vai inteiro pela entrada padrão; sem `schemaJson`, `dados` é o texto da resposta. */
+export interface CompleteParams {
+  /** identidade do chamador (ex.: `module/<id>`); vai em `BRAIN_AGENT_NAME` quando `comNotas` */
+  agente: string;
+  prompt: string;
+  schemaJson?: object;
+  modelo?: string;
+  orcamentoUsd: number;
+  timeoutS: number;
+  /** libera as ferramentas de leitura do MCP do vault (as mesmas do `ask`); sem isso, nenhuma ferramenta */
+  comNotas: boolean;
+}
+export type CompleteResult = { ok: true; dados: unknown; custoUsd?: number } | AssistantErrorComCusto;
+
 export interface AssistantEngine {
   capture(entry: CaptureEntry): Promise<CaptureResult>;
   ask(q: string, conversationId?: string): Promise<AskResult>;
+  complete(p: CompleteParams): Promise<CompleteResult>;
 }
 
 /** Resposta padrão quando nada nas notas sustenta a resposta. */

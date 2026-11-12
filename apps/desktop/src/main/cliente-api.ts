@@ -1,10 +1,14 @@
 /**
  * Cliente fino da API local do second-brain. É a única porta do desktop para as notas: só chama as rotas que a
- * credencial de escopo `desktop` pode usar (`/api/assistant/*` e `GET /api/health`). Nunca lança: erro de rede,
- * de pareamento e de HTTP voltam como valores, para a janela decidir o que mostrar.
+ * credencial de escopo `desktop` pode usar (`/api/assistant/*`, `GET /api/health`, `GET /api/notifications` e
+ * `POST /api/notifications/<id>/visto`). As operações do assistente e a saúde nunca lançam: erro de rede, de pareamento
+ * e de HTTP voltam como valores, para a janela decidir o que mostrar. Os avisos de módulo (`avisos`, `marcarVisto`)
+ * lançam `Error` em qualquer falha: o vigia de avisos (`avisos-modulos.ts`) trata a exceção (a consulta tenta de novo no
+ * próximo intervalo; marcar como visto que falha é ignorado).
  */
 
 import { Agent } from 'undici';
+import type { AvisoModulo } from './avisos-modulos';
 
 export const MENSAGEM_PAREAMENTO = 'Rode `brain pair-desktop` no WSL e cole o token.';
 export const MENSAGEM_INCERTO =
@@ -48,6 +52,7 @@ export type RespostaDesfazer =
 export type RespostaOrganizar = { ok: true; retried: number; restantes: number } | FalhaCliente;
 export type RespostaRenovar = { ok: true; token: string } | FalhaCliente;
 export type EstadoApi = 'ok' | 'offline' | 'pareamento';
+export type RespostaAvisos = { avisos: AvisoModulo[]; cursor: string; total: number };
 
 export interface ClienteApi {
   anotar(texto: string): Promise<RespostaAnotar>;
@@ -58,6 +63,10 @@ export interface ClienteApi {
   estado(): Promise<EstadoApi>;
   /** Troca a credencial desktop por outra com validade nova (o servidor revoga a atual). */
   renovar(): Promise<RespostaRenovar>;
+  /** Avisos de módulo desde o cursor. Diferente dos demais, LANÇA em falha: quem chama (o vigia) trata em silêncio. */
+  avisos(depois?: string): Promise<RespostaAvisos>;
+  /** Marca o aviso como visto. Lança em falha. */
+  marcarVisto(id: string): Promise<void>;
 }
 
 type Bruto = { status: number; corpo: any };
@@ -148,6 +157,23 @@ export function criarClienteApi(base = 'http://localhost:3737', token: string, f
       const token = r.corpo?.token;
       if (r.status === 200 && typeof token === 'string' && /^hs_[0-9a-f]{64}$/.test(token)) return { ok: true, token };
       return http(r.status === 200 ? { status: r.status, corpo: { message: 'resposta de renovação sem token' } } : r);
+    },
+
+    async avisos(depois) {
+      const q = depois === undefined ? '' : `?depois=${encodeURIComponent(depois)}`;
+      const r = await chamar('GET', `/api/notifications${q}`);
+      if (falhou(r)) throw new Error(`avisos indisponíveis (${r.tipo})`);
+      const c = r.corpo;
+      if (r.status !== 200 || !Array.isArray(c?.avisos) || typeof c.cursor !== 'string' || typeof c.total !== 'number') {
+        throw new Error(`resposta de avisos inválida (HTTP ${r.status})`);
+      }
+      return { avisos: c.avisos, cursor: c.cursor, total: c.total };
+    },
+
+    async marcarVisto(id) {
+      const r = await chamar('POST', `/api/notifications/${encodeURIComponent(id)}/visto`);
+      if (falhou(r)) throw new Error(`não marquei o aviso como visto (${r.tipo})`);
+      if (r.status !== 204 && r.status !== 200) throw new Error(`não marquei o aviso como visto (HTTP ${r.status})`);
     },
 
     async saude() {

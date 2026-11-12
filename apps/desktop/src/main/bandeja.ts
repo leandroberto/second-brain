@@ -39,10 +39,21 @@ export interface AcoesBandeja {
 export function criarBandeja(acoes: AcoesBandeja): {
   definirErro(erro: boolean, motivo?: string): void;
   definirQuarentena(n: number): void;
+  /** Total de avisos de módulo pendentes: o Windows não tem badge numérico para Tray, então vai no tooltip. */
+  definirTotalAvisos(n: number): void;
 } {
   const bandeja = new Tray(ICONE_NORMAL());
   bandeja.setToolTip('Second Brain');
   let quarentena = 0;
+  let erro: string | null = null;
+  let totalAvisos = 0;
+
+  function atualizarTooltip(): void {
+    const partes = ['Second Brain'];
+    if (erro !== null) partes.push(erro);
+    if (totalAvisos > 0) partes.push(`${totalAvisos} aviso(s) de módulos`);
+    bandeja.setToolTip(partes.join(' — '));
+  }
 
   function montarMenu(): void {
     bandeja.setContextMenu(
@@ -64,9 +75,14 @@ export function criarBandeja(acoes: AcoesBandeja): {
   bandeja.on('click', acoes.abrir);
 
   return {
-    definirErro(erro, motivo) {
-      bandeja.setImage(erro ? ICONE_ERRO() : ICONE_NORMAL());
-      bandeja.setToolTip(erro ? `Second Brain — ${motivo ?? 'há anotações pendentes'}` : 'Second Brain');
+    definirErro(temErro, motivo) {
+      bandeja.setImage(temErro ? ICONE_ERRO() : ICONE_NORMAL());
+      erro = temErro ? (motivo ?? 'há anotações pendentes') : null;
+      atualizarTooltip();
+    },
+    definirTotalAvisos(n) {
+      totalAvisos = n;
+      atualizarTooltip();
     },
     definirQuarentena(n) {
       if (n === quarentena) return;

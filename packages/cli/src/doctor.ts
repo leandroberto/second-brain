@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { statSync } from "node:fs";
 import { Brain, coreDoctor, hasReviewerPassphrase, integrationChecks, type Check } from "@brain/core";
+import { modulesChecks } from "./modules.js";
 
 const c = (id: string, name: string, status: Check["status"], detail: string, fix?: string): Check => ({ id, name, status, detail, ...(fix ? { fix } : {}) });
 
@@ -51,6 +52,13 @@ export async function runDoctor(vault: string, repoRoot: string, port: number): 
     checks.push(c("governance", "Governança", ag.commit_policy === "never" ? "ok" : "warn", `${agentWrites}; decisões só pela UI com sessão humana ou brain admin`, ag.commit_policy === "never" ? undefined : "revise agents.commit_policy no config"));
     checks.push(hasReviewerPassphrase() ? c("reviewer", "Identidade do revisor", "ok", "frase-senha definida: brain ui / brain admin a exigem")
       : c("reviewer", "Identidade do revisor", "warn", "sem frase-senha: a prova de humano é só o terminal interativo (agentes e scripts não têm TTY, mas um processo local que simule um terminal passaria)", "brain admin passphrase"));
+  }
+  // módulos: estado do serve quando ele está no ar, senão o do disco; sem módulos configurados, nenhum check
+  {
+    const bb = await Brain.open(vault);
+    try { checks.push(...(await modulesChecks(bb, port))); }
+    catch (e) { checks.push(c("modules", "Módulos", "warn", `não foi possível ler o estado dos módulos: ${(e as Error).message}`)); }
+    finally { bb.close(); }
   }
   checks.push(await mcpSmoke(vault, bin));
   checks.push(...integrationChecks(vault));
