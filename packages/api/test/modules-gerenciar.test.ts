@@ -64,6 +64,9 @@ async function subir(o: Partial<ModulesApiOptions> & { frase?: string } = {}): P
 const call = (api: ApiHandle, t: string, method: string, p: string, body?: unknown) =>
   fetch(api.url + p, { method, headers: { authorization: `Bearer ${t}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
 const G = "/api/modules/_gerenciar";
+/** Auditoria por id, não por horário: duas gravações no mesmo milissegundo confundiriam o `since`. */
+const ultimaAtividade = () => brain.db.activity({ limit: 1 })[0]?.id ?? 0;
+const configUpdatesDepois = (id: number) => brain.db.activity({ action: "config_update" }).filter((a) => a.id > id).map((a) => a.detail);
 
 async function inspecionar(s: Subida, caminho: string, extra: Record<string, unknown> = {}, token = s.ui) {
   const r = await call(s.api, token, "POST", `${G}/inspecionar`, { caminho, ...extra });
@@ -266,11 +269,11 @@ describe("inspecionar e frase-senha", () => {
       for (const [entrada, put] of casos) {
         gravarModulos({ lembrete: entrada });
         const antes = readFileSync(brain.vault.configPath, "utf8");
-        const desde = new Date().toISOString();
+        const desde = ultimaAtividade();
         const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, put);
         expect([comErro, put, r.status, await r.json()]).toEqual([comErro, put, 200, { mensagem: "nada mudou" }]);
         expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
-        expect(brain.db.activity({ action: "config_update", since: desde })).toEqual([]);
+        expect(configUpdatesDepois(desde)).toEqual([]);
       }
     }
     await new Promise((ok) => setTimeout(ok, 100));
@@ -569,10 +572,10 @@ describe("configurar, remover e reiniciar", () => {
     let reinicios = 0;
     // no meio da conferência, a mesma config chega ao arquivo por fora (edição manual)
     const s = await subir({ reiniciarServe: async () => { reinicios++; }, conferir: async (c, cfg) => { gravarModulos({ lembrete: { path: pasta, enabled: true, config: { horario: "11:00" } } }); return base(c, cfg); } });
-    const desde = new Date().toISOString();
+    const desde = ultimaAtividade();
     const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, { config: { horario: "11:00" } });
     expect([r.status, await r.json()]).toEqual([200, { mensagem: "nada mudou" }]);
-    expect(brain.db.activity({ action: "config_update", since: desde })).toEqual([]);
+    expect(configUpdatesDepois(desde)).toEqual([]);
     await new Promise((ok) => setTimeout(ok, 100));
     expect(reinicios).toBe(0);
   });
@@ -617,6 +620,25 @@ describe("configurar, remover e reiniciar", () => {
     expect((await call(s.api, s.ui, "DELETE", `${G}/lembrete`)).status).toBe(200);
     const acoes = brain.db.activity({ action: "config_update", since: desde }).map((a) => (a.detail as { acao?: string }).acao).reverse();
     expect(acoes).toEqual(["adicionar", "desligar", "ligar", "configurar", "restringir_host", "remover"]);
+  });
+
+  it("PUT combinado: a auditoria guarda o rótulo principal e diz se a config e o host mudaram", async () => {
+    const s = await subir({ reiniciarServe: async () => {} });
+    const casos: Array<[Record<string, unknown>, Record<string, unknown>, Record<string, unknown>]> = [
+      [{ path: pasta, enabled: false, config: { horario: "10:00" } }, { enabled: true, config: { horario: "11:00" } }, { acao: "ligar", config: true }],
+      [{ path: pasta, enabled: true, config: { horario: "10:00" } }, { soNestaMaquina: true, config: { horario: "11:00" } }, { acao: "configurar", config: true, host: "definido" }],
+      [{ path: pasta, enabled: true }, { soNestaMaquina: true }, { acao: "restringir_host", host: "definido" }],
+      [{ path: pasta, enabled: false, host: "outra-maquina" }, { soNestaMaquina: false }, { acao: "configurar", host: "removido" }],
+      // a mesma config junto com desligar: a config não mudou
+      [{ path: pasta, enabled: true, config: { horario: "10:00" } }, { enabled: false, config: { horario: "10:00" } }, { acao: "desligar" }],
+    ];
+    for (const [entrada, put, detalhe] of casos) {
+      gravarModulos({ lembrete: entrada });
+      const desde = ultimaAtividade();
+      expect([put, (await call(s.api, s.ui, "PUT", `${G}/lembrete`, put)).status]).toEqual([put, 200]);
+      const detalhes = configUpdatesDepois(desde);
+      expect([put, detalhes]).toEqual([put, [{ modulo: "lembrete", ...detalhe }]]);
+    }
   });
 
   it("o reinício dispara uma vez só, no fim da resposta ou no fechamento da conexão", () => {

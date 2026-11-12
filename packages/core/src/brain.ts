@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   BrainError, isValidId, slugify,
   type Actor, type Analysis, type Confidence, type Freshness, type FreshnessState, type Note, type NoteStatus, type NoteType, type Principal, type Proposal, type ProposeResult,
@@ -845,7 +846,8 @@ export class Brain {
    * remove chaves. Com uma função, ela recebe a entrada atual lida DENTRO do lock (edições concorrentes não se perdem) e devolve a
    * nova (ou `null`); um erro lançado por ela cancela a gravação e propaga. `acao` é o rótulo da auditoria (`config_update`)
    * que a API conhece (ligar, desligar...); uma função o decide pela entrada antes e depois, lidas dentro do lock. Sem ela, o
-   * rótulo genérico (`adicionar`, `atualizar`, `remover`).
+   * rótulo genérico (`adicionar`, `atualizar`, `remover`). Numa atualização, a auditoria diz também se a config e o host
+   * mudaram (um rótulo só perderia a config de um "ligar com config nova").
    */
   async setModuleEntry(id: string, entry: ModuleEntry | null | ((atual: ModuleEntry | undefined) => ModuleEntry | null), who: Principal, acao?: AcaoDeModulo | ((antes: ModuleEntry | undefined, depois: ModuleEntry | null) => AcaoDeModulo)): Promise<BrainConfig> {
     const actor = authorize(who, "admin", { config: this.config });
@@ -863,7 +865,7 @@ export class Brain {
       const next = ConfigSchema.parse({ ...this.config, modules: Object.fromEntries(modules) });
       writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
       this.config = next;
-      this.log(actor, "config_update", null, { modulo: id, acao: rotulo });
+      this.log(actor, "config_update", null, { modulo: id, acao: rotulo, ...(antes && proxima ? mudancasDaEntrada(antes, proxima) : {}) });
       return next;
     });
   }
@@ -1159,6 +1161,13 @@ export class Brain {
 function TemporalOk(t: Temporal): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t.as_of ?? "") || Number.isNaN(Date.parse(t.as_of))) throw new BrainError("invalid", "temporal.as_of deve ser uma data AAAA-MM-DD");
   if (t.revalidate_when !== undefined && (typeof t.revalidate_when !== "string" || t.revalidate_when.trim().length < 3 || t.revalidate_when.length > 200)) throw new BrainError("invalid", "temporal.revalidate_when: 3–200 caracteres");
+}
+/** O que mudou numa entrada de módulo além do rótulo: `config: true` e `host: "definido" | "removido"`. */
+function mudancasDaEntrada(antes: ModuleEntry, depois: ModuleEntry): { config?: true; host?: "definido" | "removido" } {
+  return {
+    ...(!isDeepStrictEqual(antes.config, depois.config) ? { config: true as const } : {}),
+    ...(depois.host && depois.host !== antes.host ? { host: "definido" as const } : antes.host && !depois.host ? { host: "removido" as const } : {}),
+  };
 }
 function deepMerge(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...a };

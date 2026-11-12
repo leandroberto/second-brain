@@ -447,7 +447,9 @@ novo."
   (`embeddings.api_key_env`, `embeddings.dimensions`, `assistant.claude_path`, `state.external`, `limits`...) 403 "esta
   configuração não se altera pela UI; use o config.yaml", sem gravar nada. Nada disso pode ser contornado pela sessão do navegador.
 - Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
-  `restringir_host` ou `remover`.
+  `restringir_host` ou `remover`. Numa atualização que muda mais de uma coisa (ligar com config nova, restringir ao host
+  junto com a config), o `detail` guarda também `config: true` quando a config mudou e `host: "definido"` ou `"removido"`
+  quando o host mudou.
 - Um `PUT` que não muda a entrada (desligar um desligado, restringir ao host desta máquina o que já tem esse host, a mesma
   config) responde 200 `{ "mensagem": "nada mudou" }`: nada é gravado nem auditado e o `serve` não reinicia, nem na janela
   de frase errada.
