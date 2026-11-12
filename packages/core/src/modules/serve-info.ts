@@ -47,14 +47,26 @@ export function clearServeInfo(root: string): void {
   try { rmSync(arquivo(root), { force: true }); } catch { /* best effort */ }
 }
 
+/** Sonda "o FS deste caminho real não diferencia maiúsculas?" (injetável nos testes). */
+export type SondaCaixa = (caminhoReal: string) => boolean;
+
+const caminhoReal = (vaultRoot: string): string => { try { return realpathSync.native(vaultRoot); } catch { return resolve(vaultRoot); } };
+
 /**
- * Identificador não sensível do vault (sha256 curto do caminho real), devolvido por `GET /api/serve` e usado no nome da pasta
- * de estado. Num FS que não diferencia maiúsculas (/mnt/c, macOS), o mesmo vault pode ser aberto com caixas diferentes: aí o
- * hash é do caminho em minúsculas.
+ * Regra de caixa do FS do vault: num FS que não diferencia maiúsculas (/mnt/c, macOS) o mesmo vault pode ser aberto com caixas
+ * diferentes, e caminhos desse FS são comparados em minúsculas; nos demais, como estão. A impressão do vault e o `vault-path`
+ * da pasta de estado dos módulos usam esta mesma regra.
  */
-export function vaultFingerprint(vaultRoot: string): string {
-  let p: string; try { p = realpathSync.native(vaultRoot); } catch { p = resolve(vaultRoot); }
-  return createHash("sha256").update(semDiferencaDeCaixa(p) ? p.toLowerCase() : p).digest("hex").slice(0, 16);
+export function normalizadorDeCaixa(vaultRoot: string, sonda: SondaCaixa = semDiferencaDeCaixa): (caminho: string) => string {
+  return sonda(caminhoReal(vaultRoot)) ? (p) => p.toLowerCase() : (p) => p;
+}
+
+/**
+ * Identificador não sensível do vault (sha256 curto do caminho real, normalizado por `normalizadorDeCaixa`), devolvido por
+ * `GET /api/serve` e usado no nome da pasta de estado.
+ */
+export function vaultFingerprint(vaultRoot: string, sonda?: SondaCaixa): string {
+  return createHash("sha256").update(normalizadorDeCaixa(vaultRoot, sonda)(caminhoReal(vaultRoot))).digest("hex").slice(0, 16);
 }
 
 /** Sonda o FS do vault: o nome da pasta com a caixa trocada resolve para o mesmo arquivo (mesmo `ino`/`dev`)? */

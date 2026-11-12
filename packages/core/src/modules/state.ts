@@ -7,7 +7,7 @@ import type { Brain } from "../brain.js";
 import { writeFileAtomic } from "../fs-atomic.js";
 import { withFileLock } from "../lock.js";
 import { claimStateOwner, stateSlug } from "../state.js";
-import { vaultFingerprint } from "./serve-info.js";
+import { normalizadorDeCaixa, vaultFingerprint, type SondaCaixa } from "./serve-info.js";
 
 /**
  * Raiz do estado dos módulos (e, ao lado dela, do `serve.json` e do `serve.lock`): SEMPRE fora do vault e NUNCA dividida entre
@@ -15,21 +15,23 @@ import { vaultFingerprint } from "./serve-info.js";
  * `<slug do vault_name>-<impressão do vault>` (o nome sozinho colide: o padrão é o mesmo em todo vault) dentro de
  * `BRAIN_STATE_DIR` ou, sem ele, de `~/.local/state/second-brain`, com a mesma garantia de dono do estado da máquina
  * (`vault-path`) nessa subpasta. `BRAIN_STATE_DIR` aqui é só a raiz: nunca é usado cru nem reivindicado, porque o core o ignora
- * quando `state.external` é falso e ele pode ser o estado de outro vault (externo) herdado do shell. Nasce com modo 0700.
+ * quando `state.external` é falso e ele pode ser o estado de outro vault (externo) herdado do shell. O nome da subpasta e o
+ * `vault-path` dela seguem a mesma regra de caixa (`normalizadorDeCaixa`): num FS que não diferencia maiúsculas, abrir o vault
+ * com outra caixa dá a mesma pasta, sem recusa. `o.sondaCaixa` só existe para os testes. Nasce com modo 0700.
  */
-export function modulesStateRoot(brain: Brain, env: NodeJS.ProcessEnv = process.env): string {
-  const base = brain.vault.stateDir ?? baseSemEstadoExterno(brain, env);
+export function modulesStateRoot(brain: Brain, env: NodeJS.ProcessEnv = process.env, o: { sondaCaixa?: SondaCaixa } = {}): string {
+  const base = brain.vault.stateDir ?? baseSemEstadoExterno(brain, env, o.sondaCaixa);
   const root = join(base, "modules");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   try { chmodSync(root, 0o700); } catch { /* best effort */ }
   return root;
 }
 
-function baseSemEstadoExterno(brain: Brain, env: NodeJS.ProcessEnv): string {
+function baseSemEstadoExterno(brain: Brain, env: NodeJS.ProcessEnv, sonda: SondaCaixa | undefined): string {
   const raiz = env.BRAIN_STATE_DIR || join(env.HOME || homedir(), ".local", "state", "second-brain");
-  const base = join(raiz, `${stateSlug(brain.config.vault_name)}-${vaultFingerprint(brain.vault.root)}`);
+  const base = join(raiz, `${stateSlug(brain.config.vault_name)}-${vaultFingerprint(brain.vault.root, sonda)}`);
   mkdirSync(base, { recursive: true, mode: 0o700 });
-  claimStateOwner(base, brain.vault.root);
+  claimStateOwner(base, brain.vault.root, normalizadorDeCaixa(brain.vault.root, sonda));
   return base;
 }
 

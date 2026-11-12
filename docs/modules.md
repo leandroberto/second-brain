@@ -289,8 +289,9 @@ ctx.badge(3);   // pendências do módulo
 estado de outro vault, externo). O estado nunca viaja pelo sync do vault e nunca é dividido entre vaults: a pasta do vault
 guarda o dono em `vault-path`, e outro vault apontando para ela é recusado. Mover a pasta do vault muda a impressão (o
 estado dos módulos recomeça vazio; copie a pasta antiga se precisar). Num sistema de arquivos que não diferencia maiúsculas
-(`/mnt/c` no WSL, macOS) a impressão usa o caminho em minúsculas: abrir o mesmo vault com outra caixa (`/mnt/c/Users/...` ou
-`/mnt/c/users/...`) dá o mesmo estado. O second-brain não interpreta o conteúdo.
+(`/mnt/c` no WSL, macOS) a impressão e o `vault-path` usam o caminho em minúsculas: abrir o mesmo vault com outra caixa
+(`/mnt/c/Users/...` ou `/mnt/c/users/...`) dá o mesmo estado, sem recusa (um `vault-path` antigo gravado com a caixa da
+primeira abertura continua aceito). O second-brain não interpreta o conteúdo.
 
 O estado deve ficar em **disco local** (ext4, APFS, NTFS). FAT/exFAT e compartilhamentos de rede não são suportados para o
 estado: a trava do `serve` (`serve.lock`) e sua retomada dependem de hard links e de `rename` atômico.
