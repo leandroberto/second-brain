@@ -222,11 +222,17 @@ function criarLockSemHardLink(alvo: string, conteudo: string): boolean {
 
 /**
  * Abre (`w` ou `wx`), escreve e faz `fsync` antes de fechar: uma queda de energia/VM logo depois de o lock aparecer não o deixa
- * vazio (lock vazio recusa por 10 min).
+ * vazio (lock vazio recusa por 10 min). Se a escrita falhar (disco cheio), o arquivo recém-criado sai: um lock vazio deixado
+ * por erro bloquearia o próximo serve.
  */
 function gravarEmDisco(arq: string, conteudo: string, flag: "w" | "wx"): void {
   const fd = openSync(arq, flag, 0o600);
-  try { writeSync(fd, conteudo); fsyncSync(fd); } finally { closeSync(fd); }
+  let gravado = false;
+  try { writeSync(fd, conteudo); fsyncSync(fd); gravado = true; }
+  finally {
+    closeSync(fd);
+    if (!gravado) try { rmSync(arq, { force: true }); } catch { /* best effort */ }
+  }
 }
 
 const pidExiste = (pid: number): boolean => {

@@ -11,12 +11,14 @@ vi.mock("../src/fs-atomic.js", async (original) => ({
 }));
 const erroDoLink = { code: "" };
 const fsyncs = { n: 0 };
+const erroDoWrite = { code: "", naEscrita: 1, n: 0 };
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
   return {
     ...fs,
     linkSync: (...a: Parameters<typeof fs.linkSync>) => { if (erroDoLink.code) throw Object.assign(new Error(`${erroDoLink.code}: link`), { code: erroDoLink.code }); return fs.linkSync(...a); },
     fsyncSync: (...a: Parameters<typeof fs.fsyncSync>) => { fsyncs.n++; return fs.fsyncSync(...a); },
+    writeSync: ((...a: Parameters<typeof fs.writeSync>) => { if (erroDoWrite.code && ++erroDoWrite.n === erroDoWrite.naEscrita) throw Object.assign(new Error(`${erroDoWrite.code}: write`), { code: erroDoWrite.code }); return (fs.writeSync as (...x: unknown[]) => number)(...a); }) as typeof fs.writeSync,
   };
 });
 
@@ -82,6 +84,17 @@ describe("serve.lock em FS sem hard link", () => {
       } finally { erroDoLink.code = ""; }
     });
   }
+
+  it("falha ao escrever o lock criado por wx: o lock vazio não fica (não bloquearia o próximo serve por 10 min)", async () => {
+    const base = mkdtempSync(join(tmpdir(), "brain-falha-"));
+    const root = join(base, "modules"); mkdirSync(root);
+    erroDoLink.code = "EPERM";
+    Object.assign(erroDoWrite, { code: "ENOSPC", naEscrita: 2, n: 0 }); // a 1ª escrita (o tmp) passa; a do lock (wx) falha
+    try { await expect(acquireServeLock(root, { root: base, tokenPath: join(base, "t") })).rejects.toMatchObject({ code: "ENOSPC" }); }
+    finally { erroDoLink.code = ""; erroDoWrite.code = ""; }
+    expect(erroDoWrite.n).toBe(2);
+    expect(readdirSync(base)).toEqual(["modules"]); // nem lock vazio nem tmp
+  });
 
   it("outro erro do link continua sendo erro", async () => {
     const base = mkdtempSync(join(tmpdir(), "brain-falha-"));
