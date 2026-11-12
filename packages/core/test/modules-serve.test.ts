@@ -85,6 +85,20 @@ describe("serve.lock", () => {
   });
 });
 
+describe("serve.lock: a hora do boot nunca anula um serve confirmado vivo", () => {
+  it("trava 'anterior ao boot' (salto de relógio) com o serve dela respondendo vivo: recusa", async () => {
+    const { root, vault, lock } = montar();
+    writeFileSync(vault.tokenPath, "tok");
+    const url = await responder(200, JSON.stringify({ pid: process.ppid, vault: vaultFingerprint(vault.root) }));
+    writeServeInfo(root, { url, pid: process.ppid, iniciado: "" });
+    writeFileSync(lock, JSON.stringify({ pid: process.ppid, nonce: "vivo", desde: "" }));
+    const antesDoBoot = new Date(Date.now() - uptime() * 1000 - 5 * 60_000);
+    utimesSync(lock, antesDoBoot, antesDoBoot);
+    await expect(acquireServeLock(root, vault)).rejects.toThrow(/já há um brain serve rodando para este vault/);
+    expect(JSON.parse(readFileSync(lock, "utf8")).nonce).toBe("vivo");
+  });
+});
+
 describe("vaultFingerprint", () => {
   const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 

@@ -134,7 +134,13 @@ const MARGEM_BOOT_MS = 60_000;
 /** Lock gravado antes do último boot: o processo dono não sobreviveu ao reboot, mesmo que o pid exista de novo. */
 const antesDoBoot = (mtimeMs: number): boolean => mtimeMs < Date.now() - uptime() * 1000 - MARGEM_BOOT_MS;
 
-/** Cria o lock já com o conteúdo: tmp + `link` (atômico, falha com EEXIST se já houver lock). `false` = já existe. */
+/** Erros de `link` de um sistema de arquivos sem hard link (FAT/exFAT, compartilhamento de rede). */
+const SEM_HARD_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"]);
+
+/**
+ * Cria o lock já com o conteúdo: tmp + `link` (atômico, falha com EEXIST se já houver lock). `false` = já existe. FS sem hard
+ * link vira `state_unavailable` com a orientação (o estado precisa ficar em disco local).
+ */
 function criarLock(alvo: string, conteudo: string): boolean {
   const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
   try {
@@ -142,7 +148,9 @@ function criarLock(alvo: string, conteudo: string): boolean {
     linkSync(tmp, alvo);
     return true;
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") return false;
+    if (code && SEM_HARD_LINK.has(code)) throw new BrainError("state_unavailable", "o estado do second-brain precisa ficar em disco local (ext4/NTFS); este sistema de arquivos não suporta hard links");
     throw e;
   } finally {
     try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
@@ -168,8 +176,8 @@ const lerLock = (arq: string): { pid: number; nonce?: string } => {
  * começo do `startServe`, antes de carregar qualquer coisa, e com o mtime renovado a cada 60 s enquanto o serve vive.
  * Quando o lock existe:
  * - pid deste processo: só é válido se o nonce for de uma aquisição deste processo (outro `startServe` aqui); senão é velho;
- * - mtime anterior ao último boot: velho (o pid pode ter renascido em outro processo);
  * - pid inexistente: velho;
+ * - mtime anterior ao último boot, sem serve confirmado vivo: velho (o pid pode ter renascido em outro processo);
  * - pid vivo e `serve.json` desse pid: `serveEstado` decide (`morto` = pid reusado depois de uma queda, velho; `vivo` ou
  *   `indeterminado` = recusa);
  * - pid vivo sem `serve.json` dele (o dono ainda está subindo): recusa, a menos que o lock tenha mais de 10 min (velho).
@@ -200,15 +208,15 @@ export async function acquireServeLock(root: string, vault: { root: string; toke
     // cada ramo que não recusa conclui que o lock é velho (dono morto, pid reusado, ou lock ilegível)
     if (dono.pid === process.pid) {
       if (dono.nonce && noncesDoProcesso.has(dono.nonce)) throw recusar("já há um brain serve subindo ou rodando neste processo para este vault");
-    } else if (antesDoBoot(mtimeMs)) {
-      // gravado antes do último boot: o dono não existe mais, mesmo que o pid tenha renascido
     } else if (dono.pid && pidExiste(dono.pid)) {
+      // lock anterior ao último boot: o dono não existe mais, mesmo que o pid tenha renascido. Só vale quando a vivacidade NÃO
+      // foi confirmada: um salto de relógio (NTP, WSL retomando) move a hora do boot, e um serve que responde vivo nunca é velho
       if (ler(root)?.pid === dono.pid) {
         const e = await serveEstado(root, vault);
         if (e.estado === "vivo") throw recusar(`já há um brain serve rodando para este vault em ${e.url}`);
-        if (e.estado === "indeterminado") throw recusar(`há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
-      } else {
-        if (Date.now() - mtimeMs <= LOCK_VELHO_MS) throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
+        if (e.estado === "indeterminado" && !antesDoBoot(mtimeMs)) throw recusar(`há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
+      } else if (!antesDoBoot(mtimeMs) && Date.now() - mtimeMs <= LOCK_VELHO_MS) {
+        throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
       }
     }
     retomar(alvo, dono.nonce);
