@@ -86,7 +86,7 @@ describe("modulesStateRoot em FS que não diferencia maiúsculas", () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  // pasta do vault sem letras (C:\Windows\System32\0409): a sonda sobe até "System32"
+  // pasta do vault sem letras (C:\Windows\System32\0409): a sonda usa outra entrada de System32
   const semLetras = "/mnt/c/Windows/System32/0409";
   const temSemLetras = existsSync(semLetras) && mesmoArquivo("/mnt/c/Windows/System32", "/mnt/c/Windows/system32");
   it.skipIf(!temSemLetras)("WSL: vault com nome sem letras em /mnt/c também normaliza a caixa", () => {
