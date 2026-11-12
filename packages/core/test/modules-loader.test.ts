@@ -65,6 +65,30 @@ describe("loadModules", () => {
     expect(reg.get("remoto")).toMatchObject({ status: "inativo", causa: "inativo nesta máquina" });
   });
 
+  it("variável de ambiente não definida no path deixa o módulo ausente (nunca vira vazio)", async () => {
+    delete process.env.BRAIN_TESTE_NAO_DEFINIDA;
+    const b = await comModulos({ semvar: { path: "$BRAIN_TESTE_NAO_DEFINIDA/mods/semvar" } });
+    const reg = await loadModules(b, { modo: "serve" });
+    expect(reg.get("semvar")).toMatchObject({ status: "ausente", causa: "variável de ambiente BRAIN_TESTE_NAO_DEFINIDA não definida no path do módulo" });
+  });
+
+  it("causas de sdk incompatível e id inválido passam pela higiene de mensagem (sem segredo, truncadas)", async () => {
+    const TOKEN = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    const base = mkdtempSync(join(tmpdir(), "brain-modhig-"));
+    const criar = (nome: string, def: string) => {
+      mkdirSync(join(base, nome));
+      writeFileSync(join(base, nome, "package.json"), JSON.stringify({ name: nome, version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+      writeFileSync(join(base, nome, "index.js"), `export default ${def};`);
+    };
+    criar("sdksecreto", `{ sdk: ${JSON.stringify(TOKEN)}, id: "sdksecreto", nome: "x", versao: "1" }`);
+    criar("idsecreto", `{ sdk: 1, id: ${JSON.stringify(TOKEN)}, nome: "x", versao: "1" }`);
+    criar("idlongo", `{ sdk: 1, id: ${JSON.stringify("x".repeat(400))}, nome: "x", versao: "1" }`);
+    const b = await comModulos({ sdksecreto: { path: join(base, "sdksecreto") }, idsecreto: { path: join(base, "idsecreto") }, idlongo: { path: join(base, "idlongo") } });
+    const reg = await loadModules(b, { modo: "serve" });
+    for (const id of ["sdksecreto", "idsecreto"]) expect(reg.get(id)).toMatchObject({ status: "falho", causa: "[mensagem omitida: possível segredo]" });
+    expect(reg.get("idlongo")!.causa).toHaveLength(300);
+  });
+
   it("pasta relativa deixa o módulo ausente com a causa clara", async () => {
     const antes = process.env.BRAIN_MODULES_DIR;
     process.env.BRAIN_MODULES_DIR = "modulos-relativos";
@@ -284,7 +308,7 @@ describe("registry de erros", () => {
 describe("resolveModuleDir e validar", () => {
   it("ordem: path (~/$VAR), BRAIN_MODULES_DIR, padrão", () => {
     const env = { HOME: "/h", BRAIN_MODULES_DIR: "/mods", X: "/x" } as NodeJS.ProcessEnv;
-    expect(resolveModuleDir("m", { path: "~/a/$X/b" }, env)).toBe("/h/a//x/b");
+    expect(resolveModuleDir("m", { path: "~/a/$X/b" }, env)).toBe("/h/a/x/b"); // normalizado
     expect(resolveModuleDir("m", {}, env)).toBe("/mods/m");
     expect(resolveModuleDir("m", {}, { HOME: "/h" } as NodeJS.ProcessEnv)).toBe("/h/.local/share/second-brain/modules/m");
   });
@@ -292,8 +316,12 @@ describe("resolveModuleDir e validar", () => {
   it("caminho relativo é recusado (o cwd do serve e o do MCP divergem)", () => {
     expect(() => resolveModuleDir("m", {}, { HOME: "/h", BRAIN_MODULES_DIR: "mods" } as NodeJS.ProcessEnv)).toThrow("BRAIN_MODULES_DIR deve ser absoluto");
     expect(() => resolveModuleDir("m", { path: "./mods/m" }, { HOME: "/h" } as NodeJS.ProcessEnv)).toThrow("modules.m.path deve ser absoluto");
-    // relativo DEPOIS da expansão: variável ausente vira vazio
-    expect(() => resolveModuleDir("m", { path: "$NAO_TEM/m" }, { HOME: "/h" } as NodeJS.ProcessEnv)).not.toThrow(); // "/m": absoluto
+    // variável ausente nunca vira vazio
+    expect(() => resolveModuleDir("m", { path: "$NAO_TEM/m" }, { HOME: "/h" } as NodeJS.ProcessEnv)).toThrow("variável de ambiente NAO_TEM não definida no path do módulo");
+    expect(() => resolveModuleDir("m", { path: "${NAO_TEM}/m" }, { HOME: "/h" } as NodeJS.ProcessEnv)).toThrow("variável de ambiente NAO_TEM não definida no path do módulo");
+    expect(() => resolveModuleDir("m", {}, { HOME: "/h", BRAIN_MODULES_DIR: "$NAO_TEM/mods" } as NodeJS.ProcessEnv)).toThrow("variável de ambiente NAO_TEM não definida em BRAIN_MODULES_DIR");
+    expect(resolveModuleDir("m", { path: "/a/./b/../c/" }, { HOME: "/h" } as NodeJS.ProcessEnv)).toBe("/a/c/");
+    // relativo DEPOIS da expansão
     expect(() => resolveModuleDir("m", { path: "${REL}/m" }, { HOME: "/h", REL: "rel" } as NodeJS.ProcessEnv)).toThrow("deve ser absoluto");
     expect(resolveModuleDir("m", { path: "$BASE/m" }, { HOME: "/h", BASE: "/b" } as NodeJS.ProcessEnv)).toBe("/b/m");
   });

@@ -38,7 +38,8 @@ Alternativa: `modules.<id>.path` na config do vault (aceita `~` e `$VAR`), para 
 
 `BRAIN_MODULES_DIR` e `modules.<id>.path` precisam ser **absolutos** depois da expansão de `~` e `$VAR`: um caminho relativo
 seria resolvido pela pasta atual de cada processo (o `serve` e o MCP divergem). Relativo deixa o módulo `ausente` com a causa
-("BRAIN_MODULES_DIR deve ser absoluto", "modules.<id>.path deve ser absoluto").
+("BRAIN_MODULES_DIR deve ser absoluto", "modules.<id>.path deve ser absoluto"). Uma `$VAR` não definida também deixa o
+módulo `ausente` ("variável de ambiente <VAR> não definida no path do módulo"); ela nunca vira texto vazio.
 
 ## Configuração no vault
 

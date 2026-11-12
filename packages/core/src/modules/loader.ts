@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, hostname as osHostname } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, normalize, resolve } from "node:path";
 import { BrainError } from "@brain/shared";
 import { pathToFileURL } from "node:url";
 import { SDK_VERSION, type ModuleDef, type ModuleIa } from "@brain/module-sdk";
@@ -14,10 +14,19 @@ import { validar } from "./schema.js";
 import { serveEstado } from "./serve-info.js";
 import { modulesStateRoot } from "./state.js";
 
-/** Expande `~` e `$VAR`/`${VAR}` num caminho configurado. Variável ausente vira vazio. */
-function expandir(p: string, env: NodeJS.ProcessEnv): string {
+/**
+ * Expande `~` e `$VAR`/`${VAR}` num caminho configurado e o normaliza. Variável não definida lança `invalid` (vazia em
+ * silêncio mudaria a pasta do módulo); `onde` completa a mensagem ("no path do módulo", "em BRAIN_MODULES_DIR").
+ */
+function expandir(p: string, env: NodeJS.ProcessEnv, onde: string): string {
   const home = env.HOME || homedir();
-  return p.replace(/^~(?=$|\/)/, home).replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, a, b) => env[a ?? b] ?? "");
+  const out = p.replace(/^~(?=$|\/)/, home).replace(/\$\{(\w+)\}|\$(\w+)/g, (_m, a: string | undefined, b: string | undefined) => {
+    const nome = (a ?? b)!;
+    const v = env[nome];
+    if (v === undefined) throw new BrainError("invalid", `variável de ambiente ${nome} não definida ${onde}`);
+    return v;
+  });
+  return normalize(out);
 }
 
 /** Caminho já expandido precisa ser absoluto: relativo resolveria pelo cwd, e o do `serve` e o do MCP divergem. */
@@ -28,11 +37,11 @@ function absoluto(p: string, origem: string): string {
 
 /**
  * Ordem: `path` da config (com `~`/`$VAR`), depois `$BRAIN_MODULES_DIR/<id>`, por fim `~/.local/share/second-brain/modules/<id>`.
- * Lança `invalid` se o caminho, depois da expansão, for relativo.
+ * Lança `invalid` se o caminho usar variável não definida ou, depois da expansão, for relativo.
  */
 export function resolveModuleDir(id: string, entry: { path?: string }, env: NodeJS.ProcessEnv = process.env): string {
-  if (entry.path) return absoluto(expandir(entry.path, env), `modules.${id}.path`);
-  if (env.BRAIN_MODULES_DIR) return join(absoluto(expandir(env.BRAIN_MODULES_DIR, env), "BRAIN_MODULES_DIR"), id);
+  if (entry.path) return absoluto(expandir(entry.path, env, "no path do módulo"), `modules.${id}.path`);
+  if (env.BRAIN_MODULES_DIR) return join(absoluto(expandir(env.BRAIN_MODULES_DIR, env, "em BRAIN_MODULES_DIR"), "BRAIN_MODULES_DIR"), id);
   return join(env.HOME || homedir(), ".local", "share", "second-brain", "modules", id);
 }
 
@@ -110,8 +119,9 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
 
     m.def = def;
     m.versao = typeof def.versao === "string" ? def.versao : undefined;
-    if (def.sdk !== SDK_VERSION) { falhar(`sdk incompatível: o módulo declara sdk ${String(def.sdk)}, o Second Brain entende sdk ${SDK_VERSION}`); continue; }
-    if (typeof def.id !== "string" || !MODULE_ID_RE.test(def.id)) { falhar(`id do módulo inválido: "${String(def.id)}" (use ${MODULE_ID_RE.source})`); continue; }
+    // valores do módulo interpolados na causa: mesma higiene dos erros (truncada, sem possível segredo)
+    if (def.sdk !== SDK_VERSION) { falhar(mensagemSegura(`sdk incompatível: o módulo declara sdk ${String(def.sdk)}, o Second Brain entende sdk ${SDK_VERSION}`)); continue; }
+    if (typeof def.id !== "string" || !MODULE_ID_RE.test(def.id)) { falhar(mensagemSegura(`id do módulo inválido: "${String(def.id)}" (use ${MODULE_ID_RE.source})`)); continue; }
     if (def.id !== id) { falhar(`id do módulo ("${def.id}") difere da chave na config ("${id}")`); continue; }
     if (!MODULE_ID_RE.test(id)) { falhar(`id inválido na config: "${id}"`); continue; }
 
