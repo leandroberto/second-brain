@@ -11,7 +11,7 @@ const aviso = (n: number, extra: Partial<AvisoModulo> = {}): AvisoModulo => ({
   ...extra,
 });
 
-function montar(respostas: Array<{ avisos: AvisoModulo[]; cursor: string; total: number } | Error>) {
+function montar(respostas: Array<{ avisos: AvisoModulo[]; cursor: string; total: number } | Error>, extra: { notificar?: (n: { titulo: string }) => void; abrir?: (u: string) => void } = {}) {
   const fila = [...respostas];
   const chamadas: Array<string | undefined> = [];
   const marcados: string[] = [];
@@ -29,8 +29,8 @@ function montar(respostas: Array<{ avisos: AvisoModulo[]; cursor: string; total:
   const totais: number[] = [];
   const vigia = criarVigiaAvisos({
     cliente,
-    notificar: (n) => void notificacoes.push(n),
-    abrir: (u) => void abertas.push(u),
+    notificar: (n) => { extra.notificar?.(n); notificacoes.push(n); },
+    abrir: (u) => { extra.abrir?.(u); abertas.push(u); },
     base: "http://localhost:3737",
     aoTotal: (n) => void totais.push(n),
   });
@@ -89,6 +89,68 @@ describe("vigia de avisos de módulo", () => {
     await t.vigia.agora();
     await t.vigia.agora();
     expect(t.totais).toEqual([0, 4]);
+  });
+
+  test("uma notificação que falha não impede as outras nem o avanço do cursor", async () => {
+    const erro = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const t = montar(
+        [{ avisos: [aviso(1), aviso(2), aviso(3)], cursor: "c1", total: 3 }, { avisos: [], cursor: "c1", total: 3 }],
+        { notificar: (n) => { if (n.titulo === "Aviso 2") throw new Error("notificação indisponível"); } },
+      );
+      await t.vigia.agora();
+      // a que falhou não entra na lista de entregues, mas as outras saíram e o cursor avançou
+      expect(t.notificacoes.map((n) => n.titulo)).toEqual(["Aviso 3", "Aviso 1"]);
+      expect(t.totais).toEqual([3]);
+      await t.vigia.agora();
+      expect(t.chamadas).toEqual([undefined, "c1"]);
+      expect(t.notificacoes).toHaveLength(2); // a falha não é repetida a cada ciclo
+      expect(erro).toHaveBeenCalled();
+    } finally {
+      erro.mockRestore();
+    }
+  });
+
+  test("abrir falha, mas o clique ainda marca visto", async () => {
+    const erro = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const t = montar([{ avisos: [aviso(1, { link: "item/3" })], cursor: "c1", total: 1 }], { abrir: () => { throw new Error("sem navegador"); } });
+      await t.vigia.agora();
+      t.notificacoes[0]!.aoClicar();
+      await vi.waitFor(() => expect(t.marcados).toEqual(["a1"]));
+      expect(t.abertas).toEqual([]);
+      expect(erro).toHaveBeenCalled();
+    } finally {
+      erro.mockRestore();
+    }
+  });
+
+  test("depois de marcar visto no clique, reconsulta já (o total da bandeja não espera o intervalo)", async () => {
+    const t = montar([
+      { avisos: [aviso(1)], cursor: "c1", total: 1 },
+      { avisos: [], cursor: "c1", total: 0 },
+    ]);
+    await t.vigia.agora();
+    t.notificacoes[0]!.aoClicar();
+    await vi.waitFor(() => expect(t.chamadas).toEqual([undefined, "c1"]));
+    await vi.waitFor(() => expect(t.totais).toEqual([1, 0]));
+    expect(t.marcados).toEqual(["a1"]);
+  });
+
+  test("a lista de já notificados é podada: só os 500 mais recentes ficam", async () => {
+    const lote = (de: number, ate: number) => Array.from({ length: ate - de + 1 }, (_, i) => aviso(de + i, { criado: `2026-11-11T10:00:${String(de + i).padStart(6, "0")}Z` }));
+    // 5 por ciclo: o resto de cada resposta só entra na lista de notificados
+    const t = montar([
+      { avisos: lote(1, 600), cursor: "c1", total: 600 },
+      { avisos: [aviso(1)], cursor: "c2", total: 600 }, // a1 saiu da lista (podada): volta a notificar
+      { avisos: [aviso(600)], cursor: "c3", total: 600 }, // a600 ainda está na lista: não repete
+    ]);
+    await t.vigia.agora();
+    const antes = t.notificacoes.length;
+    await t.vigia.agora();
+    expect(t.notificacoes.length).toBe(antes + 1);
+    await t.vigia.agora();
+    expect(t.notificacoes.length).toBe(antes + 1);
   });
 
   test("iniciar consulta já e a cada intervalo; parar encerra", async () => {

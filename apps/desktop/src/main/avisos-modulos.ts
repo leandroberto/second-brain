@@ -19,6 +19,8 @@ export interface AvisoModulo {
 
 export const INTERVALO_AVISOS_MS = 60_000;
 const MAX_NOTIFICACOES_POR_CICLO = 5;
+/** Quantos ids já notificados a memória guarda (os mais recentes); mais velhos que isso o cursor já deixou para trás. */
+const MAX_JA_NOTIFICADOS = 500;
 const ID_MODULO = /^[a-z][a-z0-9-]{1,30}$/;
 
 /** `link` vem do servidor: só vale como resto relativo da aba do módulo. */
@@ -61,9 +63,17 @@ export function criarVigiaAvisos(o: OpcoesVigiaAvisos): { iniciar(): void; parar
     } catch (e) {
       console.error('[avisos]', e);
     }
+    // depois de marcar (ou de falhar em marcar) reconsulta já: o total da bandeja não espera o próximo intervalo
     void Promise.resolve()
       .then(() => o.cliente.marcarVisto(aviso.id))
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .then(() => agora());
+  }
+
+  function lembrar(id: string): void {
+    jaNotificados.add(id);
+    // o Set guarda a ordem de inserção: poda os mais antigos
+    while (jaNotificados.size > MAX_JA_NOTIFICADOS) jaNotificados.delete(jaNotificados.values().next().value as string);
   }
 
   async function consultar(): Promise<void> {
@@ -73,11 +83,16 @@ export function criarVigiaAvisos(o: OpcoesVigiaAvisos): { iniciar(): void; parar
         .filter((a) => !a.visto && !jaNotificados.has(a.id))
         .sort((a, b) => (a.criado < b.criado ? 1 : a.criado > b.criado ? -1 : 0));
       for (const a of novos.slice(0, MAX_NOTIFICACOES_POR_CICLO)) {
-        jaNotificados.add(a.id);
-        o.notificar({ titulo: a.titulo, corpo: a.corpo ?? '', aoClicar: () => aoClicar(a) });
+        // uma notificação que falha não impede as outras nem o avanço do cursor
+        try {
+          o.notificar({ titulo: a.titulo, corpo: a.corpo ?? '', aoClicar: () => aoClicar(a) });
+        } catch (e) {
+          console.error('[avisos]', e);
+        }
       }
-      // os que passaram do limite só contam no total: não voltam como notificação nos ciclos seguintes
-      for (const a of novos.slice(MAX_NOTIFICACOES_POR_CICLO)) jaNotificados.add(a.id);
+      // todos entram na lista (os que passaram do limite só contam no total: não voltam como notificação), do mais antigo
+      // ao mais novo, para a poda descartar sempre os mais velhos
+      for (const a of [...novos].reverse()) lembrar(a.id);
       cursor = r.cursor;
       o.aoTotal(r.total);
     } catch {
