@@ -146,9 +146,11 @@ describe.skipIf(!chrome)("UI web (browser real)", () => {
     await nav("#/inbox");
     await page.getByRole("button", { name: /Selecionar elegíveis/ }).click();
     const before = brain.db.rows("1=1", [], "id", 1000).length;
-    page.once("dialog", (d) => { expect(d.message()).toMatch(/Criar \d+ conhecimento/); void d.accept(); });
+    let confirmacao = ""; // aceita sempre (uma asserção no ouvinte deixaria o diálogo aberto); a mensagem é conferida depois
+    page.once("dialog", (d) => { confirmacao = d.message(); void d.accept(); });
     await page.getByRole("button", { name: /Aprovar \d+ em lote/ }).click();
     await toast(/^\d+ criado\(s\)/); // a UI recebeu a resposta e recarregou a lista
+    expect(confirmacao).toMatch(/Criar \d+ conhecimento/);
     await vi.waitFor(async () => { await brain.sync(); expect(brain.db.rows("1=1", [], "id", 1000).length).toBeGreaterThan(before); }, { timeout: 10000 });
     await vi.waitFor(async () => expect((await brain.git.log(undefined, 1))[0]!.subject).toMatch(/bulk approve/), { timeout: 10000 });
   });
