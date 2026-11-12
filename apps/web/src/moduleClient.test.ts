@@ -7,7 +7,7 @@ interface Conexao { api(c: string): Promise<unknown>; resto: string }
 
 let pai: { postMessage: ReturnType<typeof vi.fn> };
 let ouvintes: Ouvinte[];
-let janela: { parent: unknown; location: { hash: string }; history: { replaceState: ReturnType<typeof vi.fn> }; addEventListener: (t: string, f: Ouvinte) => void };
+let janela: { parent: unknown; location: { hash: string; pathname?: string; search?: string }; history: { replaceState: ReturnType<typeof vi.fn> }; addEventListener: (t: string, f: Ouvinte) => void };
 const enviar = (data: unknown, source: unknown = pai) => ouvintes.forEach((f) => f({ source, data }));
 const enviados = () => pai.postMessage.mock.calls.map((c) => c[0] as { type: string; nonce?: string });
 const preparar = (hash: string) => { janela.location.hash = hash; };
@@ -20,8 +20,8 @@ beforeEach(() => {
   pai = { postMessage: vi.fn() };
   ouvintes = [];
   janela = {
-    parent: pai, location: { hash: "#n=n1&r=a%2Fb" }, addEventListener: (_t: string, f: Ouvinte) => ouvintes.push(f),
-    history: { replaceState: vi.fn((_s: unknown, _t: string, url: string) => { janela.location.hash = url; }) },
+    parent: pai, location: { hash: "#n=n1&r=a%2Fb", pathname: "/modules/x/index.html", search: "" }, addEventListener: (_t: string, f: Ouvinte) => ouvintes.push(f),
+    history: { replaceState: vi.fn((_s: unknown, _t: string, url: string) => { janela.location.hash = url.slice(url.indexOf("#")); }) },
   };
   vi.stubGlobal("window", janela);
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
@@ -49,6 +49,26 @@ describe("brain-module-client", () => {
     await c;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(enviados().find((m) => m.type === "brain:renovar")).toEqual({ type: "brain:renovar", nonce: "abc123" });
+  });
+
+  it("replaceState que lança não derruba o handshake: o nonce vai, com aviso no console", async () => {
+    preparar("#n=abc123&r=x");
+    janela.history.replaceState.mockImplementation(() => { throw new Error("SecurityError"); });
+    const aviso = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { conectar } = await carregar();
+      void conectar();
+      expect(enviados().find((m) => m.type === "brain:pronto")).toEqual({ type: "brain:pronto", nonce: "abc123" });
+      expect(aviso).toHaveBeenCalled();
+    } finally { aviso.mockRestore(); }
+  });
+
+  it("a reescrita do hash preserva caminho e query da página (<base>)", async () => {
+    preparar("#n=abc123&r=x");
+    Object.assign(janela.location, { pathname: "/modules/ok/index.html", search: "?q=1" });
+    const { conectar } = await carregar();
+    void conectar();
+    expect(janela.history.replaceState).toHaveBeenCalledWith(null, "", "/modules/ok/index.html?q=1#x");
   });
 
   it("sem o fragmento (outro documento, recarga) o nonce vai vazio e o hash não muda", async () => {

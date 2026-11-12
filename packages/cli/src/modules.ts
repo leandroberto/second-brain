@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { EventEmitter } from "node:events";
-import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
+import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, compilarRota, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
 
@@ -203,6 +203,13 @@ async function rodarTarefa(b: Brain, id: string, tarefa: string, o: { ocorrencia
   return r.codigo;
 }
 
+/** Uma causa por rota cujo caminho não compila (`compilarRota`, a mesma função do carregador e da API). */
+export function rotasComCaminhoInvalido(rotas: unknown): string[] {
+  if (!Array.isArray(rotas)) return [];
+  return rotas.flatMap((r: { metodo?: unknown; caminho?: unknown } | null) =>
+    typeof r?.caminho === "string" && !compilarRota(r.caminho) ? [`rota inválida: ${String(r.metodo)} ${r.caminho} (um :param ocupa o segmento inteiro e o nome não se repete)`] : []);
+}
+
 /**
  * `brain modules check <pasta>`: valida o módulo sem ligá-lo, com o carregador real em modo `definicoes` num registro isolado
  * (vault e estado temporários, nada do vault do usuário). A config do módulo não é exigida (a checagem não a tem).
@@ -211,7 +218,12 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
   const dir = resolve(pasta);
   if (!existsSync(join(dir, "package.json"))) return { causas: [`não é um pacote de módulo (sem package.json): ${dir}`] };
   let id = basename(dir);
-  try { const def = await importModuleDef(dir); if (typeof def.id === "string" && def.id) id = def.id; }
+  let rotasRuins: string[];
+  try {
+    const def = await importModuleDef(dir);
+    if (typeof def.id === "string" && def.id) id = def.id;
+    rotasRuins = rotasComCaminhoInvalido(def.rotas); // direto, sem depender de o carregador chegar a validar
+  }
   catch (e) { return { causas: [`falha ao importar o módulo: ${(e as Error)?.message ?? String(e)}`] }; }
 
   const tmp = mkdtempSync(join(tmpdir(), "brain-modules-check-"));
@@ -224,7 +236,7 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
     const m = (await loadModules(b, { modo: "definicoes", validarConfig: false })).get(id);
     const causas: string[] = [];
     if (!MODULE_ID_RE.test(id)) causas.push(`id do módulo inválido: "${id}" (use ${MODULE_ID_RE.source})`);
-    if (!m || m.status !== "ativo" || !m.def) { causas.push(m?.causa ?? "módulo não carregado"); return { id, versao: m?.versao, causas: [...new Set(causas)] }; }
+    if (!m || m.status !== "ativo" || !m.def) { causas.push(m?.causa ?? "módulo não carregado", ...rotasRuins); return { id, versao: m?.versao, causas: [...new Set(causas)] }; }
     const def = m.def;
     if (typeof def.nome !== "string" || !def.nome.trim()) causas.push("nome ausente");
     if (typeof def.versao !== "string" || !def.versao.trim()) causas.push("versao ausente");
@@ -239,6 +251,7 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
     for (const r of Array.isArray(def.rotas) ? def.rotas : def.rotas === undefined ? [] : [null]) {
       if (!r || !["GET", "POST", "PUT", "DELETE"].includes(r.metodo) || typeof r.caminho !== "string" || !r.caminho.startsWith("/") || typeof r.rodar !== "function") causas.push(`rota inválida: ${r ? `${String(r.metodo)} ${String(r.caminho)}` : String(r)} (metodo GET/POST/PUT/DELETE, caminho com "/" e rodar)`);
     }
+    causas.push(...rotasRuins);
     const tarefas = new Set<string>();
     for (const t of Array.isArray(def.tarefas) ? def.tarefas : def.tarefas === undefined ? [] : [null]) {
       if (!t || typeof t.id !== "string" || !t.id || typeof t.rodar !== "function") { causas.push(`tarefa inválida: ${t ? String(t.id) : String(t)} (id e rodar)`); continue; }

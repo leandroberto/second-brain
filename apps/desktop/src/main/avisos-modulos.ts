@@ -87,6 +87,7 @@ export function criarVigiaAvisos(o: OpcoesVigiaAvisos): { iniciar(): void; parar
   async function consultar(): Promise<void> {
     try {
       const r = await o.cliente.avisos(cursor);
+      if (parado) return; // parou durante a consulta: descarta o resultado (nada de notificação nem total)
       const novos = r.avisos
         .filter((a) => !a.visto && !jaNotificados.has(a.id))
         .sort((a, b) => (a.criado < b.criado ? 1 : a.criado > b.criado ? -1 : 0));

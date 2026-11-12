@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, vaultFingerprint, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
-import { dispararTarefa, estadoDosModulos, modulesChecks } from "../src/modules.js";
+import { checarModulo, dispararTarefa, estadoDosModulos, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const run = promisify(execFile);
@@ -533,6 +533,22 @@ describe("brain modules (processo real)", () => {
     const r = await brainCli(["modules", "check", join(CORE_FIX, "rota-colada")]).catch((e) => e as { code: number; stdout: string });
     expect(r.code).toBe(1);
     expect(r.stdout).toContain("rota inválida: GET /:a:b");
+  });
+
+  it("check lista cada rota inválida por conta própria, mesmo quando o módulo falha por outro motivo", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-check-rotas-"));
+    try {
+      writeFileSync(join(d, "package.json"), JSON.stringify({ name: "x", type: "module", exports: { ".": "./index.js" } }));
+      // sdk errado (o carregador falha antes de qualquer outra coisa) e três rotas: duas inválidas, uma válida
+      writeFileSync(join(d, "index.js"), `export default { sdk: 99, id: "rotas-ruins", nome: "R", versao: "1.0.0", rotas: [
+        { metodo: "GET", caminho: "/:a:b", rodar: () => null }, { metodo: "POST", caminho: "/x/:id/:id", rodar: () => null }, { metodo: "GET", caminho: "/ok/:id", rodar: () => null } ] };`);
+      const r = await checarModulo(d);
+      expect(r.causas.some((c) => c.includes("sdk"))).toBe(true);
+      expect(r.causas.filter((c) => c.startsWith("rota inválida:"))).toEqual([
+        "rota inválida: GET /:a:b (um :param ocupa o segmento inteiro e o nome não se repete)",
+        "rota inválida: POST /x/:id/:id (um :param ocupa o segmento inteiro e o nome não se repete)",
+      ]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
   });
 
   it("modules check aceita um módulo válido", async () => {

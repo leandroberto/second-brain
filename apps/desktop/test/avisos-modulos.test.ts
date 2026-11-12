@@ -169,6 +169,20 @@ describe("vigia de avisos de módulo", () => {
     expect(chamadas).toHaveLength(3);
   });
 
+  test("consulta em andamento quando parar() é chamado descarta o resultado (sem notificar nem informar total)", async () => {
+    let liberar!: () => void;
+    const notificados: string[] = []; const totais: number[] = [];
+    const v = criarVigiaAvisos({
+      cliente: { avisos: async () => { await new Promise<void>((ok) => { liberar = ok; }); return { avisos: [aviso(1)], cursor: "c1", total: 1 }; }, marcarVisto: async () => undefined } as unknown as ClienteApi,
+      notificar: (n) => void notificados.push((n as { titulo: string }).titulo), abrir: () => undefined, base: "http://localhost:3737", aoTotal: (n) => void totais.push(n),
+    });
+    const p = v.agora();
+    v.parar();
+    liberar(); await p;
+    expect(notificados).toEqual([]);
+    expect(totais).toEqual([]);
+  });
+
   test("a lista de já notificados é podada: só os 500 mais recentes ficam", async () => {
     const base = Date.UTC(2026, 10, 11, 10, 0, 0);
     const lote = (de: number, ate: number) => Array.from({ length: ate - de + 1 }, (_, i) => aviso(de + i, { criado: new Date(base + (de + i) * 1000).toISOString() }));

@@ -18,14 +18,17 @@ const SEM_EXPIRA_MS = 11 * 3600_000; // `expira` ausente ou ilegível: o token d
  * nonce é vazio e o SB recusa o `brain:pronto`.
  */
 const NONCE = (() => {
+  const m = /^#n=([A-Za-z0-9_-]+)&r=(.*)$/.exec(window.location.hash);
+  if (!m) return "";
+  // o nonce é guardado ANTES de mexer no hash: falha na reescrita não pode derrubar o handshake
+  const nonce = m[1];
   try {
-    const m = /^#n=([A-Za-z0-9_-]+)&r=(.*)$/.exec(window.location.hash);
-    if (!m) return "";
     let resto = m[2];
     try { resto = decodeURIComponent(resto); } catch { /* mantém cru */ }
-    window.history.replaceState(null, "", "#" + resto);
-    return m[1];
-  } catch { return ""; }
+    const { pathname, search } = window.location; // só o fragmento muda (a página pode ter <base>)
+    window.history.replaceState(null, "", pathname + search + "#" + resto);
+  } catch (e) { console.warn("brain-module-client: não consegui tirar o nonce do hash", e); }
+  return nonce;
 })();
 
 let conexao;
