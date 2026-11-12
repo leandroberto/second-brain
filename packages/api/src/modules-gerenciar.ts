@@ -122,7 +122,10 @@ export class GerenciarModulos {
 
   /**
    * Exige a frase-senha do revisor quando ela existe (ou é exigida pela config e falta: recusa sempre). Até 5 erros por janela de
-   * 60 s; passou disso, 429 até a janela passar, mesmo com a frase certa. A frase certa zera os erros (só quem a conhece zera).
+   * 60 s; passou disso, 429 até a janela passar, mesmo com a frase certa. A tentativa é registrada como erro ANTES de a frase ser
+   * conferida: sem conseguir registrar, 429 sem conferir (certa e errada respondem igual; nada de tentativa sem limite). A frase
+   * certa zera a janela (só quem a conhece zera); se zerar falhar, segue sem bloquear o dono. Síncrono do começo ao fim: duas
+   * requisições deste processo não intercalam a leitura e a gravação do registro.
    */
   private exigirFrase(frase: unknown): void {
     const modo = this.modoFrase();
@@ -132,15 +135,10 @@ export class GerenciarModulos {
     if (erros === "ilegivel") throw registroIlegivel(this.arquivoErros);
     if (erros.length >= MAX_ERROS_FRASE) throw new Recusa(429, { error: "tentativas", message: "muitas tentativas de frase-senha; espere um minuto e tente de novo" });
     if (typeof frase !== "string" || !frase) throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
-    if (checkReviewerPassphrase(frase, this.sessions)) {
-      // falhar ao zerar não bloqueia o dono: os erros antigos só saem da janela sozinhos
-      if (erros.length) { try { this.gravarErros([]); } catch { /* segue */ } }
-      return;
-    }
-    // tentativa errada que não pôde ser registrada não conta como tentativa livre: recusa como limite (falha fechado)
     try { this.gravarErros([...erros, this.agora()]); }
     catch { throw new Recusa(429, { error: "tentativas", message: "não foi possível registrar a tentativa; tente mais tarde" }); }
-    throw new Recusa(403, { error: "frase_senha", message: "frase-senha incorreta" });
+    if (!checkReviewerPassphrase(frase, this.sessions)) throw new Recusa(403, { error: "frase_senha", message: "frase-senha incorreta" });
+    try { this.gravarErros([]); } catch { /* segue: a tentativa registrada sai da janela sozinha */ }
   }
 
   /** Com frase-senha errada na janela, nada reinicia o serve (um reinício não serve para escapar do limite). */

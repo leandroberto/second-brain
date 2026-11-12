@@ -291,17 +291,22 @@ describe("inspecionar e frase-senha", () => {
       }
       expect((await call(s.api, s.ui, "POST", `${G}/reiniciar`, {})).status).toBe(429);
     } finally { rmSync(arq, { recursive: true, force: true }); }
-    // gravar falha mas ler funciona (só o registro de uma tentativa errada): 429, a tentativa não fica livre
+    // ler funciona mas gravar não (disco cheio, sem permissão): a tentativa não é registrada, então a frase nem é conferida —
+    // errada e certa respondem igual (sem oráculo nem tentativa sem limite)
     writeFileSync(arq, "[]", { mode: 0o600 });
     chmodSync(root, 0o500);
     try {
       if (process.getuid?.() !== 0) {
-        const errada = await inspecionar(s, pasta, { fraseSenha: "errada" });
-        expect(errada.status).toBe(429);
-        expect(errada.corpo).toEqual({ error: "tentativas", message: "não foi possível registrar a tentativa; tente mais tarde" });
-        expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(200);
+        for (const fraseSenha of ["errada", FRASE]) {
+          const r = await inspecionar(s, pasta, { fraseSenha });
+          expect([fraseSenha, r.status, r.corpo]).toEqual([fraseSenha, 429, { error: "tentativas", message: "não foi possível registrar a tentativa; tente mais tarde" }]);
+        }
       }
     } finally { chmodSync(root, 0o700); }
+    // gravação de volta: a certa passa e zera a janela (o registro fica vazio, nada bloqueia o reinício)
+    expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(200);
+    expect(JSON.parse(readFileSync(arq, "utf8"))).toEqual([]);
+    expect((await call(s.api, s.ui, "POST", `${G}/reiniciar`, {})).status).toBe(200);
   });
 
   it("no máximo 2 conferências ao mesmo tempo: a 3ª → 429", async () => {
