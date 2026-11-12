@@ -18,6 +18,9 @@ function findChrome(): string | undefined {
   return undefined;
 }
 const chrome = findChrome();
+// o `vitest.global.ts` constrói o web na suíte normal; sem o dist (rodando por fora dela) o arquivo é pulado em vez de falhar
+const webRoot = join(process.cwd(), "apps/web/dist");
+const pronto = !!chrome && existsSync(join(webRoot, "index.html"));
 const LEMBRETE = resolve(import.meta.dirname, "../examples/modules/lembrete");
 const savedState = process.env.BRAIN_STATE_DIR;
 
@@ -27,7 +30,7 @@ const nav = (hash: string) => page.evaluate((h) => { location.hash = h; }, hash)
 const menu = () => page.getByRole("navigation", { name: "Principal" }).getByRole("link", { name: /Lembretes/ });
 const frame = () => page.frameLocator('iframe[title="Módulo lembrete"]');
 
-describe.skipIf(!chrome)("módulos na UI web (browser real)", () => {
+describe.skipIf(!pronto)("módulos na UI web (browser real)", () => {
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), "brain-mod-ui-"));
     process.env.BRAIN_STATE_DIR = join(dir, "state");
@@ -38,7 +41,7 @@ describe.skipIf(!chrome)("módulos na UI web (browser real)", () => {
     writeFileSync(cfg, `${atual.trimEnd()}\nmodules: ${JSON.stringify({ lembrete: { enabled: true, path: LEMBRETE, config: { horario: "10:00" } } })}\n`, "utf8");
     brain = await Brain.open(join(dir, "vault"));
     // sem agendador automático: perto das 10:00 locais o tick competiria com o "rodar agora"
-    serve = await startServe(brain, { port: 0, sessions: sessions(), agendador: false, webRoot: join(process.cwd(), "apps/web/dist") });
+    serve = await startServe(brain, { port: 0, sessions: sessions(), agendador: false, webRoot });
     sessao = issueHumanSession(brain.vault.root, await terminalHuman("alice", sessions()), sessions());
     const r = await fetch(`${serve.url}/api/modules/lembrete/_tarefas/diario/rodar`, { method: "POST", headers: { authorization: `Bearer ${sessao}`, "content-type": "application/json" }, body: "{}" });
     expect(((await r.json()) as { resultado: string }).resultado).toBe("ok");
@@ -59,7 +62,10 @@ describe.skipIf(!chrome)("módulos na UI web (browser real)", () => {
   });
 
   it("a aba carrega o iframe com sandbox, completa o handshake e lista o item sem mexer no hash do topo", async () => {
-    const errors: string[] = []; page.on("pageerror", (e) => errors.push(String(e)));
+    // `console` de nível error inclui os frames (o iframe do módulo); `pageerror` pega exceções não tratadas do topo
+    const errors: string[] = [];
+    const onErro = (e: Error) => errors.push(String(e)); const onCon = (m: { type(): string; text(): string }) => { if (m.type() === "error") errors.push(m.text()); };
+    page.on("pageerror", onErro); page.on("console", onCon);
     await menu().click();
     const iframe = page.locator('iframe[title="Módulo lembrete"]');
     await iframe.waitFor();
@@ -72,6 +78,7 @@ describe.skipIf(!chrome)("módulos na UI web (browser real)", () => {
     const frm = page.frames().find((f) => f.url().includes("/modules/lembrete/index.html"))!;
     expect(await frm.evaluate(() => location.hash)).not.toContain("n=");
     expect(new URL(page.url()).hash).toBe("#/m/lembrete");
+    page.off("pageerror", onErro); page.off("console", onCon);
     expect(errors).toEqual([]);
   });
 
@@ -94,8 +101,10 @@ describe.skipIf(!chrome)("módulos na UI web (browser real)", () => {
     await sec.waitFor();
     expect(await sec.innerText()).toMatch(/Lembretes[\s\S]*lembrete[\s\S]*ativo/);
     expect(await sec.innerText()).toContain("diario");
-    page.once("dialog", (d) => { expect(d.message()).toMatch(/Rodar agora a tarefa "diario"/); void d.accept(); });
+    let pergunta = ""; // o `expect` dentro do handler não chegaria ao teste: guarda a mensagem, aceita e confere depois
+    page.once("dialog", (d) => { pergunta = d.message(); void d.accept(); });
     await sec.getByRole("button", { name: "Rodar agora" }).click();
+    expect(pergunta).toMatch(/Rodar agora a tarefa "diario"/);
     await sec.getByRole("status").filter({ hasText: "resultado agora: ok" }).waitFor();
   });
 });

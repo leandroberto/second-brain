@@ -38,6 +38,7 @@ let conexao;
  * devolvem a mesma conexão (a mesma promessa). O `brain:pronto` leva o nonce do fragmento. A renovação do token é por pedido:
  * o `brain:init` traz `expira`, o cliente pede `brain:renovar` (com o nonce) 1 h antes de expirar e só aceita um `brain:token` enquanto espera a resposta; o
  * SB nunca empurra token sem pedido. `brain:tema` troca o tema. Só aceita mensagens da janela pai, com `type` conhecido.
+ * `api(caminho)`: `caminho` é relativo às rotas do módulo (o client acrescenta `/api/modules/<id>`), ex.: `"/itens"`.
  * @returns {Promise<{ api(caminho: string, init?: RequestInit): Promise<unknown>; navegar(resto: string): void; abrirNota(id: string): void; aoMudarTema(fn: (t: "claro" | "escuro") => void): void; resto: string }>}
  */
 export function conectar() {

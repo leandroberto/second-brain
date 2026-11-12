@@ -236,9 +236,12 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
     const m = (await loadModules(b, { modo: "definicoes", validarConfig: false })).get(id);
     const causas: string[] = [];
     if (!MODULE_ID_RE.test(id)) causas.push(`id do módulo inválido: "${id}" (use ${MODULE_ID_RE.source})`);
-    if (!m || m.status !== "ativo" || !m.def) { // a causa de rota do carregador é a primeira rota inválida, truncada pela higiene de mensagem: `rotasRuins` já cobre todas, inteiras
+    if (!m || m.status !== "ativo" || !m.def) {
+      // a causa de rota do carregador é a primeira rota inválida, truncada pela higiene de mensagem: `rotasRuins` já cobre todas, inteiras
       const causaDoCarregador = m?.causa?.startsWith("rota inválida:") ? undefined : m?.causa;
-      causas.push(causaDoCarregador ?? "módulo não carregado", ...rotasRuins); return { id, versao: m?.versao, causas: [...new Set(causas)] }; }
+      causas.push(causaDoCarregador ?? "módulo não carregado", ...rotasRuins);
+      return { id, versao: m?.versao, causas: [...new Set(causas)] };
+    }
     const def = m.def;
     if (typeof def.nome !== "string" || !def.nome.trim()) causas.push("nome ausente");
     if (typeof def.versao !== "string" || !def.versao.trim()) causas.push("versao ausente");
