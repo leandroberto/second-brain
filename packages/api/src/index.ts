@@ -221,12 +221,12 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   r("GET", "/api/notes/:id/suggestions", ({ brain, params }) => brain.relationSuggestions(decodeURIComponent(params[0]!)));
   r("GET", "/api/settings", ({ brain }) => ({ config: brain.config, vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
   r("PUT", "/api/settings", async ({ brain, body, actor }) => {
-    // só as chaves que a tela de Configurações grava. Os módulos vão pelo gerenciamento (frase-senha, conferência), a frase-senha
-    // só no terminal, e o resto (`assistant.claude_path`, `state.external`, `limits`...) não se altera pela sessão do navegador
+    // só as chaves (e subchaves) que a tela de Configurações grava. Os módulos vão pelo gerenciamento (frase-senha, conferência), a frase-senha
+    // só no terminal, e o resto (`embeddings.api_key_env`, `assistant.claude_path`, `state.external`, `limits`...) não se altera pela sessão do navegador
     const chaves = body && typeof body === "object" ? Object.keys(body) : [];
     if (chaves.includes("modules")) throw new BrainError("forbidden", "use Configurações › Módulos");
     if (chaves.includes("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
-    if (chaves.some((k) => !SETTINGS_DA_UI.has(k))) throw new BrainError("forbidden", "esta configuração não se altera pela UI");
+    conferirSettingsDaUi(body ?? {});
     return { config: await brain.updateConfig(body, actor) };
   });
   // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana). A
@@ -370,8 +370,36 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   };
 }
 
-/** Chaves de topo que `PUT /api/settings` aceita: as que a tela de Configurações grava (lista de permitidas, não de proibidas). */
-const SETTINGS_DA_UI = new Set(["vault_name", "embeddings", "git", "agents", "governance", "retention"]);
+/**
+ * O que `PUT /api/settings` aceita: as chaves e, nas seções, as subchaves que a tela de Configurações grava (lista de permitidas,
+ * não de proibidas; `null` = valor simples). Sem a lista por subchave, `embeddings.api_key_env` + `base_url` fariam o embedder
+ * mandar qualquer variável de ambiente como credencial a um servidor escolhido pela sessão do navegador.
+ */
+const SETTINGS_DA_UI = new Map<string, ReadonlySet<string> | null>([
+  ["vault_name", null],
+  ["embeddings", new Set(["provider", "base_url", "model", "external_opt_in"])],
+  ["git", new Set(["auto_commit", "auto_commit_external"])],
+  ["agents", new Set(["commit_policy", "per_type", "can_link"])],
+  ["governance", new Set(["duplicate_threshold", "candidate_threshold", "stale_days"])],
+  ["retention", new Set(["activity_days"])],
+]);
+const objetoSimples = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+/** 403 se o corpo tocar qualquer chave ou subchave fora de `SETTINGS_DA_UI`; `agents.per_type` é um mapa tipo → `review|auto`. */
+function conferirSettingsDaUi(body: Record<string, unknown>): void {
+  const proibida = () => new BrainError("forbidden", "esta configuração não se altera pela UI; use o config.yaml");
+  for (const [chave, valor] of Object.entries(body)) {
+    if (!SETTINGS_DA_UI.has(chave)) throw proibida();
+    const subchaves = SETTINGS_DA_UI.get(chave);
+    if (!subchaves) continue;
+    // seção trocada por um valor simples (null, lista...) substituiria o bloco inteiro, inclusive as subchaves fechadas
+    if (!objetoSimples(valor) || Object.keys(valor).some((k) => !subchaves.has(k))) throw proibida();
+    if (chave === "agents" && "per_type" in valor) {
+      const porTipo = valor.per_type;
+      if (!objetoSimples(porTipo) || Object.keys(porTipo).some((t) => !(NOTE_TYPES as readonly string[]).includes(t))) throw proibida();
+      if (Object.values(porTipo).some((v) => v !== "review" && v !== "auto")) throw new BrainError("invalid", "agents.per_type aceita só review ou auto");
+    }
+  }
+}
 const temporalOf = (v: any) => (v && typeof v === "object" ? { as_of: String(v.as_of ?? ""), ...(v.revalidate_when ? { revalidate_when: String(v.revalidate_when).slice(0, 200) } : {}) } : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : undefined);
 const safeEq = (a: string, b: string) => { const x = Buffer.from(a); const y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };

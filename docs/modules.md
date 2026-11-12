@@ -439,10 +439,13 @@ novo."
   que conferiu.
   **Adicionar** usa o ticket e não pede a frase de novo. Se o `serve` reiniciou entre conferir e adicionar, ou o ticket
   expirou, a resposta é 409 `ticket_invalido` e a tela volta à etapa 1 pedindo para conferir a pasta de novo.
-- `PUT /api/settings` aceita só as chaves que a tela de Configurações grava (`vault_name`, `embeddings`, `git`, `agents`,
-  `governance`, `retention`). `modules` recebe 403 "use Configurações › Módulos", `review` 403 apontando para
-  `brain admin passphrase`, e qualquer outra (`assistant.claude_path`, `state.external`, `limits`...) 403 "esta configuração
-  não se altera pela UI". Nada disso pode ser contornado pela sessão do navegador.
+- `PUT /api/settings` aceita só as chaves e subchaves que a tela de Configurações grava: `vault_name`,
+  `embeddings.{provider, base_url, model, external_opt_in}`, `git.{auto_commit, auto_commit_external}`,
+  `agents.{commit_policy, per_type, can_link}` (`per_type` só com tipos conhecidos e `review` ou `auto`),
+  `governance.{duplicate_threshold, candidate_threshold, stale_days}` e `retention.activity_days`. `modules` recebe 403 "use
+  Configurações › Módulos", `review` 403 apontando para `brain admin passphrase`, e qualquer outra chave ou subchave
+  (`embeddings.api_key_env`, `embeddings.dimensions`, `assistant.claude_path`, `state.external`, `limits`...) 403 "esta
+  configuração não se altera pela UI; use o config.yaml", sem gravar nada. Nada disso pode ser contornado pela sessão do navegador.
 - Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
   `restringir_host` ou `remover`.
 

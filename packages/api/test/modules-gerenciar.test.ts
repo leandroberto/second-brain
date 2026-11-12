@@ -622,12 +622,60 @@ describe("rotas do core", () => {
     for (const corpo of [{ assistant: { claude_path: "/tmp/outro" } }, { state: { external: true } }, { limits: { max_chars: 1 } }, { git: { auto_commit: true }, assistant: {} }]) {
       const r = await call(s.api, s.ui, "PUT", "/api/settings", corpo);
       expect([corpo, r.status]).toEqual([corpo, 403]);
-      expect(await r.json()).toMatchObject({ error: "forbidden", message: "esta configuração não se altera pela UI" });
+      expect(await r.json()).toMatchObject({ error: "forbidden", message: "esta configuração não se altera pela UI; use o config.yaml" });
     }
     expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
     for (const corpo of [{ vault_name: brain.config.vault_name }, { embeddings: { provider: "hash" } }, { agents: { can_link: true } }, { governance: { stale_days: brain.config.governance.stale_days } }, { retention: { activity_days: brain.config.retention.activity_days } }, {}]) {
       expect([corpo, (await call(s.api, s.ui, "PUT", "/api/settings", corpo)).status]).toEqual([corpo, 200]);
     }
+  });
+
+  it("settings: a lista de permitidas vale por subchave (api_key_env, dimensions, __proto__... → 403 sem gravar nada)", async () => {
+    const s = await subir();
+    // corpo cru: `__proto__` num literal de objeto não vira chave própria, num JSON recebido vira
+    const cru = (corpo: string) => fetch(s.api.url + "/api/settings", { method: "PUT", headers: { authorization: `Bearer ${s.ui}`, "content-type": "application/json" }, body: corpo });
+    const antes = readFileSync(brain.vault.configPath, "utf8");
+    for (const corpo of [
+      '{"embeddings":{"api_key_env":"QUALQUER_VAR"}}',
+      '{"embeddings":{"provider":"openai-compatible","base_url":"https://externo.example","external_opt_in":true,"api_key_env":"QUALQUER_VAR"}}',
+      '{"embeddings":{"dimensions":3}}',
+      '{"embeddings":{"__proto__":{"api_key_env":"QUALQUER_VAR"}}}',
+      '{"embeddings":{"constructor":{"prototype":{"x":1}}}}',
+      '{"__proto__":{"embeddings":{"api_key_env":"QUALQUER_VAR"}}}',
+      '{"constructor":{}}',
+      '{"governance":{"keep_history_section":true}}',
+      '{"git":{"auto_commit":true,"remoto":"x"}}',
+      '{"retention":{"outra":1}}',
+      '{"agents":{"per_type":{"inexistente":"auto"}}}',
+      '{"agents":{"per_type":{"__proto__":"auto"}}}',
+      '{"embeddings":null}', '{"embeddings":[]}', '{"agents":"all"}', '{"agents":{"per_type":["auto"]}}', '{"agents":{"per_type":null}}',
+    ]) {
+      const r = await cru(corpo);
+      expect([corpo, r.status]).toEqual([corpo, 403]);
+      expect(await r.json()).toMatchObject({ error: "forbidden", message: "esta configuração não se altera pela UI; use o config.yaml" });
+      expect([corpo, readFileSync(brain.vault.configPath, "utf8")]).toEqual([corpo, antes]);
+    }
+    // valor fora de review|auto num tipo conhecido: inválido, nada gravado
+    const ruim = await cru('{"agents":{"per_type":{"decision":"sim"}}}');
+    expect(ruim.status).toBe(400);
+    expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
+    expect(brain.config.embeddings.api_key_env).toBe("OPENAI_API_KEY");
+  });
+
+  it("settings: toda gravação atual da tela de Configurações continua 200", async () => {
+    const s = await subir();
+    const c = brain.config;
+    // os mesmos corpos de `apps/web/src/pages3.tsx` (com os valores atuais: trocar o embedder reembutiria tudo)
+    for (const corpo of [
+      { embeddings: { provider: c.embeddings.provider } }, { embeddings: { base_url: c.embeddings.base_url } }, { embeddings: { model: c.embeddings.model } }, { embeddings: { external_opt_in: false } },
+      { git: { auto_commit: c.git.auto_commit } }, { git: { auto_commit_external: c.git.auto_commit_external } },
+      { agents: { commit_policy: c.agents.commit_policy } }, { agents: { per_type: { decision: "review" } } }, { agents: { per_type: { "open-question": "auto" } } }, { agents: { can_link: c.agents.can_link } },
+      { governance: { duplicate_threshold: c.governance.duplicate_threshold } }, { governance: { candidate_threshold: c.governance.candidate_threshold } }, { governance: { stale_days: c.governance.stale_days } },
+      { retention: { activity_days: c.retention.activity_days } }, { vault_name: c.vault_name },
+    ]) {
+      expect([corpo, (await call(s.api, s.ui, "PUT", "/api/settings", corpo)).status]).toEqual([corpo, 200]);
+    }
+    expect(brain.config.agents.per_type).toMatchObject({ decision: "review", "open-question": "auto" });
   });
 
   it("fs/pastas: relativo → 400; sessão → lista; api-token → 403", async () => {
