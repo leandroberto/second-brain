@@ -845,7 +845,10 @@ export class Brain {
     const actor = authorize(who, "admin", { config: this.config });
     if (!MODULE_ID_RE.test(id)) throw new BrainError("invalid", `id de módulo inválido: "${id}"`);
     return this.write(async () => {
-      // `write` já relê o config.yaml do disco dentro do lock: edições manuais posteriores à subida são preservadas
+      // `write` já relê o config.yaml do disco dentro do lock: edições manuais posteriores à subida são preservadas.
+      // Mas o reload engole config inválido e mantém a antiga: regravar a partir dela apagaria a edição do usuário.
+      try { loadConfig(this.vault.configPath); }
+      catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos"); }
       const modules = new Map(Object.entries(this.config.modules));
       const acao = entry === null ? "remover" : modules.has(id) ? "atualizar" : "adicionar";
       if (entry === null) modules.delete(id); else modules.set(id, entry);

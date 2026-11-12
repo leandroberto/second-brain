@@ -96,4 +96,12 @@ describe("config modules e identidade module/<id>", () => {
     expect(lido.vault_name).toBe("Editado por fora");
     expect(lido.modules.lembrete.enabled).toBe(true);
   });
+
+  it("setModuleEntry não regrava um config.yaml inválido", async () => {
+    const b = await tempBrain();
+    const quebrado = "vault_name: [quebrado\n  modules: : :\n";
+    writeFileSync(b.vault.configPath, quebrado, "utf8");
+    await expect(b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, human)).rejects.toMatchObject({ code: "invalid" });
+    expect(readFileSync(b.vault.configPath, "utf8")).toBe(quebrado);
+  });
 });
