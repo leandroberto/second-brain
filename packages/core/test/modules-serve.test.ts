@@ -77,7 +77,7 @@ describe("serve.lock", () => {
     writeServeInfo(root, { url: "http://127.0.0.1:9", pid: process.ppid, iniciado: "" });
     await expect(acquireServeLock(root, vault)).rejects.toMatchObject({ code: "locked" });
     // ...a menos que a trava seja de antes do boot: o pid foi reaproveitado
-    const antesDoBoot = new Date(Date.now() - uptime() * 1000 - 5 * 60_000);
+    const antesDoBoot = new Date(Date.now() - uptime() * 1000 - 11 * 60_000);
     utimesSync(lock, antesDoBoot, antesDoBoot);
     const l = await acquireServeLock(root, vault);
     expect(JSON.parse(readFileSync(lock, "utf8")).pid).toBe(process.pid);
@@ -106,7 +106,7 @@ describe("serve.lock: a hora do boot nunca anula um serve confirmado vivo", () =
     const url = await responder(200, JSON.stringify({ pid: process.ppid, vault: vaultFingerprint(vault.root) }));
     writeServeInfo(root, { url, pid: process.ppid, iniciado: "" });
     writeFileSync(lock, JSON.stringify({ pid: process.ppid, nonce: "vivo", desde: "" }));
-    const antesDoBoot = new Date(Date.now() - uptime() * 1000 - 5 * 60_000);
+    const antesDoBoot = new Date(Date.now() - uptime() * 1000 - 11 * 60_000);
     utimesSync(lock, antesDoBoot, antesDoBoot);
     await expect(acquireServeLock(root, vault)).rejects.toThrow(/já há um brain serve rodando para este vault/);
     expect(JSON.parse(readFileSync(lock, "utf8")).nonce).toBe("vivo");

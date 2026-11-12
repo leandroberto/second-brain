@@ -1,4 +1,4 @@
-import { linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -143,8 +143,13 @@ const LOCK_VELHO_MS = 10 * 60_000;
 const RENOVAR_LOCK_MS = 60_000;
 /** Folga na comparação com a hora do boot (o uptime e o relógio não batem ao milissegundo). */
 const MARGEM_BOOT_MS = 60_000;
-/** Lock gravado antes do último boot: o processo dono não sobreviveu ao reboot, mesmo que o pid exista de novo. */
-const antesDoBoot = (mtimeMs: number): boolean => mtimeMs < Date.now() - uptime() * 1000 - MARGEM_BOOT_MS;
+/**
+ * Lock gravado antes do último boot: o processo dono não sobreviveu ao reboot, mesmo que o pid exista de novo. Só vale para lock
+ * também sem renovação há mais de `LOCK_VELHO_MS`: no WSL2, depois de o host dormir, o relógio de parede salta e o uptime não,
+ * e um lock renovado antes do sono parece anterior ao boot.
+ */
+const velhoDeAntesDoBoot = (mtimeMs: number): boolean =>
+  Date.now() - mtimeMs > LOCK_VELHO_MS && mtimeMs < Date.now() - uptime() * 1000 - MARGEM_BOOT_MS;
 
 /** Erros de `link` de um sistema de arquivos sem hard link (FAT/exFAT, compartilhamento de rede). */
 const SEM_HARD_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV"]);
@@ -197,12 +202,13 @@ const lerLock = (arq: string): { pid: number; nonce?: string } => {
  * - vazio ou ilegível: recusa, a menos que tenha mais de 10 min sem mudar (velho);
  * - pid deste processo: só é válido se o nonce for de uma aquisição deste processo (outro `startServe` aqui); senão é velho;
  * - pid inexistente: velho;
- * - mtime anterior ao último boot, sem serve confirmado vivo: velho (o pid pode ter renascido em outro processo);
+ * - mtime anterior ao último boot e sem renovação há mais de 10 min, sem serve confirmado vivo: velho (o pid pode ter
+ *   renascido em outro processo);
  * - pid vivo e `serve.json` desse pid: `serveEstado` decide (`morto` = pid reusado depois de uma queda, velho; `vivo` ou
  *   `indeterminado` = recusa);
  * - pid vivo sem `serve.json` dele (o dono ainda está subindo): recusa, a menos que o lock tenha mais de 10 min (velho).
- * Lock velho é retomado com `rename` para um nome único (atômico: entre dois concorrentes só um vence; o outro recomeça) e
- * só então o novo é criado. `liberar()` para a renovação e só apaga o lock se ele ainda for desta aquisição.
+ * Lock velho é retomado com `rename` para um nome único e só então o novo é criado. As retomadas são serializadas pelo mutex
+ * `serve.lock.retomando` (ver `retomar`): entre concorrentes só um retoma; os outros recomeçam e reavaliam o lock novo. `liberar()` para a renovação e só apaga o lock se ele ainda for desta aquisição.
  */
 export async function acquireServeLock(root: string, vault: { root: string; tokenPath: string }): Promise<{ liberar(): void }> {
   const alvo = arquivoLock(root);
@@ -232,30 +238,59 @@ export async function acquireServeLock(root: string, vault: { root: string; toke
     } else if (dono.pid === process.pid) {
       if (dono.nonce && noncesDoProcesso.has(dono.nonce)) throw recusar("já há um brain serve subindo ou rodando neste processo para este vault");
     } else if (pidExiste(dono.pid)) {
-      // lock anterior ao último boot: o dono não existe mais, mesmo que o pid tenha renascido. Só vale quando a vivacidade NÃO
-      // foi confirmada: um salto de relógio (NTP, WSL retomando) move a hora do boot, e um serve que responde vivo nunca é velho
+      // lock anterior ao último boot (e sem renovação há mais de 10 min): o dono não existe mais, mesmo que o pid tenha
+      // renascido. Só vale quando a vivacidade NÃO foi confirmada: um salto de relógio (NTP, WSL retomando) move a hora do boot,
+      // e um serve que responde vivo nunca é velho. Sem serve.json do pid, só a idade decide
       if (ler(root)?.pid === dono.pid) {
         const e = await serveEstado(root, vault);
         if (e.estado === "vivo") throw recusar(`já há um brain serve rodando para este vault em ${e.url}`);
-        if (e.estado === "indeterminado" && !antesDoBoot(mtimeMs)) throw recusar(`há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
-      } else if (!antesDoBoot(mtimeMs) && Date.now() - mtimeMs <= LOCK_VELHO_MS) {
+        if (e.estado === "indeterminado" && !velhoDeAntesDoBoot(mtimeMs)) throw recusar(`há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
+      } else if (Date.now() - mtimeMs <= LOCK_VELHO_MS) {
         throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
       }
     }
-    retomar(alvo, dono.nonce);
+    await retomar(alvo, dono.nonce);
   }
   throw new BrainError("locked", `não foi possível obter o lock do brain serve (${alvo})`);
 }
 
-/** Tira o lock velho do caminho por `rename` (atômico). Se o arquivo já não é o avaliado (outro processo o retomou), devolve-o. */
-function retomar(alvo: string, nonceAvaliado: string | undefined): void {
-  const fora = `${alvo}.${randomBytes(6).toString("hex")}.velho`;
-  try { renameSync(alvo, fora); } catch { return; } // ENOENT: outro venceu; recomeça a aquisição
-  if (lerLock(fora).nonce !== nonceAvaliado) {
-    // pegamos um lock NOVO de quem retomou antes: devolve sem sobrescrever (link falha se já houver outro lock no lugar)
-    try { linkSync(fora, alvo); } catch { /* já há outro lock: ele decide */ }
+/** Mutex de retomada com mais que isso: o dono caiu no meio da retomada (que dura milissegundos); pode ser removido. */
+const MUTEX_VELHO_MS = 30_000;
+/** Espera de quem encontra outra retomada em curso, antes de recomeçar a aquisição. */
+const ESPERA_MUTEX_MS = 100;
+
+/** Cria o mutex de retomada (`mkdir` atômico). Mutex velho (dono caiu) é removido e a criação tentada de novo, uma vez. */
+function entrarNoMutex(mutex: string): boolean {
+  for (let i = 0; i < 2; i++) {
+    try { mkdirSync(mutex, { mode: 0o700 }); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+    let idade: number; try { idade = Date.now() - statSync(mutex).mtimeMs; } catch { continue; } // sumiu: tenta de novo
+    if (idade <= MUTEX_VELHO_MS) return false;
+    try { rmdirSync(mutex); } catch { /* outro o removeu */ }
   }
-  try { rmSync(fora, { force: true }); } catch { /* best effort */ }
+  return false;
+}
+
+/**
+ * Tira o lock velho do caminho por `rename`, dentro do mutex `serve.lock.retomando` (só uma retomada por vez; quem não
+ * consegue entrar espera um pouco e recomeça a aquisição). Dentro do mutex, o lock só é tirado se ainda for o avaliado: quem
+ * avaliou o mesmo lock velho que outro já retomou não toca no lock novo (sem isso, um terceiro processo podia criar o seu
+ * lock enquanto o novo estava fora do lugar, e o novo se perdia com o dono acreditando tê-lo). O mutex sai sempre no `finally`.
+ */
+async function retomar(alvo: string, nonceAvaliado: string | undefined): Promise<void> {
+  const mutex = `${alvo}.retomando`;
+  if (!entrarNoMutex(mutex)) { await new Promise((ok) => setTimeout(ok, ESPERA_MUTEX_MS)); return; }
+  try {
+    if (lerLock(alvo).nonce !== nonceAvaliado) return; // outro já retomou: recomeça e avalia o lock novo
+    const fora = `${alvo}.${randomBytes(6).toString("hex")}.velho`;
+    try { renameSync(alvo, fora); } catch { return; } // ENOENT: o lock saiu; recomeça a aquisição
+    if (lerLock(fora).nonce !== nonceAvaliado) {
+      // trocado entre a leitura e o rename (o dono o apagou e outro o criou): devolve sem sobrescrever
+      try { linkSync(fora, alvo); } catch { /* já há outro lock (ele decide) ou FS sem hard link */ }
+    }
+    try { rmSync(fora, { force: true }); } catch { /* best effort */ }
+  } finally {
+    try { rmdirSync(mutex); } catch { /* best effort */ }
+  }
 }
 
 /** JSON com chaves ordenadas (a ordem das chaves no YAML não muda o hash). */

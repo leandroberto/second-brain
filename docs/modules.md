@@ -296,7 +296,8 @@ primeira abertura continua aceito). O second-brain não interpreta o conteúdo.
 O estado deve ficar em **disco local** (ext4, APFS, NTFS). Em FAT/exFAT e compartilhamentos de rede (sem hard link) o
 `serve` sobe, mas a trava (`serve.lock`) cai para a criação exclusiva sem hard link e a exclusão mútua entre `serve`s
 concorrentes fica mais fraca: o lock existe vazio por um instante (um lock vazio ou ilegível só é considerado velho depois de
-10 min sem mudar) e a retomada de um lock velho não consegue devolver um lock novo tirado por engano.
+10 min sem mudar) e, numa corrida rara durante a retomada de um lock velho, um lock novo tirado por engano não pode ser
+devolvido (a devolução usa hard link).
 
 Esta subpasta de estado e o `serve.lock` existem **mesmo sem módulos configurados**: sem `state.external`, todo `brain serve`
 usa `<slug>-<impressão>/` (avisos, agendador, `serve.json` e a trava), porque o `serve` sem módulos mantém o mesmo ciclo de
