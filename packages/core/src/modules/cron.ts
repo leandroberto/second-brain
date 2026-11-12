@@ -15,8 +15,8 @@ export interface Cron {
 const MIN = 60_000;
 /** Maior salto do relógio local numa troca de horário (as zonas reais saltam 30 min a 2 h). */
 const SALTO_MAX = 2 * 60 * MIN;
-/** Candidatos examinados por busca: cobre a janela de 2 × SALTO_MAX mesmo com cron de todo minuto. */
-const MAX_CANDIDATOS = 500;
+/** Candidatos examinados por busca: cobre a janela de 3 × SALTO_MAX (360 paredes) mesmo com cron de todo minuto. */
+const MAX_CANDIDATOS = 1000;
 /** Data/hora local de `d` (minuto cheio) como "parede": um Date cujos campos UTC são os campos locais. */
 const parede = (d: Date): number => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes());
 /** Instante da parede `w` no fuso local. */
@@ -100,26 +100,39 @@ export function parseCron(expr: string): Cron {
   };
 
   // Uma parede vira instante pela regra do JS: hora inexistente (pulo para frente) avança junto com o relógio (02:30 → 03:30)
-  // e hora repetida (volta) fica na primeira passagem. Como o instante de uma parede pode ficar até SALTO_MAX longe dela, a
-  // busca começa SALTO_MAX antes (next) ou depois (prev) e para no primeiro instante que serve.
+  // e hora repetida (volta) fica na primeira passagem. O instante NÃO é monotônico na parede perto de uma troca (com pulo de
+  // 30 min ou 2 h, uma parede posterior pode dar um instante anterior), mas dista da parede no máximo SALTO_MAX. Por isso a
+  // busca examina todas as paredes de uma janela: a partir de SALTO_MAX antes (next) / depois (prev) e até SALTO_MAX além da
+  // primeira que serve, ficando com o menor (next) / maior (prev) instante.
   return {
     next(after) {
       let w = new Date(parede(after) - SALTO_MAX);
+      let melhor: Date | undefined; let limite: number | undefined;
       for (let i = 0; i < MAX_CANDIDATOS; i++) {
         w = paredeSeguinte(w);
+        if (limite !== undefined && w.getTime() > limite) return melhor!;
         const t = instante(w);
-        if (t.getTime() > after.getTime()) return t;
+        if (t.getTime() > after.getTime()) {
+          if (!melhor || t.getTime() < melhor.getTime()) melhor = t;
+          limite ??= w.getTime() + SALTO_MAX;
+        }
       }
+      if (melhor) return melhor;
       throw new BrainError("invalid", "cron: nenhuma próxima ocorrência encontrada");
     },
     prev(before) {
-      let w = new Date(parede(before) + SALTO_MAX);
+      let w = new Date(parede(before) + SALTO_MAX + MIN);
+      let melhor: Date | undefined; let limite: number | undefined;
       for (let i = 0; i < MAX_CANDIDATOS; i++) {
-        w = paredeAnterior(w);
+        w = paredeAnterior(new Date(w.getTime() - MIN));
+        if (limite !== undefined && w.getTime() < limite) return melhor!;
         const t = instante(w);
-        if (t.getTime() <= before.getTime()) return t;
-        w = new Date(w.getTime() - MIN);
+        if (t.getTime() <= before.getTime()) {
+          if (!melhor || t.getTime() > melhor.getTime()) melhor = t;
+          limite ??= w.getTime() - SALTO_MAX;
+        }
       }
+      if (melhor) return melhor;
       throw new BrainError("invalid", "cron: nenhuma ocorrência anterior encontrada");
     },
   };

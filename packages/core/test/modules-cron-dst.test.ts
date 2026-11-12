@@ -73,3 +73,55 @@ describe("agendador com horário de verão (America/New_York)", () => {
     expect(reg.errors("mod")).toEqual([]);
   });
 });
+
+describe("cron em fusos com salto de 30 min e de 2 h", () => {
+  const comFuso = (tz: string, fn: () => void) => { const antes = process.env.TZ; process.env.TZ = tz; try { fn(); } finally { process.env.TZ = antes; } };
+
+  it("Australia/Lord_Howe (pulo de 30 min): a parede inexistente 02:20 vira 02:50 e é a ocorrência mais recente", () => comFuso("Australia/Lord_Howe", () => {
+    // 2026-10-04 02:00 LHST (+10:30) pula para 02:30 LHDT (+11)
+    const c = parseCron("20,40 2 * * *");
+    expect(c.prev(U(2026, 10, 3, 15, 55))).toEqual(U(2026, 10, 3, 15, 50)); // 02:55 LHDT -> 02:50 (parede 02:20)
+    expect(c.next(U(2026, 10, 3, 15, 0))).toEqual(U(2026, 10, 3, 15, 40)); // 02:00 LHDT... -> 02:40 LHDT antes de 02:50
+  }));
+
+  it("Antarctica/Troll (pulo de 2 h): next fica com o menor instante, não com a primeira parede", () => comFuso("Antarctica/Troll", () => {
+    // 2026-03-29 01:00 UTC: 01:00 (+0) pula para 03:00 (+2)
+    const c = parseCron("0,30 2,3 * * *");
+    expect(c.next(U(2026, 3, 29, 0, 59))).toEqual(U(2026, 3, 29, 1, 0)); // 03:00 local, não 02:00 UTC (parede 02:00)
+    expect(c.prev(U(2026, 3, 29, 1, 45))).toEqual(U(2026, 3, 29, 1, 30));
+  }));
+
+  it("força bruta: next/prev batem com o mínimo/máximo de todas as ocorrências perto das trocas de horário", () => {
+    const casos: Array<[string, Date[]]> = [
+      ["America/New_York", [U(2026, 3, 8, 7, 0), U(2026, 11, 1, 6, 0)]],
+      ["Australia/Lord_Howe", [U(2026, 10, 3, 15, 30), U(2026, 4, 4, 15, 0)]],
+      ["Antarctica/Troll", [U(2026, 3, 29, 1, 0), U(2026, 10, 25, 1, 0)]],
+    ];
+    const crons: Array<[string, number[], number[]]> = [
+      ["20,40 2 * * *", [20, 40], [2]], ["0,30 2,3 * * *", [0, 30], [2, 3]], ["*/15 * * * *", [0, 15, 30, 45], [...Array(24).keys()]],
+      ["30 1 * * *", [30], [1]], ["0 * * * *", [0], [...Array(24).keys()]], ["45 2 * * *", [45], [2]],
+    ];
+    let divergencias = 0;
+    for (const [tz, trocas] of casos) comFuso(tz, () => {
+      for (const [expr, mins, horas] of crons) {
+        const c = parseCron(expr);
+        for (const troca of trocas) {
+          // todas as ocorrências (parede → instante) num raio de 2 dias
+          const ocorrencias: number[] = [];
+          const ini = new Date(troca.getTime() - 2 * 86_400_000);
+          for (let d = 0; d <= 4; d++) {
+            const dia = new Date(ini.getFullYear(), ini.getMonth(), ini.getDate() + d, 12);
+            for (const h of horas) for (const mi of mins) ocorrencias.push(new Date(dia.getFullYear(), dia.getMonth(), dia.getDate(), h, mi).getTime());
+          }
+          for (let x = troca.getTime() - 5 * 3600_000; x <= troca.getTime() + 5 * 3600_000; x += 10 * 60_000) {
+            const esperadoNext = Math.min(...ocorrencias.filter((o) => o > x));
+            const esperadoPrev = Math.max(...ocorrencias.filter((o) => o <= x));
+            if (c.next(new Date(x)).getTime() !== esperadoNext) divergencias++;
+            if (c.prev(new Date(x)).getTime() !== esperadoPrev) divergencias++;
+          }
+        }
+      }
+    });
+    expect(divergencias).toBe(0);
+  });
+});
