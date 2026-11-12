@@ -192,6 +192,9 @@ await sb.api(`/api/modules/lembrete/itens/${id}/feito`, { method: "POST" });
 ```
 
 - `quando` é cron de 5 campos, na hora local da máquina. O agendador roda só no `brain serve`.
+- Horário de verão: o agendador nunca roda automaticamente a mesma ocorrência local (data + hora:minuto) duas vezes. Na volta
+  do relógio, a hora repetida conta só na primeira passagem. No pulo para frente, uma hora que não existe vira a mesma hora
+  depois do pulo (`30 2 * * *` roda às 03:30 nesse dia), uma vez.
 - `recuperar: true`: se a máquina estava desligada na hora, a tarefa roda **uma vez** ao subir ou ao acordar da suspensão, não
   uma por ocorrência perdida. Na primeira subida sem histórico não há recuperação.
 - `ctx.ocorrencia` é a data/hora prevista a que a execução se refere. `ctx.sinal` é um `AbortSignal`: o timeout (`timeoutS`,
@@ -200,6 +203,9 @@ await sb.api(`/api/modules/lembrete/itens/${id}/feito`, { method: "POST" });
   longa, e confira `ctx.sinal.aborted` entre etapas, para parar de verdade.
 - Uma tarefa não começa se a anterior ainda roda. Cinco erros seguidos suspendem a tarefa até reiniciar o `serve` ou rodar
   manualmente.
+- O histórico do agendador fica em `_scheduler.json`, no estado dos módulos. Uma entrada inválida faz aquela tarefa recomeçar
+  como na primeira subida (nada é recuperado) e registra o erro "estado do agendador inválido para <tarefa>; reiniciado"; um
+  arquivo ilegível vale o mesmo para todas e é preservado como `_scheduler.json.corrompido-<data>`.
 - **Uma ocorrência conta como atendida assim que a execução começa.** Falha, timeout ou queda do processo **não** geram nova
   tentativa automática: o second-brain não sabe se a ação externa já saiu. O resultado aparece em Saúde e o dono usa "rodar
   agora".
@@ -223,7 +229,8 @@ await ctx.estado.lock("itens.json", async () => {
 
 - UI: `POST /api/modules/<id>/_tarefas/<tarefa>/rodar`, só com sessão humana (a tarefa pode causar ação externa; nem o token
   de página nem o api-token servem). O corpo aceita `{ "ocorrencia": "<data ISO>" }`; sem ele vale a última ocorrência
-  atendida.
+  atendida. A execução manual nunca muda a última ocorrência atendida (com ou sem data): o agendador automático não "recupera"
+  nada por causa dela.
 - Terminal: `brain modules run <id> <tarefa> [--ocorrencia AAAA-MM-DD]`. Exige terminal interativo (TTY) e prova de humano
   (com frase-senha, se `review.passphrase_required`). Emite uma sessão humana de 5 minutos, chama o `serve` por HTTP e a
   revoga ao terminar. A tarefa roda no `serve`, nunca no processo da CLI. Sem TTY, recusa.

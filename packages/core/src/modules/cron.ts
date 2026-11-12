@@ -1,12 +1,26 @@
 import { BrainError } from "@brain/shared";
 
-/** Expressão cron de 5 campos (minuto hora dia-do-mês mês dia-da-semana), em hora local. */
+/**
+ * Expressão cron de 5 campos (minuto hora dia-do-mês mês dia-da-semana), em hora local. Horário de verão: uma hora que não
+ * existe (pulo para frente) conta como a mesma hora depois do pulo (02:30 → 03:30), uma vez; uma hora que se repete (volta do
+ * relógio) conta só na primeira passagem.
+ */
 export interface Cron {
   /** primeira ocorrência estritamente depois de `after` */
   next(after: Date): Date;
   /** ocorrência mais recente em `before` ou antes dele (o minuto de `before` conta) */
   prev(before: Date): Date;
 }
+
+const MIN = 60_000;
+/** Maior salto do relógio local numa troca de horário (as zonas reais saltam 30 min a 2 h). */
+const SALTO_MAX = 2 * 60 * MIN;
+/** Candidatos examinados por busca: cobre a janela de 2 × SALTO_MAX mesmo com cron de todo minuto. */
+const MAX_CANDIDATOS = 500;
+/** Data/hora local de `d` (minuto cheio) como "parede": um Date cujos campos UTC são os campos locais. */
+const parede = (d: Date): number => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes());
+/** Instante da parede `w` no fuso local. */
+const instante = (w: Date): Date => new Date(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate(), w.getUTCHours(), w.getUTCMinutes());
 
 const LIMITES: Array<[string, number, number]> = [
   ["minuto", 0, 59], ["hora", 0, 23], ["dia do mês", 1, 31], ["mês", 1, 12], ["dia da semana", 0, 7],
@@ -53,34 +67,58 @@ export function parseCron(expr: string): Cron {
   const domRestrito = !partes[2]!.startsWith("*");
   const dowRestrito = !partes[4]!.startsWith("*");
   const diaOk = (d: Date): boolean => {
-    const a = dom.has(d.getDate()), b = dow.has(d.getDay());
+    const a = dom.has(d.getUTCDate()), b = dow.has(d.getUTCDay());
     return domRestrito && dowRestrito ? a || b : a && b;
   };
   const MAX_PASSOS = 20000;
 
+  // As buscas andam no RELÓGIO DE PAREDE local (um Date cujos campos UTC são a data/hora local), sem fuso no meio: assim a
+  // hora que o horário de verão pula ou repete não desorienta a busca. Só no fim a parede vira instante (`instante`).
+  /** menor parede que casa, estritamente depois de `w` */
+  const paredeSeguinte = (w: Date): Date => {
+    const d = new Date(w.getTime() + MIN);
+    for (let i = 0; i < MAX_PASSOS; i++) {
+      if (!mes.has(d.getUTCMonth() + 1)) { d.setUTCMonth(d.getUTCMonth() + 1, 1); d.setUTCHours(0, 0, 0, 0); continue; }
+      if (!diaOk(d)) { d.setUTCDate(d.getUTCDate() + 1); d.setUTCHours(0, 0, 0, 0); continue; }
+      if (!hor.has(d.getUTCHours())) { d.setUTCHours(d.getUTCHours() + 1, 0, 0, 0); continue; }
+      if (!min.has(d.getUTCMinutes())) { d.setUTCMinutes(d.getUTCMinutes() + 1, 0, 0); continue; }
+      return d;
+    }
+    throw new BrainError("invalid", "cron: nenhuma próxima ocorrência encontrada");
+  };
+  /** maior parede que casa, em `w` ou antes */
+  const paredeAnterior = (w: Date): Date => {
+    const d = new Date(w.getTime());
+    for (let i = 0; i < MAX_PASSOS; i++) {
+      if (!mes.has(d.getUTCMonth() + 1)) { d.setUTCDate(0); d.setUTCHours(23, 59, 0, 0); continue; }
+      if (!diaOk(d)) { d.setUTCDate(d.getUTCDate() - 1); d.setUTCHours(23, 59, 0, 0); continue; }
+      if (!hor.has(d.getUTCHours())) { d.setUTCHours(d.getUTCHours() - 1, 59, 0, 0); continue; }
+      if (!min.has(d.getUTCMinutes())) { d.setUTCMinutes(d.getUTCMinutes() - 1, 0, 0); continue; }
+      return d;
+    }
+    throw new BrainError("invalid", "cron: nenhuma ocorrência anterior encontrada");
+  };
+
+  // Uma parede vira instante pela regra do JS: hora inexistente (pulo para frente) avança junto com o relógio (02:30 → 03:30)
+  // e hora repetida (volta) fica na primeira passagem. Como o instante de uma parede pode ficar até SALTO_MAX longe dela, a
+  // busca começa SALTO_MAX antes (next) ou depois (prev) e para no primeiro instante que serve.
   return {
     next(after) {
-      const d = new Date(after.getTime());
-      d.setSeconds(0, 0);
-      d.setMinutes(d.getMinutes() + 1);
-      for (let i = 0; i < MAX_PASSOS; i++) {
-        if (!mes.has(d.getMonth() + 1)) { d.setMonth(d.getMonth() + 1, 1); d.setHours(0, 0, 0, 0); continue; }
-        if (!diaOk(d)) { d.setDate(d.getDate() + 1); d.setHours(0, 0, 0, 0); continue; }
-        if (!hor.has(d.getHours())) { d.setHours(d.getHours() + 1, 0, 0, 0); continue; }
-        if (!min.has(d.getMinutes())) { d.setMinutes(d.getMinutes() + 1, 0, 0); continue; }
-        return d;
+      let w = new Date(parede(after) - SALTO_MAX);
+      for (let i = 0; i < MAX_CANDIDATOS; i++) {
+        w = paredeSeguinte(w);
+        const t = instante(w);
+        if (t.getTime() > after.getTime()) return t;
       }
       throw new BrainError("invalid", "cron: nenhuma próxima ocorrência encontrada");
     },
     prev(before) {
-      const d = new Date(before.getTime());
-      d.setSeconds(0, 0);
-      for (let i = 0; i < MAX_PASSOS; i++) {
-        if (!mes.has(d.getMonth() + 1)) { d.setDate(0); d.setHours(23, 59, 0, 0); continue; }
-        if (!diaOk(d)) { d.setDate(d.getDate() - 1); d.setHours(23, 59, 0, 0); continue; }
-        if (!hor.has(d.getHours())) { d.setHours(d.getHours() - 1, 59, 0, 0); continue; }
-        if (!min.has(d.getMinutes())) { d.setMinutes(d.getMinutes() - 1, 0, 0); continue; }
-        return d;
+      let w = new Date(parede(before) + SALTO_MAX);
+      for (let i = 0; i < MAX_CANDIDATOS; i++) {
+        w = paredeAnterior(w);
+        const t = instante(w);
+        if (t.getTime() <= before.getTime()) return t;
+        w = new Date(w.getTime() - MIN);
       }
       throw new BrainError("invalid", "cron: nenhuma ocorrência anterior encontrada");
     },

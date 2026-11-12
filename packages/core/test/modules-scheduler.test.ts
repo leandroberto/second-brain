@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModuleContext, ModuleDef, Tarefa, TarefaContext } from "@brain/module-sdk";
 import { ModuleRegistry, Scheduler, parseCron } from "../src/index.js";
 
@@ -202,12 +202,92 @@ describe("Scheduler", () => {
     let n = 0;
     const { s: s2, reg: reg2, root: root2 } = montar({ recuperar: true, rodar: async () => { n++; } }, L(2026, 11, 11, 9));
     mkdirSync(join(root2, "_scheduler.json"));
-    s2.start(); await esperar();
-    const r = await s2.runNow("mod", "t");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let r;
+    try { s2.start(); await esperar(); r = await s2.runNow("mod", "t"); } finally { spy.mockRestore(); }
     expect(n).toBe(0);
     expect(r.resultado).toBe("erro");
     expect(r.erro).toMatch(/marcador/);
     expect(reg2.errors("mod").some((e) => /_scheduler\.json/.test(e.mensagem))).toBe(true);
     expect(readdirSync(root2).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+});
+
+describe("Scheduler: estado inválido, rodar agora e erros", () => {
+  const ERRO_ESTADO = "estado do agendador inválido para t; reiniciado";
+
+  it("entrada inválida no _scheduler.json vira primeira subida da tarefa (nada roda) e registra o erro uma vez", async () => {
+    for (const ruim of [{ ultimaOcorrencia: "lixo", suspensa: false, errosSeguidos: 0 }, { ultimaOcorrencia: L(2026, 11, 8, 8).toISOString(), suspensa: false, errosSeguidos: "x" }, { suspensa: "não", errosSeguidos: 0 }, "texto", null]) {
+      let n = 0;
+      const { s, reg, relogio } = montar({ recuperar: true, rodar: async () => { n++; } }, L(2026, 11, 11, 9), { "mod/t": ruim });
+      s.start(); await esperar();
+      s.status("mod"); relogio.agora = new Date(L(2026, 11, 11, 9).getTime() + 10); await esperar();
+      expect(n, JSON.stringify(ruim)).toBe(0);
+      expect(s.status("mod")[0]).toMatchObject({ ultimaOcorrencia: L(2026, 11, 11, 8).toISOString(), errosSeguidos: 0, suspensa: false });
+      expect(reg.errors("mod").filter((e) => e.onde === "agendador").map((e) => e.mensagem)).toEqual([ERRO_ESTADO]);
+      await s.stop();
+    }
+  });
+
+  it("_scheduler.json ilegível: todas as tarefas recomeçam como na primeira subida e o arquivo é preservado", async () => {
+    let n = 0;
+    const { s, reg, root } = montar({ recuperar: true, rodar: async () => { n++; } }, L(2026, 11, 11, 9));
+    writeFileSync(join(root, "_scheduler.json"), "{ trunc");
+    s.start(); await esperar();
+    expect(n).toBe(0);
+    expect(s.status("mod")[0]!.ultimaOcorrencia).toBe(L(2026, 11, 11, 8).toISOString());
+    expect(reg.errors("mod").filter((e) => e.onde === "agendador").map((e) => e.mensagem)).toEqual([ERRO_ESTADO]);
+    const preservado = readdirSync(root).filter((f) => f.startsWith("_scheduler.json.corrompido-"));
+    expect(preservado).toHaveLength(1);
+    expect(readFileSync(join(root, preservado[0]!), "utf8")).toBe("{ trunc");
+    expect(JSON.parse(readFileSync(join(root, "_scheduler.json"), "utf8"))["mod/t"].ultimaOcorrencia).toBe(L(2026, 11, 11, 8).toISOString());
+  });
+
+  it("JSON que não é objeto também conta como ilegível", async () => {
+    const { s, reg, root } = montar({ recuperar: true, rodar: async () => undefined }, L(2026, 11, 11, 9));
+    writeFileSync(join(root, "_scheduler.json"), "[1, 2]");
+    s.start(); await esperar();
+    expect(reg.errors("mod").map((e) => e.mensagem)).toEqual([ERRO_ESTADO]);
+    expect(readdirSync(root).filter((f) => f.startsWith("_scheduler.json.corrompido-"))).toHaveLength(1);
+  });
+
+  it("rodar agora com data explícita numa tarefa sem registro não vira ultimaOcorrencia (o tick não 'recupera')", async () => {
+    const ocs: Date[] = [];
+    const { s } = montar({ recuperar: true, rodar: async (c: TarefaContext) => { ocs.push(c.ocorrencia); } }, L(2026, 11, 11, 9));
+    await s.runNow("mod", "t", L(2026, 1, 1, 8));
+    expect(s.status("mod")[0]!.ultimaOcorrencia).toBe(L(2026, 11, 11, 8).toISOString());
+    s.start(); await esperar();
+    expect(ocs).toEqual([L(2026, 1, 1, 8)]);
+  });
+
+  it("erro repetido de um cron em cache é registrado uma vez enquanto persiste", async () => {
+    const { s, reg, relogio } = montar({ rodar: async () => undefined }, L(2026, 11, 11, 9));
+    s.start(); await esperar();
+    const cron = (s as unknown as { crons: Map<string, { cron: { prev(d: Date): Date } }> }).crons.get("mod/t")!.cron;
+    const prev = cron.prev.bind(cron);
+    const passo = async () => { relogio.agora = new Date(relogio.agora.getTime() + 10); await esperar(30); };
+    cron.prev = () => { throw new Error("cron quebrou"); };
+    for (let i = 0; i < 4; i++) await passo();
+    expect(reg.errors("mod").filter((e) => e.mensagem === "cron quebrou")).toHaveLength(1);
+    cron.prev = prev; await passo();
+    cron.prev = () => { throw new Error("cron quebrou"); }; await passo(); await passo();
+    expect(reg.errors("mod").filter((e) => e.mensagem === "cron quebrou")).toHaveLength(2); // voltou depois de sumir: novo registro
+  });
+
+  it("falha ao gravar o _scheduler.json vai para o stderr e para cada módulo afetado, não para o primeiro da lista", async () => {
+    const root = mkdtempSync(join(tmpdir(), "brain-sched-"));
+    mkdirSync(join(root, "_scheduler.json", "x"), { recursive: true });
+    const reg = new ModuleRegistry(root);
+    const def = (id: string) => ({ sdk: 1, id, nome: id, versao: "1", tarefas: [{ id: "t", quando: "0 8 * * *", rodar: async () => undefined }] }) as ModuleDef;
+    reg.add({ id: "sem", def: { sdk: 1, id: "sem", nome: "sem", versao: "1" } as ModuleDef, dir: root, status: "ativo", ctx: {} as ModuleContext });
+    for (const id of ["a", "b"]) reg.add({ id, def: def(id), dir: root, status: "ativo", ctx: {} as ModuleContext });
+    const s = new Scheduler(reg, root, { agora: () => L(2026, 11, 11, 9), tickMs: 10 });
+    abertos.push(s);
+    const avisos: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m: unknown) => { avisos.push(String(m)); });
+    try { s.start(); await esperar(); } finally { spy.mockRestore(); }
+    expect(avisos.some((m) => /_scheduler\.json/.test(m))).toBe(true);
+    for (const id of ["a", "b"]) expect(reg.errors(id).filter((e) => /_scheduler\.json/.test(e.mensagem)), id).toHaveLength(1);
+    expect(reg.errors("sem")).toEqual([]);
   });
 });
