@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { EventEmitter } from "node:events";
-import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, gastoIaDoDia, iaBloqueadaNoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
+import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
 
@@ -15,8 +15,8 @@ export interface ResumoModulo {
   /** os mais recentes, em ordem cronológica, já truncados e sem possíveis segredos */
   erros: ModuleError[];
   iaHojeUsd: number;
-  /** IA bloqueada hoje por registro de gasto (`_ia.json`) ilegível */
-  iaBloqueada: boolean;
+  /** IA bloqueada hoje por registro de gasto (`_ia.json`) ilegível ou inacessível: o motivo e o que fazer */
+  iaBloqueio?: BloqueioIa;
 }
 export interface EstadoModulos { fonte: "serve" | "disco"; reiniciar: boolean; modulos: ResumoModulo[] }
 
@@ -33,7 +33,7 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
   const root = modulesStateRoot(b);
   const disco = new ModuleRegistry(root);
   const ia = (id: string) => gastoIaDoDia(root, id);
-  const iaBloqueada = iaBloqueadaNoDia(root);
+  const iaBloqueio = bloqueioIaNoDia(root);
 
   const token = lerToken(b);
   if (token) {
@@ -44,11 +44,11 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
       const url = e.estado === "vivo" ? e.url : serveFallbackUrl(port ? { ...process.env, BRAIN_PORT: String(port) } : process.env);
       const r = await fetch(`${url}/api/modules`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2500) });
       if (r.ok) {
-        const j = await r.json() as { modulos?: Array<Omit<ResumoModulo, "iaHojeUsd" | "iaBloqueada"> & { erros?: ModuleError[] }>; reiniciar?: boolean };
+        const j = await r.json() as { modulos?: Array<Omit<ResumoModulo, "iaHojeUsd" | "iaBloqueio"> & { erros?: ModuleError[] }>; reiniciar?: boolean };
         if (Array.isArray(j.modulos)) {
           return {
             fonte: "serve", reiniciar: j.reiniciar === true,
-            modulos: j.modulos.map((m) => ({ ...m, tarefas: m.tarefas ?? [], erros: Array.isArray(m.erros) ? m.erros : disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id), iaBloqueada })),
+            modulos: j.modulos.map((m) => ({ ...m, tarefas: m.tarefas ?? [], erros: Array.isArray(m.erros) ? m.erros : disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id), iaBloqueio })),
           };
         }
       }
@@ -64,7 +64,7 @@ export async function estadoDosModulos(b: Brain, port?: number): Promise<EstadoM
     fonte: "disco", reiniciar: false,
     modulos: reg.list().map((m) => ({
       id: m.id, nome: m.def?.nome ?? m.id, status: m.status, causa: m.causa, versao: m.versao, sdk: m.def?.sdk, pasta: m.dir || undefined,
-      tarefas: m.status === "ativo" ? agenda.status(m.id) : [], erros: disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id), iaBloqueada,
+      tarefas: m.status === "ativo" ? agenda.status(m.id) : [], erros: disco.errosRecentes(m.id, ERROS_LISTADOS), iaHojeUsd: ia(m.id), iaBloqueio,
     })),
   };
 }
@@ -78,8 +78,7 @@ const quando = (iso?: string) => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 const usd = (n: number) => `US$ ${n.toFixed(2)}`;
-const IA_BLOQUEADA = "IA bloqueada hoje: registro de gasto ilegível";
-const linhaIa = (m: ResumoModulo) => (m.iaBloqueada ? IA_BLOQUEADA : `IA hoje ${usd(m.iaHojeUsd)}`);
+const linhaIa = (m: ResumoModulo) => (m.iaBloqueio ? `IA ${m.iaBloqueio.motivo}` : `IA hoje ${usd(m.iaHojeUsd)}`);
 const linhaTarefa = (t: StatusTarefa) =>
   `${t.tarefa} (${t.quando}): última ${quando(t.inicio)} ${t.resultado ?? "—"}${t.erro ? ` (${t.erro})` : ""} · próxima ${quando(t.proxima)}${t.suspensa ? " · SUSPENSA" : ""}`;
 const linhaErro = (x: ModuleError) => `erro ${quando(x.em)} ${x.onde}: ${x.mensagem}`;
@@ -96,7 +95,7 @@ export async function modulesChecks(b: Brain, port?: number): Promise<Check[]> {
   const e = await estadoDosModulos(b, port);
   if (!e) return [];
   const out: Check[] = [];
-  const problema = (m: ResumoModulo) => m.status === "falho" || m.status === "ausente" || m.iaBloqueada || erroNasUltimas24h(m) || m.tarefas.some((t) => t.suspensa || (t.resultado && t.resultado !== "ok"));
+  const problema = (m: ResumoModulo) => m.status === "falho" || m.status === "ausente" || !!m.iaBloqueio || erroNasUltimas24h(m) || m.tarefas.some((t) => t.suspensa || (t.resultado && t.resultado !== "ok"));
   const ativos = e.modulos.filter((m) => m.status === "ativo").length;
   const resumo = `${e.modulos.length} módulo(s), ${ativos} ativo(s) (${e.fonte === "serve" ? "estado do brain serve" : "brain serve fora do ar: estado em disco"})`;
   out.push({ id: "modules", name: "Módulos", status: e.reiniciar || e.modulos.some(problema) ? "warn" : "ok", detail: e.reiniciar ? `${resumo}; ${REINICIAR}` : resumo, ...(e.reiniciar ? { fix: "reinicie o brain serve" } : {}) });
@@ -106,7 +105,7 @@ export async function modulesChecks(b: Brain, port?: number): Promise<Check[]> {
       m.pasta ? `pasta ${m.pasta}` : undefined, ...m.tarefas.map(linhaTarefa), linhaIa(m),
       ...m.erros.slice(-ERROS_NO_DOCTOR).reverse().map(linhaErro),
     ].filter(Boolean);
-    out.push({ id: `module-${m.id}`, name: `Módulo ${m.id}`, status: problema(m) ? "warn" : "ok", detail: partes.join(" · "), ...(problema(m) ? { fix: m.iaBloqueada ? "a IA dos módulos volta amanhã; o _ia.json ilegível fica preservado no estado dos módulos" : `brain modules list (erros recentes de ${m.id})` } : {}) });
+    out.push({ id: `module-${m.id}`, name: `Módulo ${m.id}`, status: problema(m) ? "warn" : "ok", detail: partes.join(" · "), ...(problema(m) ? { fix: m.iaBloqueio ? m.iaBloqueio.correcao : `brain modules list (erros recentes de ${m.id})` } : {}) });
   }
   return out;
 }

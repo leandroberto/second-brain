@@ -27,12 +27,12 @@ describe("preservação que falha", () => {
     const avisos: string[] = [];
     const spy = vi.spyOn(console, "error").mockImplementation((m: unknown) => { avisos.push(String(m)); });
     try {
-      expect(await ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "orcamento", mensagem: "registro de gasto de IA ilegível; IA do módulo x bloqueada até amanhã" });
+      expect(await ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "orcamento", mensagem: `registro de gasto de IA ilegível; IA do módulo x bloqueada até corrigir: não foi possível guardar o registro ilegível em ${root}; confira as permissões` });
     } finally { spy.mockRestore(); }
     expect(chamou).toBe(false);
     expect(readFileSync(join(root, "_ia.json"), "utf8")).toBe("{ trunc");
     expect(readdirSync(root)).toEqual(["_ia.json"]);
-    expect(avisos.join("\n")).toMatch(/não foi possível preservá-lo \(EACCES/);
+    expect(avisos.join("\n")).toMatch(/não foi possível guardá-lo \(EACCES/);
   });
 });
 

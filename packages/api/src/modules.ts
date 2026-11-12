@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { MODULE_ID_RE, gastoIaDoDia, iaBloqueadaNoDia, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
+import { MODULE_ID_RE, bloqueioIaNoDia, gastoIaDoDia, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
 import type { Chamador, Rota } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 
@@ -231,12 +231,14 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
  * api-token (processos da própria máquina), nunca à página nem ao desktop.
  */
 function resumo(o: ModulesApiOptions, m: LoadedModule, badge: number) {
+  const bloqueio = bloqueioIaNoDia(o.root);
   return {
     id: m.id, nome: m.def?.nome ?? m.id, icone: m.def?.icone, aba: !!m.def?.aba,
     badge, status: m.status, causa: m.causa, versao: m.versao, sdk: m.def?.sdk, pasta: m.dir,
     iaHojeUsd: gastoIaDoDia(o.root, m.id),
-    // registro de gasto de IA ilegível: a IA de todos os módulos fica bloqueada até amanhã
-    iaBloqueada: iaBloqueadaNoDia(o.root),
+    // registro de gasto de IA ilegível ou inacessível: a IA de todos os módulos fica bloqueada (o motivo diz até quando)
+    iaBloqueada: !!bloqueio,
+    iaBloqueio: bloqueio?.motivo,
     tarefas: o.scheduler?.status(m.id) ?? [],
     // os 10 mais recentes, em ordem cronológica (o último é o mais novo)
     erros: o.registry.errosRecentes(m.id, 10),

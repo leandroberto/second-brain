@@ -402,10 +402,16 @@ describe("doctor: erros recentes dos módulos", () => {
     writeFileSync(arq, "{ trunc");
     try {
       const ok = (await modulesChecks(brain, 1)).find((c) => c.id === "module-ok")!;
-      expect(ok.detail).toContain("IA bloqueada hoje: registro de gasto ilegível");
+      expect(ok.detail).toContain("IA bloqueada: registro de gasto ilegível (será guardado na próxima chamada)");
+      expect(ok.fix).toBe("a próxima chamada de IA guarda o registro ilegível; a IA volta no dia seguinte");
       expect(ok.detail).not.toContain("IA hoje US$");
       expect(ok.status).toBe("warn");
       expect(readFileSync(arq, "utf8")).toBe("{ trunc");
+      // depois de guardado (marca do dia): até amanhã, citando onde ficou o registro
+      writeFileSync(arq, JSON.stringify({ _ilegivel: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })(), _guardado: `${arq}.corrompido-x` }));
+      const guardado = (await modulesChecks(brain, 1)).find((c) => c.id === "module-ok")!;
+      expect(guardado.detail).toContain(`IA bloqueada até amanhã; o registro ilegível foi guardado em ${arq}.corrompido-x`);
+      expect(guardado.fix).toBe("a IA dos módulos volta amanhã");
     } finally { rmSync(arq, { force: true }); }
   });
 

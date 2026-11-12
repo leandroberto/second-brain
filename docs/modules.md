@@ -291,10 +291,13 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
   freio de consumo da cota, não como cobrança.
 - Há um teto por chamada (`assistant.max_budget_usd`) e um **teto diário por módulo**, `modules.<id>.ia_max_usd_dia` (padrão
   2). Acima dele a chamada volta `{ ok: false, tipo: "orcamento" }`. O gasto do dia aparece em Saúde. Se o registro de gasto
-  (`_ia.json`, no estado dos módulos) estiver ilegível, ele é preservado como `_ia.json.corrompido-<data>`, um aviso sai no
-  stderr do `serve` e a IA de todos os módulos fica bloqueada até o dia seguinte (`tipo: "orcamento"`): sem o registro, o
-  gasto do dia é desconhecido e conta como igual ao teto. Saúde, `brain modules list` e o doctor mostram "IA bloqueada hoje:
-  registro de gasto ilegível". Se nem a preservação der certo, o arquivo não é sobrescrito e a IA segue bloqueada.
+  (`_ia.json`, no estado dos módulos) estiver ilegível, a próxima chamada o guarda como `_ia.json.corrompido-<data>`, um aviso
+  sai no stderr do `serve` e a IA de todos os módulos fica bloqueada até o dia seguinte (`tipo: "orcamento"`): sem o registro,
+  o gasto do dia é desconhecido e conta como igual ao teto. Se não der para guardá-lo (permissão da pasta), o arquivo não é
+  sobrescrito e a IA fica bloqueada até corrigir. Saúde, `brain modules list` e o doctor mostram o motivo: "bloqueada até
+  amanhã; o registro ilegível foi guardado em <arquivo>", "bloqueada: registro de gasto ilegível (será guardado na próxima
+  chamada)", "bloqueada até corrigir: não foi possível guardar o registro ilegível em <pasta>; confira as permissões" ou
+  "bloqueada: registro de gasto inacessível (<código>)".
 - Trate a IA como opcional: sem motor, sem login ou acima do teto, `ok` é `false`. O `lembrete` a deixa **desligada por padrão**
   (`config: { ia: true }` a liga): ligada, usa a assinatura do `claude` uma vez por dia, e se falhar o aviso sai sem corpo. Gaste a
   cota do dono só com o que ele ligou.

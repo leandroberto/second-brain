@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, gastoIaDoDia, iaBloqueadaNoDia, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
+import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, bloqueioIaNoDia, gastoIaDoDia, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
 
 const MCP = { command: "/usr/bin/node-ficticio", args: ["/opt/brain-ficticio/bin.js", "mcp"] };
 const saida = (extra: Record<string, unknown> = {}, estruturado: unknown = { x: 1 }): SaidaProcesso => ({
@@ -143,14 +143,15 @@ describe("complete / createModuleIa", () => {
     const avisos: string[] = [];
     const spy = vi.spyOn(console, "error").mockImplementation((m: unknown) => { avisos.push(String(m)); });
     try {
-      const bloqueio = { ok: false, tipo: "orcamento", mensagem: "registro de gasto de IA ilegível; IA do módulo x bloqueada até amanhã" };
-      expect(await ia.completar({ prompt: "p" })).toEqual(bloqueio);
-      expect(await ia.completar({ prompt: "p" })).toEqual(bloqueio); // o bloqueio persiste no novo _ia.json
+      const r1 = await ia.completar({ prompt: "p" });
+      const preservado = readdirSync(root).filter((f) => f.startsWith("_ia.json.corrompido-"));
+      expect(preservado).toHaveLength(1);
+      const bloqueio = { ok: false, tipo: "orcamento", mensagem: `registro de gasto de IA ilegível; IA do módulo x bloqueada até amanhã; o registro ilegível foi guardado em ${join(root, preservado[0]!)}` };
+      expect(r1).toEqual(bloqueio);
+      expect(await ia.completar({ prompt: "p" })).toEqual(bloqueio); // o bloqueio (e onde ficou o registro) persiste no novo _ia.json
       expect(chamadas).toHaveLength(0);
       expect(avisos).toHaveLength(1);
       expect(avisos[0]).toMatch(/ilegível.*_ia\.json/);
-      const preservado = readdirSync(root).filter((f) => f.startsWith("_ia.json.corrompido-"));
-      expect(preservado).toHaveLength(1);
       expect(readFileSync(join(root, preservado[0]!), "utf8")).toBe("{ não é json");
     } finally { spy.mockRestore(); }
   });
@@ -186,21 +187,45 @@ describe("gastoIaDoDia", () => {
   });
 });
 
-describe("iaBloqueadaNoDia", () => {
-  it("reconhece a marca do dia e o arquivo ilegível, sem efeito colateral", () => {
+const comoRoot = process.getuid?.() === 0;
+
+describe("bloqueioIaNoDia", () => {
+  it("marca do dia (registro guardado) e arquivo ilegível ainda não tocado, sem efeito colateral", () => {
     const root = mkdtempSync(join(dir, "bloq-"));
     const arq = join(root, "_ia.json");
-    expect(iaBloqueadaNoDia(root)).toBe(false); // sem arquivo
+    expect(bloqueioIaNoDia(root)).toBeUndefined(); // sem arquivo
     writeFileSync(arq, JSON.stringify({ z: { [hoje()]: 0.1 } }));
-    expect(iaBloqueadaNoDia(root)).toBe(false);
-    writeFileSync(arq, JSON.stringify({ _ilegivel: hoje(), z: { [hoje()]: 0.1 } }));
-    expect(iaBloqueadaNoDia(root)).toBe(true);
+    expect(bloqueioIaNoDia(root)).toBeUndefined();
+    writeFileSync(arq, JSON.stringify({ _ilegivel: hoje(), _guardado: "/estado/_ia.json.corrompido-x", z: { [hoje()]: 0.1 } }));
+    expect(bloqueioIaNoDia(root)?.motivo).toBe("bloqueada até amanhã; o registro ilegível foi guardado em /estado/_ia.json.corrompido-x");
     expect(gastoIaDoDia(root, "z")).toBe(0.1);
-    writeFileSync(arq, JSON.stringify({ _ilegivel: "2000-01-01" }));
-    expect(iaBloqueadaNoDia(root)).toBe(false); // marca de outro dia
+    writeFileSync(arq, JSON.stringify({ _ilegivel: "2000-01-01", _guardado: "/x" }));
+    expect(bloqueioIaNoDia(root)).toBeUndefined(); // marca de outro dia
     writeFileSync(arq, "{ trunc");
-    expect(iaBloqueadaNoDia(root)).toBe(true); // a próxima chamada vai bloquear
+    expect(bloqueioIaNoDia(root)?.motivo).toBe("bloqueada: registro de gasto ilegível (será guardado na próxima chamada)");
     expect(readFileSync(arq, "utf8")).toBe("{ trunc"); // nada foi preservado nem gravado
     expect(readdirSync(root)).toEqual(["_ia.json"]);
+  });
+
+  it.skipIf(comoRoot)("ilegível numa pasta sem permissão de escrita: bloqueada até corrigir (exibição e chamada)", async () => {
+    const { chamadas, ia, root } = montar(() => saida({ total_cost_usd: 0.01 }));
+    writeFileSync(join(root, "_ia.json"), "{ trunc");
+    chmodSync(root, 0o500);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const motivo = `bloqueada até corrigir: não foi possível guardar o registro ilegível em ${root}; confira as permissões`;
+      expect(bloqueioIaNoDia(root)?.motivo).toBe(motivo);
+      expect(await ia.completar({ prompt: "p" })).toEqual({ ok: false, tipo: "orcamento", mensagem: `registro de gasto de IA ilegível; IA do módulo x ${motivo}` });
+      expect(chamadas).toHaveLength(0);
+    } finally { spy.mockRestore(); chmodSync(root, 0o700); }
+    expect(readFileSync(join(root, "_ia.json"), "utf8")).toBe("{ trunc");
+  });
+
+  it.skipIf(comoRoot)("registro inacessível (permissão negada): bloqueio visível com o código", () => {
+    const root = mkdtempSync(join(dir, "bloq-"));
+    writeFileSync(join(root, "_ia.json"), JSON.stringify({ z: { [hoje()]: 0.1 } }));
+    chmodSync(join(root, "_ia.json"), 0o000);
+    try { expect(bloqueioIaNoDia(root)?.motivo).toBe("bloqueada: registro de gasto inacessível (EACCES)"); }
+    finally { chmodSync(join(root, "_ia.json"), 0o600); }
   });
 });

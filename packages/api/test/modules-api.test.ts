@@ -188,7 +188,7 @@ describe("rotas de módulo", () => {
     writeFileSync(arq, "{ trunc");
     try {
       const b = await (await call(api.token, "GET", "/api/modules")).json() as any;
-      for (const m of b.modulos) expect(m, m.id).toMatchObject({ iaBloqueada: true, iaHojeUsd: 0 });
+      for (const m of b.modulos) expect(m, m.id).toMatchObject({ iaBloqueada: true, iaBloqueio: "bloqueada: registro de gasto ilegível (será guardado na próxima chamada)", iaHojeUsd: 0 });
       expect(readFileSync(arq, "utf8")).toBe("{ trunc");
     } finally { rmSync(arq, { force: true }); }
   });
