@@ -387,6 +387,132 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
   recentes e gasto de IA do dia. `brain modules list` mostra o resumo no terminal (status, versão, gasto de IA, tarefas e
   erros).
 
+## Gerenciar pela UI
+
+Em **Configurações › Módulos** (`#/settings/modulos`) o dono adiciona, configura, liga, desliga e remove módulos sem editar o
+`config.yaml`. O menu lateral continua mostrando só as abas dos módulos. Tudo aqui exige a **sessão humana `full`** (a de
+`brain ui`): api-token, desktop e páginas de módulo recebem 403. A entrada é o cartão **Módulos** em Configurações, sempre
+presente (sem módulos ele diz "Nenhum módulo instalado"), com o link **Gerenciar módulos**. Sem módulos configurados, a
+página só mostra a lista vazia e o botão **+ Adicionar módulo**.
+
+### Adicionar: quatro etapas
+
+1. **Pasta.** Um navegador de pastas do WSL (o `serve` lista os diretórios; o navegador não entrega caminhos), começando em
+   `~/projetos` (ou `~`). Pastas que parecem módulos ganham "módulo provável" (leitura estática do `package.json`, nada
+   executa). Também dá para colar o caminho. **Continuar** mostra o aviso de confiança: "Para conferir, o código desta pasta
+   será carregado no seu computador. Continue só com módulos em que você confia." Só depois dele o código da pasta roda.
+2. **Conferir.** Nome, versão, id, `sdk` e o que o módulo vai fazer: aba, tarefas e quando rodam, ferramentas MCP
+   (`<id>_<nome>`), rotas (quantas e quantas com `humano: true`, "agem fora, só com você logado"), uso de IA e que propõe
+   notas como `module/<id>`. Pasta que não é módulo válido mostra as mesmas causas do `brain modules check` e não deixa
+   continuar.
+3. **Configurar.** Os campos que o módulo declara, com o erro ao lado do campo, e "Só nesta máquina" (grava `host` com o
+   hostname).
+4. **Confirmar.** Resumo e **Adicionar e reiniciar o serve**.
+
+Depois do OK: "Módulo adicionado. O brain serve será reiniciado para aplicar as alterações." A página volta quando o `serve`
+estiver no ar. O caminho gravado é o real (`realpath`), absoluto; pasta com espaço, acento ou symlink funciona. Um id que já
+está configurado (outra pasta do mesmo módulo) é recusado e nada é gravado. Se a pasta passou a declarar outro `id` entre a
+conferência e o OK, a resposta é 409 `id_mudou` e a tela volta à etapa 1: "O módulo mudou desde a conferência; confira de
+novo."
+
+### Confiança, frase-senha e processo filho
+
+- **Adicionar e ligar** exigem a **frase-senha do revisor** quando ela existe (`brain admin passphrase`): ela é pedida no
+  Continuar da etapa 1, antes de qualquer código rodar, e ao ligar (ver "Lista, ligar e desligar"). Sem frase configurada e
+  sem `review.passphrase_required`, a sessão humana basta. Com `review.passphrase_required` e a frase **ausente nesta
+  máquina**, adicionar e ligar falham fechado, sempre (403 com `motivo: "ausente"`): configure a frase aqui
+  (`brain admin passphrase`). Configurar, desligar, remover e tentar de novo pedem só a sessão `full`.
+- Frase errada: 403 "frase-senha incorreta", sem mais detalhes. São **5 tentativas por 60 s**; passado o limite, 429 até a
+  janela correr, mesmo com a frase certa. A tentativa é registrada antes de a frase ser conferida, e o contador persiste no
+  estado, então reiniciar o `serve` não o zera. Depois de uma frase errada, as ações que **ampliam ou reiniciam com código
+  novo** (adicionar, ligar, configurar e reiniciar/**Tentar de novo**) também respondem 429 por até 60 s; ligar com a frase
+  certa zera a janela. As que só **restringem** (desligar, remover e restringir ao host desta máquina) são ações de
+  segurança e passam mesmo assim. Se o registro de tentativas (`_frase-erros.json`, na pasta de estado dos módulos) fica
+  ilegível, as que ampliam ou reiniciam respondem 429 até apagar o arquivo que a mensagem indica (com a frase gravada; com a
+  frase exigida e ausente nesta máquina prevalece o 403 `ausente`).
+- No máximo **2 conferências ao mesmo tempo**; a 3ª recebe 429 ("tente de novo em instantes").
+- A conferência roda o `brain modules check <pasta> --json` num **processo filho descartável**: estado em diretório
+  temporário, sem `iniciar`, sem herdar o api-token nem o arquivo de sessões pelo ambiente, com tempo limite de 30 s. O `serve` em execução não
+  carrega nada da pasta. O código do módulo roda com o seu usuário (como qualquer `modules check`); o aviso de confiança existe por
+  isso.
+- A conferência devolve um **ticket** (aleatório, em memória, 15 min), ligado ao caminho real, ao `id` conferido e à sessão
+  que conferiu.
+  **Adicionar** usa o ticket e não pede a frase de novo. Se o `serve` reiniciou entre conferir e adicionar, ou o ticket
+  expirou, a resposta é 409 `ticket_invalido` e a tela volta à etapa 1 pedindo para conferir a pasta de novo.
+- `PUT /api/settings` aceita só as chaves e subchaves que a tela de Configurações grava: `vault_name`,
+  `embeddings.{provider, base_url, model, external_opt_in}`, `git.{auto_commit, auto_commit_external}`,
+  `agents.{commit_policy, per_type, can_link}` (`per_type` só com tipos conhecidos e `review` ou `auto`),
+  `governance.{duplicate_threshold, candidate_threshold, stale_days}` e `retention.activity_days`. `modules` recebe 403 "use
+  Configurações › Módulos", `review` 403 apontando para `brain admin passphrase`, e qualquer outra chave ou subchave
+  (`embeddings.api_key_env`, `embeddings.api_key_hosts`, `embeddings.dimensions`, `assistant.claude_path`, `state.external`, `limits`...) 403 "esta
+  configuração não se altera pela UI; use o config.yaml", sem gravar nada. Nada disso pode ser contornado pela sessão do navegador.
+  Valor de tipo errado (`git.auto_commit: "sim"`) ou corpo que não é objeto responde 400 `invalid` com o campo e o tipo
+  esperado (sem ecoar o valor), também sem gravar nada.
+- Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
+  `restringir_host` ou `remover`. Numa atualização que muda mais de uma coisa (ligar com config nova, restringir ao host
+  junto com a config), o `detail` guarda também `config: true` quando a config mudou e `host: "definido"` ou `"removido"`
+  quando o host mudou.
+- Um `PUT` que não muda a entrada (desligar um desligado, restringir ao host desta máquina o que já tem esse host, a mesma
+  config) responde 200 `{ "mensagem": "Nada mudou: o módulo já estava assim.", "reiniciar": false }`: nada é gravado nem
+  auditado e o `serve` não reinicia, nem na janela de frase errada. A tela decide pelo campo (`reiniciar === false`) e
+  recarrega a lista e a config (o cartão pode estar atrás de uma edição feita por fora). As respostas que reiniciam trazem
+  `reiniciar: true`; sem reinício automático (API fora do `brain serve`), também `reinicioManual: true`.
+
+### Configurar: formulário ou editor JSON
+
+Se o módulo exporta `configJson` (JSON Schema da config) com um objeto de um nível só, a tela monta campos para os tipos
+simples (texto, número, inteiro, booleano e opção de uma lista de textos) e mostra a `description` de cada um. Sem
+`configJson`, ou com qualquer outra forma (objeto aninhado, lista, `anyOf`, `$ref`...), aparece um editor de texto JSON.
+Salvar pelo formulário mantém as chaves da config atual que o schema não descreve. Em qualquer caso a validação final é a do `configSchema` do módulo, no processo filho, e o detector de
+segredos continua recusando valores sensíveis (credencial não vai na config: use variável de ambiente ou o cofre do sistema).
+O formulário aparece quando o `serve` tem o schema do módulo carregado (`configJson`), inclusive num módulo que falhou por
+configuração inválida, que é justamente quando ele ajuda. Sem o schema (módulo desligado, inativo nesta máquina, ausente,
+que falhou ao importar, ou que não exporta `configJson`) abre o editor JSON.
+Quando o módulo não carrega (falho sem schema, ausente) ou não roda nesta máquina (desligado, inativo) num vault com
+frase-senha, o editor traz o aviso "Não foi possível validar agora: a configuração será conferida quando o módulo voltar a
+carregar.": a config é gravada só com o detector de segredos, sem o `configSchema`. Se a tela não conseguiu saber se o vault
+tem frase (a consulta falhou ou ainda não respondeu), o aviso aparece para desligado e inativo do mesmo jeito: quem decide é
+o servidor.
+
+### Lista, ligar e desligar
+
+Cada módulo é um cartão: nome, versão, situação (ativo, desligado, falho com o motivo e uma dica, inativo nesta máquina,
+ausente), pasta, próxima e última execução de cada tarefa com o resultado e o gasto de IA do dia. Ações: Configurar,
+Ligar/Desligar, Rodar agora, Ver erros, Remover e, no falho, Tentar de novo. Salvar configuração, ligar, desligar, remover e
+tentar de novo (no cartão e no aviso de que o `serve` não reiniciou) pedem confirmação ("... O brain serve será
+reiniciado") e reiniciam o `serve`. Conta como **ligar**, e pede a
+frase quando ela existe, qualquer mudança que **amplie onde o módulo roda**: desligado para ligado (em qualquer `host`),
+passar a rodar nesta máquina e, com o módulo ligado, tirar ou trocar o `host`. Restringir a esta máquina não pede a frase.
+
+### Reinício automático
+
+O `serve` sobe uma cópia de si mesmo (mesmo executável, argumentos, ambiente e diretório), destacada, e encerra a atual pelo
+mesmo caminho do SIGTERM; a cópia espera o pid antigo sumir e pega o `serve.lock`. A tela espera o `pid` de
+`GET /api/serve` mudar (até 60 s) e recarrega. A saída da cópia vai para `<stateDir>/serve.log` (a pasta de estado do vault, ver
+[Estado](#estado)), com rotação em 5 MB. Se a cópia não subir, o processo atual
+**não** encerra.
+
+Passados os 60 s a tela mostra "O brain serve não reiniciou. Veja o serve.log na pasta de estado do second-brain." com o botão **Tentar de novo**. Nesse caso: abra o `serve.log`, corrija a causa (porta ocupada, módulo que derruba o
+processo) e use **Tentar de novo** ou rode `brain serve` no terminal. Sob systemd (`INVOCATION_ID` presente **e** o pai do processo na subida é o gerenciador, pid 1 ou `systemd`) o `serve` sai
+com o código 75 e a unit do repo o sobe de novo (`Restart=on-failure`). A cópia destacada sobe sem `INVOCATION_ID`, `JOURNAL_STREAM` e
+`NOTIFY_SOCKET`, para não se achar sob systemd.
+
+### Remover
+
+**Remover** só tira `modules.<id>` do `config.yaml`. A pasta do módulo e o estado dele ficam no disco; adicionar de novo
+recupera tudo. A tela nunca apaga nada do módulo.
+
+### Quando o `config.yaml` tem erro de edição
+
+Se o arquivo não é YAML válido (alguém editou à mão e quebrou), as rotas de gerenciamento recusam gravar e a tela mostra a
+mensagem do servidor, em vez de sobrescrever o arquivo. Corrija o `config.yaml` e tente de novo.
+
+### O que fica de fora
+
+Instalar a partir de link do git, URL ou marketplace; atualizar o módulo (`git pull`, build) pela tela; carregar ou
+descarregar módulo sem reiniciar o `serve`; editar o código do módulo; e o disco do Windows (`C:\...` não é navegável;
+`/mnt/c/...` funciona se colado, mas o navegador de pastas não foi pensado para ele).
+
 ## Verificar: `brain modules check`
 
 ```bash
@@ -396,6 +522,14 @@ brain modules check ./meu-modulo
 Valida o módulo **sem ligá-lo**: carrega o `package.json#exports`, confere o contrato, o `sdk`, o `id`, o schema, as
 ferramentas MCP (nome, `entradaJson`), as tarefas (cron) e se a pasta da aba tem `index.html`. Rode antes de configurar o
 módulo no vault e a cada mudança de contrato.
+
+Com `--json` imprime uma linha `{ ok, causas, resumo?, config? }` (saída 0/1), o formato que a página de módulos usa:
+`resumo` traz id, nome, versão, aba, tarefas (com o horário em português), ferramentas MCP, rotas e `usaIa`. Com
+`--config <arquivo|->` (JSON; `-` lê da entrada padrão) valida também uma config pelo `configSchema`, recusando segredos.
+
+Dois campos opcionais do `defineModule` alimentam a tela: `configJson` (JSON Schema da config, ex.:
+`z.toJSONSchema(configSchema)`, para montar o formulário) e `usaIa: true` (o módulo usa a IA, por padrão ou conforme a
+config; a tela avisa antes de ligar).
 
 ## Distribuir o SDK
 

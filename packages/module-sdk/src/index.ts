@@ -64,6 +64,10 @@ export interface ModuleDef {
   versao: string;
   icone?: string;
   configSchema?: StandardSchema<unknown>;
+  /** JSON Schema da config (ex.: `z.toJSONSchema(configSchema)`): a tela de configuração monta o formulário por ele */
+  configJson?: Record<string, unknown>;
+  /** o módulo usa IA (a assinatura do Claude, via `ctx.ia`), por padrão ou conforme a config: a tela avisa antes de ligar */
+  usaIa?: boolean;
   aba?: { titulo: string; pasta: string };
   rotas?: Rota[];
   tarefas?: Tarefa[];

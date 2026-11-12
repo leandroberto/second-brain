@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
@@ -13,17 +13,24 @@ function destinoReal(path: string): string {
   try { return realpathSync(path); } catch { return resolve(dirname(path), readlinkSync(path)); }
 }
 
+/** Modo atual do arquivo, ou `undefined` se ele não existe. */
+function modoAtual(path: string): number | undefined {
+  try { return statSync(path).mode & 0o7777; } catch { return undefined; }
+}
+
 /**
  * Escrita atômica de arquivo de estado: grava num tmp único na MESMA pasta do destino real e troca por `rename` (quem lê nunca
  * vê um arquivo vazio ou parcial). Se `path` é um symlink, o alvo dele é que é substituído e o link continua link. Em qualquer
- * falha o tmp é apagado e o erro relançado. `mode` vale para o arquivo final (padrão 0600).
+ * falha o tmp é apagado e o erro relançado. `mode` vale para o arquivo final (padrão 0600). Com `"manter"`, o arquivo fica com o
+ * modo que já tinha e, se ainda não existe, com o padrão de um arquivo novo (0666 menos a umask), como faria o `writeFileSync`.
  */
-export function writeFileAtomic(path: string, data: string, mode = 0o600): void {
+export function writeFileAtomic(path: string, data: string, mode: number | "manter" = 0o600): void {
   const alvo = destinoReal(path);
   const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
+  const modo = mode === "manter" ? modoAtual(alvo) : mode;
   try {
-    writeFileSync(tmp, data, { mode });
-    try { chmodSync(tmp, mode); } catch { /* fs sem chmod */ }
+    writeFileSync(tmp, data, modo === undefined ? {} : { mode: modo });
+    if (modo !== undefined) try { chmodSync(tmp, modo); } catch { /* fs sem chmod */ }
     renameSync(tmp, alvo);
   } catch (e) {
     try { rmSync(tmp, { force: true }); } catch { /* best effort */ }

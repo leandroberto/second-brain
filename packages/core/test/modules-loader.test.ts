@@ -339,7 +339,7 @@ describe("resolveModuleDir e validar", () => {
 
   it("validar junta path: message e aceita schema sem instanceof", async () => {
     const s = { "~standard": { version: 1 as const, vendor: "t", validate: () => ({ issues: [{ message: "ruim", path: ["a", { key: "b" }] }, { message: "geral" }] }) } };
-    expect(await validar(s, {})).toEqual({ ok: false, mensagem: "a.b: ruim; geral" });
+    expect(await validar(s, {})).toEqual({ ok: false, mensagem: "a.b: ruim; geral", issues: [{ campo: "a.b", mensagem: "ruim" }, { campo: "", mensagem: "geral" }] });
     expect(await validar({ "~standard": { version: 1 as const, vendor: "t", validate: async (v) => ({ value: v }) } }, 3)).toEqual({ ok: true, value: 3 });
   });
 });

@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
-import { api, setToken, getToken, type Analysis, type ModuloInfo } from "./api";
-import { ClassBadge, ErrorBox, timeAgo, Skeleton, TYPE_LABEL, errMsg, go, href, useData, useDebounced, useModulos, useToast } from "./lib";
+import { api, setToken, getToken, type Analysis } from "./api";
+import { ClassBadge, ErrorBox, Skeleton, TYPE_LABEL, errMsg, go, href, useData, useDebounced, useModulos, useToast } from "./lib";
 
 interface Settings {
-  config: { vault_name: string; embeddings: { provider: string; external_opt_in: boolean; base_url: string; model: string; dimensions: number; api_key_env: string }; governance: { duplicate_threshold: number; candidate_threshold: number; stale_days: number }; agents: { commit_policy: string; can_link: boolean; per_type?: Record<string, string> }; git: { auto_commit: boolean; auto_commit_external: boolean }; limits: { max_chars: number; max_code_lines: number }; retention: { activity_days: number } };
+  config: { vault_name: string; embeddings: { provider: string; external_opt_in: boolean; base_url: string; model: string; dimensions: number; api_key_env: string }; governance: { duplicate_threshold: number; candidate_threshold: number; stale_days: number }; agents: { commit_policy: string; can_link: boolean; per_type?: Record<string, string> }; git: { auto_commit: boolean; auto_commit_external: boolean }; limits: { max_chars: number; max_code_lines: number }; retention: { activity_days: number }; modules?: Record<string, unknown> };
   vault: string; embedder: { id: string; external: boolean };
 }
 interface Check { id: string; name: string; status: "ok" | "warn" | "fail"; detail: string; fix?: string }
-interface Health { vault: string; git: { repo: boolean; head?: string; dirty_files: number; auto_commit: boolean }; index: { notes: number }; embeddings: { provider: string; external: boolean; covered: number; total: number }; problems: { notes_with_issues: number; dangling_links: number; duplicate_ids: number; sync_conflict_copies?: number }; pending_proposals: number; ok: boolean }
+interface Health { vault: string; git: { repo: boolean; head?: string; dirty_files: number; auto_commit: boolean }; index: { notes: number }; embeddings: { provider: string; external: boolean; covered: number; total: number; aviso?: string }; problems: { notes_with_issues: number; dangling_links: number; duplicate_ids: number; sync_conflict_copies?: number }; pending_proposals: number; ok: boolean }
 
 export function SettingsPage() {
   const { data: s, error, reload } = useData<Settings>("/api/settings");
@@ -28,7 +28,7 @@ export function SettingsPage() {
         <div className="grid">
           <section className="card"><h2>Saúde</h2>
             {h && <dl className="kv"><dt>Git</dt><dd>{h.git.repo ? <span className="badge ok">ok · {h.git.head}</span> : <span className="badge danger">sem repositório</span>} {h.git.dirty_files > 0 && <span className="badge warn">{h.git.dirty_files} arquivo(s) não commitado(s)</span>}</dd>
-              <dt>Índice</dt><dd>{h.index.notes} notas (SQLite, reconstruível)</dd><dt>Embeddings</dt><dd>{h.embeddings.provider} · {h.embeddings.covered}/{h.embeddings.total} {h.embeddings.external ? <span className="badge warn">externo</span> : <span className="badge ok">local</span>}</dd>
+              <dt>Índice</dt><dd>{h.index.notes} notas (SQLite, reconstruível)</dd><dt>Embeddings</dt><dd>{h.embeddings.provider} · {h.embeddings.covered}/{h.embeddings.total} {h.embeddings.external ? <span className="badge warn">externo</span> : <span className="badge ok">local</span>}{h.embeddings.aviso && <div className="small" role="status"><span className="badge warn">aviso</span> {h.embeddings.aviso}</div>}</dd>
               <dt>Problemas</dt><dd>{h.problems.notes_with_issues + h.problems.dangling_links + h.problems.duplicate_ids + (h.problems.sync_conflict_copies ?? 0) === 0 ? "nenhum" : `${h.problems.notes_with_issues} notas · ${h.problems.dangling_links} links quebrados · ${h.problems.duplicate_ids} ids duplicados${h.problems.sync_conflict_copies ? ` · ${h.problems.sync_conflict_copies} cópia(s) de conflito do OneDrive` : ""}`}</dd></dl>}
             <div className="actions"><button className="btn" disabled={!!busy} onClick={() => run("Reindexar", "/api/reindex")}>Reindexar tudo</button>
               <button className="btn" disabled={!!busy || !dirty?.length} onClick={() => run("Commit", "/api/git/commit", {})}>Commitar edições manuais{dirty?.length ? ` (${dirty.length})` : ""}</button></div>
@@ -36,14 +36,14 @@ export function SettingsPage() {
             {checks && <div style={{ marginTop: 12 }} role="list" aria-label="Resultado do diagnóstico">{checks.map((k) => <div key={k.id} role="listitem" style={{ padding: "6px 0", borderTop: "1px solid var(--line)" }}><span className={`badge ${k.status === "ok" ? "ok" : k.status === "warn" ? "warn" : "danger"}`}>{k.status === "ok" ? "ok" : k.status === "warn" ? "aviso" : "falha"}</span> <b>{k.name}</b> <span className="muted small">{k.detail}</span>{k.status !== "ok" && k.fix && <div className="small" style={{ marginTop: 2 }}>↳ correção: <code className="mono">{k.fix}</code></div>}</div>)}</div>}
             {log && <div style={{ marginTop: 14 }}><h2>Últimos commits</h2>{log.map((l) => <div key={l.hash} className="small" style={{ padding: "3px 0", display: "flex", gap: 8 }}><code className="mono">{l.hash}</code><span className="grow" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.subject}</span><button className="btn sm ghost" title="Reverter (cria novo commit)" onClick={() => confirm(`Reverter ${l.hash}?`) && run("Reverter", "/api/git/revert", { rev: l.hash })}>↩</button></div>)}</div>}
           </section>
-          <ModulesSection />
+          <ModulesSection configurados={Object.keys(c.modules ?? {})} />
           <section className="card"><h2>Busca e embeddings</h2>
             <div className="field"><label htmlFor="prov">Provider de embeddings</label>
               <select id="prov" value={c.embeddings.provider} onChange={(e) => patch({ embeddings: { provider: e.target.value } })}><option value="hash">Local offline (hash) — padrão, nada sai da máquina</option><option value="openai-compatible">Endpoint OpenAI-compatível (OpenAI, Ollama, LM Studio…)</option></select></div>
             {c.embeddings.provider === "openai-compatible" && <>
               <div className="field"><label htmlFor="bu">Base URL</label><input id="bu" defaultValue={c.embeddings.base_url} onBlur={(e) => e.target.value !== c.embeddings.base_url && patch({ embeddings: { base_url: e.target.value } })} /></div>
               <div className="field"><label htmlFor="md">Modelo</label><input id="md" defaultValue={c.embeddings.model} onBlur={(e) => e.target.value !== c.embeddings.model && patch({ embeddings: { model: e.target.value } })} /></div>
-              <div className="switch"><div><b>Permitir envio a servidor externo</b><div className="muted small">Envia título+corpo das notas (nunca segredos) para {c.embeddings.base_url}. Chave lida da variável {c.embeddings.api_key_env}. Localhost dispensa opt-in.</div></div><input type="checkbox" checked={c.embeddings.external_opt_in} onChange={(e) => patch({ embeddings: { external_opt_in: e.target.checked } })} aria-label="Opt-in embeddings externos" /></div></>}
+              <div className="switch"><div><b>Permitir envio a servidor externo</b><div className="muted small">Envia título+corpo das notas (nunca segredos) para {c.embeddings.base_url}. Chave lida da variável {c.embeddings.api_key_env}. Localhost dispensa opt-in.</div><div className="muted small">A chave só é enviada para servidores listados em embeddings.api_key_hosts no config.yaml.</div></div><input type="checkbox" checked={c.embeddings.external_opt_in} onChange={(e) => patch({ embeddings: { external_opt_in: e.target.checked } })} aria-label="Opt-in embeddings externos" /></div></>}
             <p className="small muted">Sem embeddings a busca continua funcionando por texto completo (FTS5). Provider atual: <code>{s.embedder.id}</code>.</p></section>
         </div>
         <div className="grid">
@@ -75,44 +75,19 @@ export function SettingsPage() {
 }
 
 // ---------------- MÓDULOS (Saúde) ----------------
-const STATUS_MODULO: Record<ModuloInfo["status"], [string, string]> = { ativo: ["ok", "ativo"], falho: ["danger", "falho"], inativo: ["", "inativo"], ausente: ["warn", "ausente"] };
-const quando = (iso?: string) => { if (!iso) return "—"; const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); };
-
-function ModulesSection() {
-  const { data, reload } = useModulos();
-  // "rodar agora" exige a sessão humana `full` da UI (canal ui); api-token e outras credenciais recebem 403, então nem mostra
-  const { data: meta } = useData<{ principal: { kind: string; channel: string } }>("/api/meta");
-  const podeRodar = meta?.principal.kind === "human" && meta.principal.channel === "ui";
-  const toast = useToast();
-  const [rodando, setRodando] = useState(""); const [resultados, setResultados] = useState<Record<string, string>>({});
-  if (!data || (data.modulos.length === 0 && !data.reiniciar)) return null;
-  const rodar = async (m: ModuloInfo, tarefa: string) => {
-    if (!confirm(`Rodar agora a tarefa "${tarefa}" do módulo "${m.nome}"?\n\nA tarefa pode causar uma ação externa (enviar mensagem, chamar um serviço) e não pode ser desfeita por aqui.`)) return;
-    const k = `${m.id}/${tarefa}`; setRodando(k);
-    try {
-      const r = await api<{ resultado: string; erro?: string }>(`/api/modules/${m.id}/_tarefas/${encodeURIComponent(tarefa)}/rodar`, { method: "POST", body: {} });
-      const txt = r.erro ? `${r.resultado}: ${r.erro}` : r.resultado; setResultados((x) => ({ ...x, [k]: txt })); toast(`${tarefa}: ${txt}`, r.resultado !== "ok"); reload();
-    } catch (e) { setResultados((x) => ({ ...x, [k]: errMsg(e) })); toast(errMsg(e), true); } finally { setRodando(""); }
-  };
+/**
+ * Cartão que leva a Configurações › Módulos (lista, assistente de adicionar e ações): sempre presente, é a entrada da página.
+ * Conta os configurados (desligados inclusive, que o serve não carrega) e os carregados, como a lista da página.
+ */
+function ModulesSection({ configurados }: { configurados: string[] }) {
+  const { data } = useModulos();
+  const falhos = data?.modulos.filter((m) => m.status === "falho").length ?? 0;
+  const total = new Set([...configurados, ...(data?.modulos.map((m) => m.id) ?? [])]).size;
   return (
     <section className="card" data-testid="modules-section"><h2>Módulos</h2>
-      {data.reiniciar && <div className="banner" role="status">a configuração de módulos mudou: reinicie o brain serve</div>}
-      {data.modulos.map((m) => { const [cls, lbl] = STATUS_MODULO[m.status] ?? ["", m.status]; return (
-        <div key={m.id} style={{ padding: "10px 0", borderTop: "1px solid var(--line)" }}>
-          <div><b>{m.nome}</b> <code className="mono small">{m.id}</code> <span className={`badge ${cls}`}>{lbl}</span> {m.versao && <span className="muted small">v{m.versao}</span>}</div>
-          <div className="small muted" style={{ marginTop: 2 }}>{m.sdk !== undefined && <>sdk {m.sdk} · </>}{m.iaBloqueada ? <span style={{ color: "var(--danger)" }}>IA {m.iaBloqueio ?? "bloqueada"}</span> : <>IA hoje: US$ {(m.iaHojeUsd ?? 0).toFixed(2)}</>}{m.pasta && <> · <code className="mono" title="pasta do módulo">{m.pasta}</code></>}</div>
-          {m.causa && <div className="small" style={{ color: "var(--danger)", marginTop: 2 }}>{m.causa}</div>}
-          {m.tarefas.map((t) => { const k = `${m.id}/${t.tarefa}`; const res = resultados[k]; return (
-            <div key={t.tarefa} className="small" style={{ marginTop: 8, paddingLeft: 10, borderLeft: "2px solid var(--line)" }}>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><b>{t.tarefa}</b> <code className="mono">{t.quando}</code>{t.suspensa && <span className="badge warn" title={`${t.errosSeguidos} erros seguidos`}>suspensa</span>}
-                {podeRodar && <button className="btn sm" style={{ marginLeft: "auto" }} disabled={!!rodando} onClick={() => rodar(m, t.tarefa)}>{rodando === k ? "Rodando…" : "Rodar agora"}</button>}</div>
-              <div className="muted">próxima: {quando(t.proxima)} · última: {t.fim || t.inicio ? `${quando(t.fim ?? t.inicio)} (${timeAgo(t.fim ?? t.inicio)})` : "nunca"} {t.resultado && <span className={`badge ${t.resultado === "ok" ? "ok" : "danger"}`}>{t.resultado}</span>}</div>
-              {t.erro && <div style={{ color: "var(--danger)" }}>{t.erro}</div>}
-              {res && <div role="status">resultado agora: {res}</div>}
-            </div>); })}
-          {m.erros.length > 0 && <details style={{ marginTop: 8 }}><summary className="small muted">Erros recentes ({m.erros.length})</summary>
-            {m.erros.map((e, i) => <div key={i} className="small" style={{ padding: "3px 0" }}><span className="muted">{quando(e.em)}</span> <code className="mono">{e.onde}</code> {e.mensagem}</div>)}</details>}
-        </div>); })}
+      {data?.reiniciar && <div className="banner" role="status">a configuração de módulos mudou: reinicie o brain serve</div>}
+      {data && <p className="small muted">{total === 0 ? "Nenhum módulo instalado" : `${total} módulo(s)`}{falhos > 0 && <> · <span style={{ color: "var(--danger)" }}>{falhos} falho(s)</span></>}</p>}
+      <a className="btn" href={href("settings/modulos")}>Gerenciar módulos</a>
     </section>
   );
 }

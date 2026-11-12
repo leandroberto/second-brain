@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { Brain, ModuleRegistry, clearServeInfo, isHumanSession, issueHumanSession, loadModules, modulesStateRoot, readServeInfo, revokeHumanSession, serveEstado, vaultFingerprint, writeServeInfo } from "@brain/core";
 import { startServe } from "../src/serve.js";
-import { checarModulo, dispararTarefa, estadoDosModulos, modulesChecks } from "../src/modules.js";
+import { CONFERENCIA_TIMEOUT_MS, checarModulo, conferirEmProcessoFilho, dispararTarefa, estadoDosModulos, modulesChecks } from "../src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 const run = promisify(execFile);
@@ -580,9 +580,198 @@ describe("brain modules (processo real)", () => {
     expect(r.stdout).toMatch(/ok/);
   });
 
+  describe("check --json", () => {
+    const LEMBRETE = resolve(import.meta.dirname, "../../../examples/modules/lembrete");
+    const json = async (args: string[], input?: string) => {
+      const p = execFile(process.execPath, [BIN, "modules", "check", ...args, "--vault", brain.vault.root], { env: env(), timeout: 60_000 });
+      const out = new Promise<{ code: number; stdout: string }>((ok) => {
+        let stdout = ""; p.stdout?.on("data", (d) => { stdout += d; }); p.on("close", (code) => ok({ code: code ?? -1, stdout }));
+      });
+      if (input !== undefined) p.stdin?.end(input);
+      const r = await out;
+      return { code: r.code, saida: JSON.parse(r.stdout.trim()) };
+    };
+
+    it("lembrete: ok com resumo", async () => {
+      const r = await json([LEMBRETE, "--json"]);
+      expect(r.code).toBe(0);
+      expect(r.saida).toMatchObject({ ok: true, causas: [], resumo: { id: "lembrete" } });
+    });
+    it("sdk2: falha com causa sobre sdk", async () => {
+      const r = await json([join(CORE_FIX, "sdk2"), "--json"]);
+      expect(r.code).toBe(1);
+      expect(r.saida.ok).toBe(false);
+      expect(r.saida.causas.join(" ")).toContain("sdk");
+    });
+    it("--config <arquivo>, arquivo ilegível e JSON inválido", async () => {
+      const d = mkdtempSync(join(tmpdir(), "brain-check-cfg-"));
+      try {
+        writeFileSync(join(d, "ok.json"), '{"horario":"10:00"}');
+        writeFileSync(join(d, "ruim.json"), "{nao e json");
+        expect((await json([LEMBRETE, "--json", "--config", join(d, "ok.json")])).saida.config).toEqual({ ok: true });
+        for (const arq of [join(d, "ruim.json"), join(d, "nao-existe.json")]) {
+          const r = await json([LEMBRETE, "--json", "--config", arq]);
+          expect(r.saida.config).toMatchObject({ ok: false, erros: [{ campo: "" }] });
+        }
+      } finally { rmSync(d, { recursive: true, force: true }); }
+    });
+    it("segredo na config não aparece na saída", async () => {
+      const r = await json([LEMBRETE, "--json", "--config", "-"], JSON.stringify({ horario: "10:00", token: "ghp_" + "a".repeat(36) }));
+      expect(r.saida.config.ok).toBe(false);
+      expect(r.saida.config.erros[0].campo).toBe("token");
+      expect(JSON.stringify(r.saida)).not.toContain("ghp_");
+    });
+    it("módulo com causas e --config: config não conferida", async () => {
+      const r = await json([join(CORE_FIX, "sdk2"), "--json", "--config", "-"], "{}");
+      expect(r.code).toBe(1);
+      expect(r.saida.config).toEqual({ ok: false, erros: [{ campo: "", mensagem: "módulo não conferido" }] });
+    });
+    it("módulo que imprime no import não corrompe o stdout", async () => {
+      const d = mkdtempSync(join(tmpdir(), "brain-check-ruido-"));
+      try {
+        writeFileSync(join(d, "package.json"), JSON.stringify({ name: "ruidoso", version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+        writeFileSync(join(d, "index.js"), 'console.log("ola do import"); console.warn("aviso"); export default { sdk: 1, id: "ruidoso", nome: "Ruidoso", versao: "0.1.0" };');
+        const r = await json([d, "--json"]);
+        expect(r.saida).toMatchObject({ ok: true, resumo: { id: "ruidoso" } });
+      } finally { rmSync(d, { recursive: true, force: true }); }
+    });
+    it("--config - lê a config da entrada padrão", async () => {
+      const r = await json([LEMBRETE, "--json", "--config", "-"], '{"horario":"x"}');
+      expect(r.saida.config.ok).toBe(false);
+      const ok = await json([LEMBRETE, "--json", "--config", "-"], '{"horario":"10:00"}');
+      expect(ok.saida.config).toEqual({ ok: true });
+    });
+  });
+
   it("modules list sem serve monta a lista pelo disco", async () => {
     const r = await brainCli(["modules", "list", "--port", "1"]);
     expect(r.stdout).toMatch(/ok\s+ativo/);
     expect(r.stdout).toContain("diaria");
+  });
+});
+
+describe("conferência em processo filho", () => {
+  const LEMBRETE = resolve(import.meta.dirname, "../../../examples/modules/lembrete");
+
+  it("lembrete: ok com resumo; config inválida → config.ok false", async () => {
+    const r = await conferirEmProcessoFilho(LEMBRETE, undefined, { bin: BIN });
+    expect(r).toMatchObject({ ok: true, causas: [], resumo: { id: "lembrete" } });
+    expect(r.config).toBeUndefined();
+    const ruim = await conferirEmProcessoFilho(LEMBRETE, { horario: "x" }, { bin: BIN });
+    expect(ruim.ok).toBe(true);
+    expect(ruim.config).toMatchObject({ ok: false, erros: [{ campo: "horario" }] });
+    expect((await conferirEmProcessoFilho(LEMBRETE, { horario: "10:00" }, { bin: BIN })).config).toEqual({ ok: true });
+  });
+
+  it("o filho não herda o api-token nem as sessões e usa um estado temporário, apagado no fim", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-env-"));
+    try {
+      // o módulo grava o ambiente que recebeu (o código roda no import, que é o que a conferência faz)
+      const saida = join(d, "env.json");
+      writeFileSync(join(d, "package.json"), JSON.stringify({ name: "espiao", version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+      writeFileSync(join(d, "index.js"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(saida)}, JSON.stringify(process.env)); export default { sdk: 1, id: "espiao", nome: "Espião", versao: "0.1.0" };`);
+      const r = await conferirEmProcessoFilho(d, undefined, { bin: BIN, env: { ...process.env, BRAIN_API_TOKEN: "tk", BRAIN_SESSIONS_FILE: join(dir, "sessions.json") } });
+      expect(r.ok).toBe(true);
+      const visto = JSON.parse(readFileSync(saida, "utf8")) as Record<string, string>;
+      expect(visto.BRAIN_API_TOKEN).toBeUndefined();
+      expect(visto.BRAIN_SESSIONS_FILE).not.toBe(join(dir, "sessions.json"));
+      expect(visto.BRAIN_STATE_DIR).toBeTruthy();
+      expect(visto.BRAIN_STATE_DIR).not.toBe(process.env.BRAIN_STATE_DIR);
+      expect(existsSync(visto.BRAIN_STATE_DIR!)).toBe(false);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("módulo que não termina o import: estoura o tempo, o filho morre e a causa diz o limite", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-lento-"));
+    try {
+      writeFileSync(join(d, "package.json"), JSON.stringify({ name: "lento", version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+      writeFileSync(join(d, "index.js"), `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(join(d, "pid"))}, String(process.pid)); await new Promise((r) => setTimeout(r, 60_000)); export default { sdk: 1, id: "lento", nome: "Lento", versao: "0.1.0" };`);
+      const inicio = Date.now();
+      const r = await conferirEmProcessoFilho(d, undefined, { bin: BIN, timeoutMs: 1500 });
+      expect(Date.now() - inicio).toBeLessThan(15_000);
+      expect(r.ok).toBe(false);
+      expect(r.causas).toEqual(["a conferência do módulo passou de 2 s"]);
+      const pid = Number(readFileSync(join(d, "pid"), "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("pasta que não é módulo: ok false com a causa do check", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-vazia-"));
+    try {
+      const r = await conferirEmProcessoFilho(d, {}, { bin: BIN });
+      expect(r.ok).toBe(false);
+      expect(r.causas.join(" ")).toContain("package.json");
+      expect(r.config).toEqual({ ok: false, erros: [{ campo: "", mensagem: "módulo não conferido" }] });
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  /** Pasta de módulo temporária com `index.js` = `codigo` (e um `export default` válido, salvo se o código trouxer o seu). */
+  const modulo = (nome: string, codigo: string, def = `export default { sdk: 1, id: "${nome}", nome: "${nome}", versao: "0.1.0" };`) => {
+    const d = mkdtempSync(join(tmpdir(), `brain-conferir-${nome}-`));
+    writeFileSync(join(d, "package.json"), JSON.stringify({ name: nome, version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+    writeFileSync(join(d, "index.js"), `${codigo}\n${def}`);
+    return d;
+  };
+
+  it("módulo com handle aberto no import (setInterval): o resultado sai bem antes do limite", async () => {
+    const d = modulo("aberto", "setInterval(() => {}, 1000);");
+    try {
+      const inicio = Date.now();
+      const r = await conferirEmProcessoFilho(d, undefined, { bin: BIN, timeoutMs: 20_000 });
+      expect(r).toMatchObject({ ok: true, resumo: { id: "aberto" } });
+      expect(Date.now() - inicio).toBeLessThan(10_000);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("linha JSON forjada pelo módulo depois do resultado não engana", async () => {
+    // sdk 2: o resultado real é ok:false; o módulo acrescenta uma linha "ok" depois de cada escrita do stdout
+    const d = modulo("forja", `const w = process.stdout.write.bind(process.stdout);
+process.stdout.write = (c, ...r) => { const x = w(c, ...r); if (String(c).includes('"causas"')) w('{"ok":true,"causas":[],"resumo":{"id":"forja"}}\\n'); return x; };`,
+    'export default { sdk: 2, id: "forja", nome: "Forja", versao: "0.1.0" };');
+    try {
+      const r = await conferirEmProcessoFilho(d, undefined, { bin: BIN });
+      expect(r.ok).toBe(false);
+      expect(r.causas.join(" ")).toContain("sdk");
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("resultado marcado com forma inválida (erros não-array) → ok:false, sem lançar", async () => {
+    // o módulo reescreve a própria linha marcada (está no mesmo processo): a forma é validada
+    const d = modulo("torto", `const w = process.stdout.write.bind(process.stdout);
+process.stdout.write = (c, ...r) => { const s = String(c); const i = s.indexOf(" "); return s.startsWith("brain-check-") ? w(s.slice(0, i) + ' {"ok":true,"causas":[],"config":{"ok":false,"erros":"x"}}\\n', ...r) : w(c, ...r); };`);
+    try {
+      const r = await conferirEmProcessoFilho(d, {}, { bin: BIN });
+      expect(r.ok).toBe(false);
+      expect(r.causas).toEqual(["a conferência devolveu um resultado inválido"]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("o marcador não fica no ambiente que o módulo vê", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-marca-"));
+    const saida = join(d, "env.json");
+    const m = modulo("marca", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(saida)}, JSON.stringify(process.env));`);
+    try {
+      expect((await conferirEmProcessoFilho(m, undefined, { bin: BIN })).ok).toBe(true);
+      expect(JSON.parse(readFileSync(saida, "utf8")).BRAIN_CHECK_MARCADOR).toBeUndefined();
+    } finally { rmSync(d, { recursive: true, force: true }); rmSync(m, { recursive: true, force: true }); }
+  });
+
+  it("processo que o módulo cria no import morre com a conferência", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-neto-"));
+    const arqPid = join(d, "pid");
+    const m = modulo("neto", `import { spawn } from "node:child_process"; import { writeFileSync } from "node:fs";
+const p = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" }); p.unref(); writeFileSync(${JSON.stringify(arqPid)}, String(p.pid));`);
+    try {
+      expect((await conferirEmProcessoFilho(m, undefined, { bin: BIN })).ok).toBe(true);
+      const pid = Number(readFileSync(arqPid, "utf8"));
+      const vivo = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      for (let n = 0; n < 100 && vivo(); n++) await new Promise((ok) => setTimeout(ok, 20));
+      expect(vivo()).toBe(false);
+    } finally { rmSync(d, { recursive: true, force: true }); rmSync(m, { recursive: true, force: true }); }
+  });
+
+  it("timeout padrão de 30 s e a mensagem dele", () => {
+    expect(CONFERENCIA_TIMEOUT_MS).toBe(30_000);
   });
 });

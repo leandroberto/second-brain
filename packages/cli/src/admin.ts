@@ -56,7 +56,12 @@ export function realIO(promptTo: NodeJS.WriteStream = process.stdout): AdminIO {
       stdin.setRawMode?.(true); stdin.resume(); stdin.setEncoding("utf8");
       const on = (chunk: string) => {
         st = hiddenInput(st.buf, chunk, st.pending);
-        if (st.abort) { stdin.setRawMode?.(false); promptTo.write("\n"); process.exit(130); }
+        if (st.abort) {
+          stdin.setRawMode?.(false); promptTo.write("\n");
+          // Ctrl+C no modo raw não gera SIGINT: quem trata o sinal (o `brain serve`, que precisa fechar) o recebe; senão, sai
+          if (process.listenerCount("SIGINT") > 0) { stdin.off("data", on); stdin.pause(); process.emit("SIGINT", "SIGINT"); return; }
+          process.exit(130);
+        }
         if (st.done) { stdin.setRawMode?.(false); stdin.pause(); stdin.off("data", on); promptTo.write("\n"); resolve(st.buf); }
       };
       stdin.on("data", on);

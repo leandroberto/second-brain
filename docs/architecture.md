@@ -72,7 +72,7 @@ Atividade operacional (consultas, leituras, propostas, decisões, edições exte
 - Segredos: regex best-effort (chaves cloud, tokens, JWT, credenciais em URL, atribuições `password=`…) **rejeita** a gravação; o valor nunca é ecoado. Blocos de código > 40 linhas e notas > 8000 caracteres são rejeitados.
 - Paths: `safeResolve` bloqueia traversal, absolutos, NUL e symlinks que escapam do vault.
 - API: bind em `127.0.0.1`, token Bearer (`.brain/api-token`, modo 0600, fora do Git), checagem de `Host` (anti DNS-rebinding) e `Origin`, CSP no frontend, corpo ≤ 1 MB.
-- Embeddings externos: **opt-in** (`embeddings.external_opt_in`), e a UI mostra o que sai da máquina.
+- Embeddings externos: **opt-in** (`embeddings.external_opt_in`), e a UI mostra o que sai da máquina. A chave de `embeddings.api_key_env` só vai para os hosts de `embeddings.api_key_hosts` (padrão `api.openai.com`, `https` fora do loopback), lista que só se altera no `.brain/config.yaml` (ADR 0007).
 
 ## Diagnóstico e operação
 `brain doctor` (e *Configurações → Executar diagnóstico*) roda 12+ verificações — vault, config, Git, SQLite `quick_check`, FTS, consistência índice × arquivos (somente leitura), embeddings, API, watcher, **handshake MCP real** e estado das integrações Claude/Codex — e mostra a causa provável + o comando de correção. A fachada `Brain` é a única porta de escrita; o importador só produz **propostas**.

@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   BrainError, isValidId, slugify,
   type Actor, type Analysis, type Confidence, type Freshness, type FreshnessState, type Note, type NoteStatus, type NoteType, type Principal, type Proposal, type ProposeResult,
@@ -9,9 +10,10 @@ import { ADDITIVE_RESOLUTION, INTERNAL_READER, authorize, isHumanReviewer, isPri
 const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
-import { ConfigSchema, dumpConfig, loadConfig, type BrainConfig } from "./config.js";
+import { ConfigSchema, gravarConfig, loadConfig, parseConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
+import { MODULE_ID_RE } from "./modules/identity.js";
 import { IndexDb } from "./db.js";
-import { HashEmbedder, OpenAICompatibleEmbedder, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
+import { HashEmbedder, OpenAICompatibleEmbedder, chaveDeEmbeddings, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
 import { VaultGit } from "./git.js";
 import { CAPTURE_ID, CaptureLog } from "./assistant/captures.js";
 import { classify, mergeUpdate } from "./governance.js";
@@ -124,9 +126,23 @@ export class Brain {
         console.error("[brain] embeddings externos sem external_opt_in=true; usando provider local 'hash'");
         return new HashEmbedder();
       }
-      return new OpenAICompatibleEmbedder({ baseUrl: e.base_url, model: e.model, dim: e.dimensions, apiKey: process.env[e.api_key_env] });
+      // a chave só sai para os hosts de `api_key_hosts` (o embedder confere): fora deles roda sem credencial
+      return new OpenAICompatibleEmbedder({ baseUrl: e.base_url, model: e.model, dim: e.dimensions, apiKey: process.env[e.api_key_env], apiKeyHosts: e.api_key_hosts });
     }
     return new HashEmbedder();
+  }
+
+  /** Aviso (sem o valor) quando há chave definida em `api_key_env` e o embedder em uso não a envia ao host de `base_url`. */
+  private avisoDaChaveDeEmbeddings(): string | undefined {
+    const e = this.config.embeddings;
+    if (!(this._embedder instanceof OpenAICompatibleEmbedder) || !process.env[e.api_key_env]) return undefined;
+    const c = chaveDeEmbeddings(e.base_url, e.api_key_hosts);
+    if (c.envia) return undefined;
+    // URL inválida: texto fixo, nunca a `base_url` (gravável pela UI, pode levar caracteres de controle ao terminal do doctor)
+    if (c.motivo === "url_invalida") return "a chave de embeddings não é enviada: embeddings.base_url inválida";
+    const motivo = { credenciais_na_url: "embeddings.base_url não pode ter usuário/senha", protocolo: "embeddings.base_url precisa ser https",
+      sem_https: "use https em embeddings.base_url", fora_da_lista: "adicione-o em embeddings.api_key_hosts no .brain/config.yaml" }[c.motivo];
+    return `a chave de embeddings não é enviada${c.host ? ` para ${c.host}` : ""}: ${motivo}`; // `file:`, `mailto:`... não têm host
   }
   get embedder(): EmbeddingProvider { return this._embedder; }
 
@@ -143,10 +159,25 @@ export class Brain {
    */
   withWriteLock<T>(fn: () => Promise<T>): Promise<T> { return this.write(fn); }
 
+  /**
+   * A config como está no disco agora (edição manual, outro processo), para quem só lê, como a tela de Configurações: sem isso,
+   * depois de um "nada mudou" do gerenciamento de módulos (decidido pelo disco) a tela seguiria mostrando a cópia da memória.
+   */
+  freshConfig(): BrainConfig {
+    // lido sem o lock: o Brain grava o config.yaml de forma atômica (`gravarConfig`), mas um editor ou um processo de versão
+    // anterior pode truncar antes de escrever, e um arquivo vazio ou ilegível traria os padrões para a memória. Nesse caso fica a
+    // config que já está em memória.
+    let texto: string;
+    try { texto = readFileSync(this.vault.configPath, "utf8"); } catch { return this.config; }
+    if (!texto.trim()) return this.config;
+    this.reloadConfig(() => parseConfig(texto));
+    return this.config;
+  }
+
   /** Política/config podem ter sido alteradas por outro processo (UI, outro MCP): sempre reler sob o lock. */
-  private reloadConfig(): void {
+  private reloadConfig(ler: () => BrainConfig = () => loadConfig(this.vault.configPath)): void {
     try {
-      const next = loadConfig(this.vault.configPath);
+      const next = ler();
       const changed = JSON.stringify(next.embeddings) !== JSON.stringify(this.config.embeddings);
       this.config = next; // atribui ANTES: makeEmbedder lê this.config (revogar o opt-in externo precisa valer já)
       if (changed) this._embedder = this.makeEmbedder();
@@ -828,13 +859,50 @@ export class Brain {
   async updateConfig(patch: Record<string, unknown>, who: Principal): Promise<BrainConfig> {
     const actor = authorize(who, "admin", { config: this.config });
     return this.write(async () => {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new BrainError("invalid", "a configuração deve ser um objeto");
+      // como no setModuleEntry: o reload do `write` engole config inválido e mantém a antiga, e regravar a partir dela apagaria
+      // a edição manual do config.yaml
+      try { loadConfig(this.vault.configPath); }
+      catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de salvar as configurações"); }
       const merged = deepMerge(this.config as unknown as Record<string, unknown>, patch);
-      const next = ConfigSchema.parse(merged);
-      writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
+      const r = ConfigSchema.safeParse(merged);
+      // o campo e o tipo esperado, nunca o valor recebido (a mensagem volta para a UI)
+      if (!r.success) throw new BrainError("invalid", `configuração inválida: ${r.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(raiz)"}: ${i.message}`).join("; ")}`);
+      const next = r.data;
+      gravarConfig(this.vault.configPath, next);
       const providerChanged = JSON.stringify(next.embeddings) !== JSON.stringify(this.config.embeddings);
       this.config = next;
       if (providerChanged) { this._embedder = this.makeEmbedder(); await this.indexer.embedMissing(); }
       this.log(actor, "config_update", null, { keys: Object.keys(patch) });
+      return next;
+    });
+  }
+
+  /**
+   * Grava (ou remove, com `null`) uma entrada do bloco `modules`. Substitui o bloco inteiro: o `deepMerge` do updateConfig não
+   * remove chaves. Com uma função, ela recebe a entrada atual lida DENTRO do lock (edições concorrentes não se perdem) e devolve a
+   * nova (ou `null`); um erro lançado por ela cancela a gravação e propaga. `acao` é o rótulo da auditoria (`config_update`)
+   * que a API conhece (ligar, desligar...); uma função o decide pela entrada antes e depois, lidas dentro do lock. Sem ela, o
+   * rótulo genérico (`adicionar`, `atualizar`, `remover`). Numa atualização, a auditoria diz também se a config e o host
+   * mudaram (um rótulo só perderia a config de um "ligar com config nova").
+   */
+  async setModuleEntry(id: string, entry: ModuleEntry | null | ((atual: ModuleEntry | undefined) => ModuleEntry | null), who: Principal, acao?: AcaoDeModulo | ((antes: ModuleEntry | undefined, depois: ModuleEntry | null) => AcaoDeModulo)): Promise<BrainConfig> {
+    const actor = authorize(who, "admin", { config: this.config });
+    if (!MODULE_ID_RE.test(id)) throw new BrainError("invalid", `id de módulo inválido: "${id}"`);
+    return this.write(async () => {
+      // `write` já relê o config.yaml do disco dentro do lock: edições manuais posteriores à subida são preservadas.
+      // Mas o reload engole config inválido e mantém a antiga: regravar a partir dela apagaria a edição do usuário.
+      try { loadConfig(this.vault.configPath); }
+      catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos"); }
+      const modules = new Map(Object.entries(this.config.modules));
+      const antes = modules.get(id);
+      const proxima = typeof entry === "function" ? entry(antes) : entry;
+      const rotulo = typeof acao === "function" ? acao(antes, proxima) : acao ?? (proxima === null ? "remover" : antes ? "atualizar" : "adicionar");
+      if (proxima === null) modules.delete(id); else modules.set(id, proxima);
+      const next = ConfigSchema.parse({ ...this.config, modules: Object.fromEntries(modules) });
+      gravarConfig(this.vault.configPath, next);
+      this.config = next;
+      this.log(actor, "config_update", null, { modulo: id, acao: rotulo, ...(antes && proxima ? mudancasDaEntrada(antes, proxima) : {}) });
       return next;
     });
   }
@@ -963,10 +1031,11 @@ export class Brain {
     const repo = await this.git.isRepo();
     const dirty = repo ? await this.git.dirty("knowledge") : [];
     const conflictCopies = this.syncConflictCopies();
+    const avisoDaChave = this.avisoDaChaveDeEmbeddings();
     return {
       vault: this.vault.root, git: { repo, head: repo ? await this.git.head() : undefined, dirty_files: dirty.length, auto_commit: this.config.git.auto_commit },
       index: { notes: total, db: this.vault.dbPath, schema: this.db.getMeta("schema_version") },
-      embeddings: { provider: this._embedder.id, external: this._embedder.external, covered: withEmb, total, ok: withEmb >= total },
+      embeddings: { provider: this._embedder.id, external: this._embedder.external, covered: withEmb, total, ok: withEmb >= total, ...(avisoDaChave ? { aviso: avisoDaChave } : {}) },
       search: { fts5: true, semantic: withEmb > 0 },
       problems: { notes_with_issues: issues.length, dangling_links: dangling.length, duplicate_ids: dupes.length, sync_conflict_copies: conflictCopies.length },
       details: { issues: issues.slice(0, 50), dangling: dangling.slice(0, 50), duplicate_ids: dupes, sync_conflict_copies: conflictCopies.slice(0, 50) },
@@ -1130,6 +1199,13 @@ export class Brain {
 function TemporalOk(t: Temporal): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(t.as_of ?? "") || Number.isNaN(Date.parse(t.as_of))) throw new BrainError("invalid", "temporal.as_of deve ser uma data AAAA-MM-DD");
   if (t.revalidate_when !== undefined && (typeof t.revalidate_when !== "string" || t.revalidate_when.trim().length < 3 || t.revalidate_when.length > 200)) throw new BrainError("invalid", "temporal.revalidate_when: 3–200 caracteres");
+}
+/** O que mudou numa entrada de módulo além do rótulo: `config: true` e `host: "definido" | "removido"`. */
+function mudancasDaEntrada(antes: ModuleEntry, depois: ModuleEntry): { config?: true; host?: "definido" | "removido" } {
+  return {
+    ...(!isDeepStrictEqual(antes.config, depois.config) ? { config: true as const } : {}),
+    ...(depois.host && depois.host !== antes.host ? { host: "definido" as const } : antes.host && !depois.host ? { host: "removido" as const } : {}),
+  };
 }
 function deepMerge(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...a };

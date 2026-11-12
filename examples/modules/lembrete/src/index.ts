@@ -26,6 +26,8 @@ export default defineModule({
   nome: "Lembretes",
   versao: "0.1.0",
   configSchema,
+  configJson: z.toJSONSchema(configSchema) as Record<string, unknown>,
+  usaIa: true, // usa IA quando `config.ia` está ligado
   aba: { titulo: "Lembretes", pasta: "ui" },
 
   rotas: [

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parse, stringify } from "yaml";
 import { existsSync, readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 export const ConfigSchema = z.object({
   vault_name: z.string().default("Second Brain"),
@@ -12,7 +13,9 @@ export const ConfigSchema = z.object({
     model: z.string().default("text-embedding-3-small"),
     dimensions: z.number().int().positive().default(1536),
     api_key_env: z.string().default("OPENAI_API_KEY"),
-  }).default({ provider: "hash", external_opt_in: false, base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", dimensions: 1536, api_key_env: "OPENAI_API_KEY" }),
+    /** hosts (hostname exato) que recebem a chave de `api_key_env`; só se altera no config.yaml, nunca pela UI */
+    api_key_hosts: z.array(z.string()).default(["api.openai.com"]),
+  }).default({ provider: "hash", external_opt_in: false, base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", dimensions: 1536, api_key_env: "OPENAI_API_KEY", api_key_hosts: ["api.openai.com"] }),
   governance: z.object({
     duplicate_threshold: z.number().default(0.78),
     candidate_threshold: z.number().default(0.42),
@@ -62,9 +65,21 @@ export const ConfigSchema = z.object({
   }).passthrough()).default({}),
 });
 export type BrainConfig = z.infer<typeof ConfigSchema>;
+/** Entrada de um módulo em `config.modules[id]`. */
+export type ModuleEntry = BrainConfig["modules"][string];
+/** Ação de gerenciamento de um módulo, registrada na auditoria `config_update` (`Brain.setModuleEntry`). */
+export type AcaoDeModulo = "adicionar" | "ligar" | "desligar" | "configurar" | "restringir_host" | "remover";
 
 export function loadConfig(path: string): BrainConfig {
-  const raw = existsSync(path) ? parse(readFileSync(path, "utf8")) ?? {} : {};
-  return ConfigSchema.parse(raw);
+  return parseConfig(existsSync(path) ? readFileSync(path, "utf8") : "");
+}
+/** O texto de um config.yaml validado (vazio vira os padrões). */
+export function parseConfig(texto: string): BrainConfig {
+  return ConfigSchema.parse(parse(texto) ?? {});
 }
 export const dumpConfig = (c: BrainConfig): string => stringify(c, { lineWidth: 0 });
+/**
+ * Grava o config.yaml de forma atômica (tmp + rename): quem lê sem o lock (`freshConfig`, outro processo) nunca vê um arquivo vazio
+ * ou gravado só em parte. Mantém o modo atual do arquivo (o config.yaml não é segredo: nada de forçar 0600).
+ */
+export const gravarConfig = (path: string, c: BrainConfig): void => writeFileAtomic(path, dumpConfig(c), "manter");

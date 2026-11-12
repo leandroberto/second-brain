@@ -7,6 +7,7 @@ import { AgentsPage, GraphPage, ProjectsPage, ReviewPage, TimelinePage } from ".
 import { Home, NotePage, SearchPage } from "./pages1";
 import { AddKnowledge, SettingsPage } from "./pages3";
 import { ImportPage } from "./ImportPage";
+import { ModulesPage } from "./ModulesPage";
 import { RecentWritesPage } from "./RecentWrites";
 import { ModuleFrame, iconeDoModulo } from "./ModuleFrame";
 import { AssistantModal, type AssistantTab } from "./AssistantBox";
@@ -57,10 +58,10 @@ function Shell() {
     case "agents": page = <AgentsPage />; break;
     case "graph": page = <GraphPage />; break;
     case "import": page = <ImportPage />; break;
-    case "settings": page = <SettingsPage />; break;
+    case "settings": page = r.path[1] === "modulos" ? <ModulesPage /> : <SettingsPage />; break;
     case "m": { const mid = r.path[1] ?? ""; const mod = mods?.modulos.find((m) => m.id === mid);
       if (!mods && !modsErro && /^[a-z][a-z0-9-]{1,30}$/.test(mid)) { page = <div className="wrap"><Skeleton n={2} /></div>; break; }
-      if (mods && mod && mod.status !== "ativo") { page = <div className="wrap"><h1>{mod.nome}</h1><p className="sub">Este módulo não está ativo ({mod.status}).</p>{mod.causa && <div className="banner danger" role="alert">{mod.causa}</div>}<p><a href={href("settings")} style={{ textDecoration: "underline" }}>Ver a seção Módulos em Configurações</a></p></div>; break; }
+      if (mods && mod && mod.status !== "ativo") { page = <div className="wrap"><h1>{mod.nome}</h1><p className="sub">Este módulo não está ativo ({mod.status}).</p>{mod.causa && <div className="banner danger" role="alert">{mod.causa}</div>}<p><a href={href("settings/modulos")} style={{ textDecoration: "underline" }}>Ver em Configurações › Módulos</a></p></div>; break; }
       if (mods && !mod) { page = <div className="wrap"><h1>Módulo não encontrado</h1></div>; break; }
       page = <ModuleFrame id={r.path[1] ?? ""} resto={r.path.slice(2).join("/")} onBadge={(id, n) => setBadgeLocal((b) => ({ ...b, [id]: n }))} />; break; }
     default: page = <div className="wrap"><h1>Página não encontrada</h1></div>;

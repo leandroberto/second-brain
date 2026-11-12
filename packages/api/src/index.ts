@@ -3,13 +3,15 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, extname, join, normalize, sep } from "node:path";
-import { Brain, type Vault, principal, sessionScopeByHash, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
+import { Brain, type Vault, listarPastas, principal, sessionScopeByHash, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
 import { credencialDoPrincipal, negarAntesDoRoteamento, tratarModulos, type Credencial, type ModulesApiOptions, type TipoCredencial } from "./modules.js";
+import { GerenciarModulos } from "./modules-gerenciar.js";
 import { CORS_OPACO, CSP_DA_ABA, PREFLIGHT_OPACO, TokensDePagina, aceitaOrigemOpaca, arquivoDaAba, pastaEstaticaDoSdk, temSegmentoDePonto } from "./modules-aba.js";
 export { podeChamar, credencialDeModulo, type ModulesApiOptions } from "./modules.js";
+export type { Conferir, ResultadoConferencia } from "./modules-gerenciar.js";
 
 export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant; modules?: ModulesApiOptions }
 export interface ApiHandle { url: string; token: string; port: number; close(): Promise<void> }
@@ -65,6 +67,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   const paginas = new TokensDePagina((h) => sessionScopeByHash(brain.vault.root, h, opts.sessions) === "full");
   const pastaSdk = pastaEstaticaDoSdk();
   const pararAvisos = opts.modules?.avisos.aoMudar((ev, data) => emit(ev, data));
+  // tickets de conferência e tentativas de frase-senha: em memória deste processo
+  const gerenciar = opts.modules ? new GerenciarModulos(brain, opts.modules, opts.sessions) : undefined;
 
   const routes: Array<[string, RegExp, Handler]> = [];
   const r = (m: string, p: string, h: Handler) => routes.push([m, new RegExp(`^${p.replace(/:[a-z]+/g, "([^/]+)")}$`), h]);
@@ -215,8 +219,24 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   r("GET", "/api/graph", ({ brain, url }) => brain.graph({ project: q(url, "project") }));
   r("GET", "/api/notes/:id/local", ({ brain, params, url }) => brain.localGraph(decodeURIComponent(params[0]!), Number(q(url, "depth") ?? 1)));
   r("GET", "/api/notes/:id/suggestions", ({ brain, params }) => brain.relationSuggestions(decodeURIComponent(params[0]!)));
-  r("GET", "/api/settings", ({ brain }) => ({ config: brain.config, vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
-  r("PUT", "/api/settings", async ({ brain, body, actor }) => ({ config: await brain.updateConfig(body, actor) }));
+  r("GET", "/api/settings", ({ brain }) => ({ config: brain.freshConfig(), vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
+  r("PUT", "/api/settings", async ({ brain, body, actor }) => {
+    // só as chaves (e subchaves) que a tela de Configurações grava. Os módulos vão pelo gerenciamento (frase-senha, conferência), a frase-senha
+    // só no terminal, e o resto (`embeddings.api_key_env`, `assistant.claude_path`, `state.external`, `limits`...) não se altera pela sessão do navegador
+    if (!objetoSimples(body)) throw new BrainError("invalid", "o corpo deve ser um objeto JSON");
+    const chaves = Object.keys(body);
+    if (chaves.includes("modules")) throw new BrainError("forbidden", "use Configurações › Módulos");
+    if (chaves.includes("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
+    conferirSettingsDaUi(body);
+    return { config: await brain.updateConfig(body, actor) };
+  });
+  // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana). A
+  // listagem esconde as ocultas, mas um caminho direto entra numa pasta oculta de propósito: o diretório padrão de módulos
+  // (`~/.local/share/second-brain/modules`) é oculto e precisa ser navegável; a rota só serve a sessão humana local
+  r("GET", "/api/fs/pastas", ({ url, actor }) => {
+    if (actor.kind !== "human" || actor.channel !== "ui") throw new BrainError("forbidden", "navegar pelas pastas é só para a sessão humana");
+    return listarPastas(q(url, "caminho") || undefined);
+  });
   r("POST", "/api/reindex", async ({ brain, emit }) => { const x = await brain.reindex(true); emit("notes"); return { added: x.added.length, changed: x.changed.length, removed: x.removed.length, embedded: x.embedded }; });
   r("POST", "/api/git/commit", async ({ brain, body, actor }) => brain.commitPending(body?.message, actor));
   r("GET", "/api/git/dirty", async ({ brain }) => brain.git.dirty("knowledge"));
@@ -307,7 +327,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
       }
     }
     // rotas de módulo e avisos: depois das do core
-    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res, token: hdr })) return;
+    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res, token: hdr, who, gerenciar })) return;
     json(res, 404, { error: "not_found", message: `rota ${method} ${url.pathname}` });
   }
 
@@ -351,6 +371,37 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   };
 }
 
+/**
+ * O que `PUT /api/settings` aceita: as chaves e, nas seções, as subchaves que a tela de Configurações grava (lista de permitidas,
+ * não de proibidas; `null` = valor simples). Sem a lista por subchave, `embeddings.api_key_env` + `base_url` fariam o embedder
+ * mandar qualquer variável de ambiente como credencial a um servidor escolhido pela sessão do navegador. `embeddings.api_key_hosts`
+ * (os hosts que recebem a chave) fica fora pelo mesmo motivo: com ele, `base_url` + `external_opt_in` levariam a chave a qualquer host.
+ */
+const SETTINGS_DA_UI = new Map<string, ReadonlySet<string> | null>([
+  ["vault_name", null],
+  ["embeddings", new Set(["provider", "base_url", "model", "external_opt_in"])],
+  ["git", new Set(["auto_commit", "auto_commit_external"])],
+  ["agents", new Set(["commit_policy", "per_type", "can_link"])],
+  ["governance", new Set(["duplicate_threshold", "candidate_threshold", "stale_days"])],
+  ["retention", new Set(["activity_days"])],
+]);
+const objetoSimples = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+/** 403 se o corpo tocar qualquer chave ou subchave fora de `SETTINGS_DA_UI`; `agents.per_type` é um mapa tipo → `review|auto`. */
+function conferirSettingsDaUi(body: Record<string, unknown>): void {
+  const proibida = () => new BrainError("forbidden", "esta configuração não se altera pela UI; use o config.yaml");
+  for (const [chave, valor] of Object.entries(body)) {
+    if (!SETTINGS_DA_UI.has(chave)) throw proibida();
+    const subchaves = SETTINGS_DA_UI.get(chave);
+    if (!subchaves) continue;
+    // seção trocada por um valor simples (null, lista...) substituiria o bloco inteiro, inclusive as subchaves fechadas
+    if (!objetoSimples(valor) || Object.keys(valor).some((k) => !subchaves.has(k))) throw proibida();
+    if (chave === "agents" && "per_type" in valor) {
+      const porTipo = valor.per_type;
+      if (!objetoSimples(porTipo) || Object.keys(porTipo).some((t) => !(NOTE_TYPES as readonly string[]).includes(t))) throw proibida();
+      if (Object.values(porTipo).some((v) => v !== "review" && v !== "auto")) throw new BrainError("invalid", "agents.per_type aceita só review ou auto");
+    }
+  }
+}
 const temporalOf = (v: any) => (v && typeof v === "object" ? { as_of: String(v.as_of ?? ""), ...(v.revalidate_when ? { revalidate_when: String(v.revalidate_when).slice(0, 200) } : {}) } : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : undefined);
 const safeEq = (a: string, b: string) => { const x = Buffer.from(a); const y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };

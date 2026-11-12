@@ -108,7 +108,7 @@ Tudo local. API só em `127.0.0.1` com token, checagem de `Host`/`Origin`. Segre
 
 ## Módulos
 
-O second-brain carrega módulos de outros repositórios (aba na UI, rotas, tarefas agendadas, ferramentas MCP, avisos) sem que o código deles entre aqui. O exemplo é `examples/modules/lembrete`. Guia de autoria: [`docs/modules.md`](docs/modules.md).
+O second-brain carrega módulos de outros repositórios (aba na UI, rotas, tarefas agendadas, ferramentas MCP, avisos) sem que o código deles entre aqui. O exemplo é `examples/modules/lembrete`. Guia de autoria: [`docs/modules.md`](docs/modules.md). Adicionar, configurar, ligar e remover módulos pela UI (Configurações › Módulos): [Gerenciar pela UI](docs/modules.md#gerenciar-pela-ui).
 
 ## Backup
 

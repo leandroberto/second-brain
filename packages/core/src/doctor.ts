@@ -60,6 +60,7 @@ export async function coreDoctor(b: Brain): Promise<Check[]> {
   const h = await b.health();
   out.push(h.embeddings.ok ? c("embeddings", "Embeddings", "ok", `${h.embeddings.provider} ${h.embeddings.covered}/${h.embeddings.total}${h.embeddings.external ? " (EXTERNO)" : " (local)"}`)
     : c("embeddings", "Embeddings", "warn", `${h.embeddings.covered}/${h.embeddings.total} cobertos (${h.embeddings.provider}); busca textual segue funcionando`, "brain reindex"));
+  if (h.embeddings.aviso) out.push(c("embeddings-chave", "Chave de embeddings", "warn", h.embeddings.aviso, "edite embeddings.api_key_hosts / embeddings.base_url no .brain/config.yaml"));
   if (h.problems.notes_with_issues) out.push(c("notes", "Arquivos de conhecimento", "warn", `${h.problems.notes_with_issues} nota(s) com problemas de frontmatter`, "veja Configurações → Saúde"));
   if (h.problems.dangling_links) out.push(c("links", "Relações", "warn", `${h.problems.dangling_links} link(s) quebrados`, "corrija ou crie as notas alvo"));
   const lock = existsSync(b.vault.lockPath);

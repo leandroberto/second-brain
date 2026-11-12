@@ -1,10 +1,16 @@
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { EventEmitter } from "node:events";
-import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, compilarRota, importModuleDef, issueHumanSession, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
+import type { ResultadoConferencia } from "@brain/api";
+import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, compilarRota, importModuleDef, issueHumanSession, lerResultadoDaConferencia, resumirModulo, validarConfigDoModulo, type ResumoDoModulo, type ResultadoConfig, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
+
+type ModuleDef = Awaited<ReturnType<typeof importModuleDef>>;
 
 /** Um módulo como `brain modules list` e o doctor mostram (do `serve` vivo ou do disco). */
 export interface ResumoModulo {
@@ -214,7 +220,7 @@ export function rotasComCaminhoInvalido(rotas: unknown): string[] {
  * `brain modules check <pasta>`: valida o módulo sem ligá-lo, com o carregador real em modo `definicoes` num registro isolado
  * (vault e estado temporários, nada do vault do usuário). A config do módulo não é exigida (a checagem não a tem).
  */
-export async function checarModulo(pasta: string): Promise<{ id?: string; versao?: string; causas: string[] }> {
+export async function checarModulo(pasta: string): Promise<{ id?: string; versao?: string; causas: string[]; resumo?: ResumoDoModulo; def?: ModuleDef }> {
   const dir = resolve(pasta);
   if (!existsSync(join(dir, "package.json"))) return { causas: [`não é um pacote de módulo (sem package.json): ${dir}`] };
   let id = basename(dir);
@@ -268,7 +274,8 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
       tarefas.add(t.id);
       try { parseCron(t.quando); } catch (e) { causas.push(`tarefa ${t.id}: quando inválido (${(e as Error).message})`); }
     }
-    return { id, versao: m.versao, causas };
+    // o resumo e a definição só saem de um módulo sem problemas: com causas, a definição pode estar malformada
+    return causas.length ? { id, versao: m.versao, causas } : { id, versao: m.versao, causas, resumo: resumirModulo(def), def };
   } finally {
     b?.close();
     if (estadoAntes === undefined) delete process.env.BRAIN_STATE_DIR; else process.env.BRAIN_STATE_DIR = estadoAntes;
@@ -276,14 +283,132 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
   }
 }
 
-const USO = "uso: brain modules list | run <id> <tarefa> [--ocorrencia AAAA-MM-DD] | check <pasta>";
+/**
+ * `check --json`: uma única linha JSON no stdout (a API a lê como processo filho). O código do módulo roda no import e pode
+ * imprimir: durante a checagem `console.log/info/warn/debug` vão para o stderr. `ok` e a saída 0/1 refletem só as causas do
+ * módulo; quem chama deve ler também `config.ok` quando passou `--config`.
+ *
+ * Com `BRAIN_CHECK_MARCADOR` (a conferência por processo filho), a linha sai prefixada por ele, e a variável e a config são
+ * lidas ANTES do import: o marcador sai de `process.env` e o código do módulo não consome o stdin. Isso barra uma impressão
+ * ACIDENTAL que pareça a resposta; não é segredo diante de um módulo hostil (ele ainda pode ler o ambiente original em
+ * `/proc/self/environ`). A confiança no código vem do aviso de confiança e da frase-senha, não do marcador. Depois de
+ * escrever, sai na hora: um `setInterval` ou servidor aberto no import não segura o processo.
+ */
+async function checarJson(pasta: string, configArg: string | undefined): Promise<number> {
+  const marcador = process.env.BRAIN_CHECK_MARCADOR;
+  delete process.env.BRAIN_CHECK_MARCADOR;
+  let bruto: unknown; let erroDeLeitura: string | undefined;
+  if (configArg !== undefined) {
+    try { bruto = JSON.parse(configArg === "-" ? readFileSync(0, "utf8") : readFileSync(configArg, "utf8")); }
+    catch (e) { erroDeLeitura = `config ilegível: ${(e as Error).message}`; }
+  }
+  const orig = { log: console.log, info: console.info, warn: console.warn, debug: console.debug };
+  console.log = console.info = console.warn = console.debug = (...a: unknown[]) => { console.error(...a); };
+  let saida: string; let ok: boolean;
+  try {
+    const r = await checarModulo(pasta);
+    let config: ResultadoConfig | undefined;
+    if (configArg !== undefined) {
+      if (!r.def) config = { ok: false, erros: [{ campo: "", mensagem: "módulo não conferido" }] };
+      else if (erroDeLeitura) config = { ok: false, erros: [{ campo: "", mensagem: erroDeLeitura }] };
+      else config = await validarConfigDoModulo(r.def, bruto);
+    }
+    ok = !r.causas.length;
+    saida = JSON.stringify({ ok, causas: r.causas, ...(r.resumo ? { resumo: r.resumo } : {}), ...(config ? { config } : {}) });
+  } finally { Object.assign(console, orig); }
+  await new Promise<void>((pronto) => { process.stdout.write(`${marcador ? `${marcador} ` : ""}${saida}\n`, () => pronto()); });
+  process.exit(ok ? 0 : 1);
+}
+
+/** Limite padrão da conferência por processo filho (spec de gerenciar módulos §7.2). */
+export const CONFERENCIA_TIMEOUT_MS = 30_000;
+/** Teto do stdout guardado do filho: o módulo pode imprimir no import; só a última linha (a do `check --json`) importa. */
+const MAX_STDOUT = 1024 * 1024;
+/** O filho não herda credenciais do serve (api-token, sessões) nem a ligação com o systemd ou com um reinício em curso. */
+const FORA_DO_FILHO = new Set(["BRAIN_API_TOKEN", "BRAIN_SESSIONS_FILE", "BRAIN_SERVE_ESPERAR_PID", "INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"]);
+
+export interface OpcoesConferencia {
+  /** `bin.js` da CLI (padrão: o do build em uso, ao lado deste arquivo) */
+  bin?: string;
+  timeoutMs?: number;
+  /** ambiente base (padrão: `process.env`), filtrado por `FORA_DO_FILHO` */
+  env?: NodeJS.ProcessEnv;
+}
+
+const falhou = (causa: string, comConfig: boolean): ResultadoConferencia =>
+  ({ ok: false, causas: [causa], ...(comConfig ? { config: { ok: false as const, erros: [{ campo: "", mensagem: "módulo não conferido" }] } } : {}) });
+
+/**
+ * Última linha do stdout que começa com o marcador desta conferência, validada pela forma do `check --json`. O que o módulo
+ * imprimir por acaso (inclusive uma linha JSON que pareça o resultado) não tem o marcador; um módulo hostil pode achá-lo (ver
+ * `checarJson`), e por isso a confiança vem do aviso e da frase-senha. `undefined` = sem linha marcada; `null` = linha
+ * marcada com forma inválida.
+ */
+function lerResultado(stdout: string, marcador: string): ResultadoConferencia | undefined | null {
+  const prefixo = `${marcador} `;
+  const linha = stdout.split("\n").filter((l) => l.startsWith(prefixo)).pop();
+  if (linha === undefined) return undefined;
+  try { return lerResultadoDaConferencia(JSON.parse(linha.slice(prefixo.length))) ?? null; } catch { return null; }
+}
+
+/** Mata o grupo do filho (ele e o que o módulo tenha criado no import sem sair do grupo); grupo que já não existe (`ESRCH`) é ignorado. */
+function matarGrupo(pid: number | undefined): void {
+  if (!pid) return;
+  try { process.kill(-pid, "SIGKILL"); } catch { /* ESRCH: o grupo já acabou */ }
+}
+
+/**
+ * Conferência de um módulo num processo filho descartável (spec de gerenciar módulos §6, §7.2): roda o `brain modules check
+ * <pasta> --json [--config -]` da CLI em uso, com a config pelo stdin, estado num diretório temporário (apagado no fim), sem o
+ * api-token nem as sessões do serve, e com teto de tempo. O grupo de processos do filho morre no fim (estouro ou não), com o
+ * que o módulo tenha criado nele; um neto que crie sessão/grupo próprio (`setsid`, `detached`) não é alcançado. Nunca lança:
+ * falha vira `ok: false` com a causa. O serve em execução não carrega nada da pasta.
+ */
+export async function conferirEmProcessoFilho(caminho: string, config?: unknown, o: OpcoesConferencia = {}): Promise<ResultadoConferencia> {
+  const comConfig = config !== undefined;
+  const timeoutMs = o.timeoutMs ?? CONFERENCIA_TIMEOUT_MS;
+  const bin = o.bin ?? fileURLToPath(new URL("./bin.js", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "brain-conferir-"));
+  const marcador = `brain-check-${randomBytes(16).toString("hex")}`;
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(o.env ?? process.env).filter(([k]) => !FORA_DO_FILHO.has(k))),
+    BRAIN_STATE_DIR: join(tmp, "estado"),
+    BRAIN_SESSIONS_FILE: join(tmp, "sem-sessoes.json"),
+    BRAIN_CHECK_MARCADOR: marcador,
+  };
+  try {
+    return await new Promise<ResultadoConferencia>((ok) => {
+      const args = [bin, "modules", "check", caminho, "--json", ...(comConfig ? ["--config", "-"] : [])];
+      // grupo próprio: no fim morrem também os processos que o módulo tenha criado no import
+      const filho = spawn(process.execPath, args, { env, cwd: tmp, detached: true, stdio: ["pipe", "pipe", "ignore"] });
+      let stdout = ""; let estourou = false;
+      const timer = setTimeout(() => { estourou = true; matarGrupo(filho.pid); }, timeoutMs);
+      filho.stdout.setEncoding("utf8");
+      filho.stdout.on("data", (d: string) => { stdout = (stdout + d).slice(-MAX_STDOUT); });
+      filho.stdin.on("error", () => { /* o filho saiu antes de ler a config: o resultado (ou a falta dele) diz o porquê */ });
+      filho.stdin.end(comConfig ? JSON.stringify(config) : undefined);
+      filho.once("error", (e) => { clearTimeout(timer); ok(falhou(`não foi possível rodar a conferência: ${e.message}`, comConfig)); });
+      filho.once("close", (codigo) => {
+        clearTimeout(timer);
+        matarGrupo(filho.pid);
+        if (estourou) return ok(falhou(`a conferência do módulo passou de ${Math.max(1, Math.ceil(timeoutMs / 1000))} s`, comConfig));
+        const r = lerResultado(stdout, marcador);
+        if (r === null) return ok(falhou("a conferência devolveu um resultado inválido", comConfig));
+        ok(r ?? falhou(`a conferência do módulo terminou sem resultado (código ${String(codigo)})`, comConfig));
+      });
+    });
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
+}
+
+const USO = "uso: brain modules list | run <id> <tarefa> [--ocorrencia AAAA-MM-DD] | check <pasta> [--json] [--config <arquivo|->]";
 
 /** `brain modules <list|run|check>`; devolve o código de saída. */
-export async function modulesCommand(args: string[], o: { vault: string; port?: number; ocorrencia?: string }): Promise<number> {
+export async function modulesCommand(args: string[], o: { vault: string; port?: number; ocorrencia?: string; json?: boolean; config?: string }): Promise<number> {
   const [sub, ...rest] = args;
   switch (sub) {
     case "check": {
       if (!rest[0]) { console.error(USO); return 2; }
+      if (o.json) return checarJson(rest[0], o.config);
       const r = await checarModulo(rest[0]);
       if (!r.causas.length) { console.log(`✔ módulo ${r.id}${r.versao ? ` v${r.versao}` : ""}: ok`); return 0; }
       console.log(`✘ módulo ${r.id ?? rest[0]}: ${r.causas.length} problema(s)`);
