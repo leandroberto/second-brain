@@ -289,8 +289,10 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
  * módulo; quem chama deve ler também `config.ok` quando passou `--config`.
  *
  * Com `BRAIN_CHECK_MARCADOR` (a conferência por processo filho), a linha sai prefixada por ele, e a variável e a config são
- * lidas ANTES do import (o código do módulo não vê o marcador em `process.env` nem consome o stdin). Depois de escrever, sai
- * na hora: um `setInterval` ou servidor aberto no import não segura o processo.
+ * lidas ANTES do import: o marcador sai de `process.env` e o código do módulo não consome o stdin. Isso barra uma impressão
+ * ACIDENTAL que pareça a resposta; não é segredo diante de um módulo hostil (ele ainda pode ler o ambiente original em
+ * `/proc/self/environ`). A confiança no código vem do aviso de confiança e da frase-senha, não do marcador. Depois de
+ * escrever, sai na hora: um `setInterval` ou servidor aberto no import não segura o processo.
  */
 async function checarJson(pasta: string, configArg: string | undefined): Promise<number> {
   const marcador = process.env.BRAIN_CHECK_MARCADOR;
@@ -338,8 +340,9 @@ const falhou = (causa: string, comConfig: boolean): ResultadoConferencia =>
 
 /**
  * Última linha do stdout que começa com o marcador desta conferência, validada pela forma do `check --json`. O que o módulo
- * imprimir (inclusive uma linha JSON forjada depois do resultado) não tem o marcador. `undefined` = sem linha marcada;
- * `null` = linha marcada com forma inválida.
+ * imprimir por acaso (inclusive uma linha JSON que pareça o resultado) não tem o marcador; um módulo hostil pode achá-lo (ver
+ * `checarJson`), e por isso a confiança vem do aviso e da frase-senha. `undefined` = sem linha marcada; `null` = linha
+ * marcada com forma inválida.
  */
 function lerResultado(stdout: string, marcador: string): ResultadoConferencia | undefined | null {
   const prefixo = `${marcador} `;

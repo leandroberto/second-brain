@@ -391,8 +391,9 @@ if (r.ok) usar(r.dados); else ctx.log.erro(r.mensagem);   // r.tipo: auth | time
 
 Em **Configurações › Módulos** (`#/settings/modulos`) o dono adiciona, configura, liga, desliga e remove módulos sem editar o
 `config.yaml`. O menu lateral continua mostrando só as abas dos módulos. Tudo aqui exige a **sessão humana `full`** (a de
-`brain ui`): api-token, desktop e páginas de módulo recebem 403. Sem módulos configurados, a página só mostra a lista vazia e
-o botão **+ Adicionar módulo**.
+`brain ui`): api-token, desktop e páginas de módulo recebem 403. A entrada é o cartão **Módulos** em Configurações, sempre
+presente (sem módulos ele diz "Nenhum módulo instalado"), com o link **Gerenciar módulos**. Sem módulos configurados, a
+página só mostra a lista vazia e o botão **+ Adicionar módulo**.
 
 ### Adicionar: quatro etapas
 
@@ -410,7 +411,9 @@ o botão **+ Adicionar módulo**.
 
 Depois do OK: "Módulo adicionado. O brain serve será reiniciado para aplicar as alterações." A página volta quando o `serve`
 estiver no ar. O caminho gravado é o real (`realpath`), absoluto; pasta com espaço, acento ou symlink funciona. Um id que já
-está configurado (outra pasta do mesmo módulo) é recusado e nada é gravado.
+está configurado (outra pasta do mesmo módulo) é recusado e nada é gravado. Se a pasta passou a declarar outro `id` entre a
+conferência e o OK, a resposta é 409 `id_mudou` e a tela volta à etapa 1: "O módulo mudou desde a conferência; confira de
+novo."
 
 ### Confiança, frase-senha e processo filho
 
@@ -421,38 +424,49 @@ está configurado (outra pasta do mesmo módulo) é recusado e nada é gravado.
   (`brain admin passphrase`). Configurar, desligar, remover e tentar de novo pedem só a sessão `full`.
 - Frase errada: 403 "frase-senha incorreta", sem mais detalhes. São **5 tentativas por 60 s**; passado o limite, 429 até a
   janela correr, mesmo com a frase certa. A tentativa é registrada antes de a frase ser conferida, e o contador persiste no
-  estado, então reiniciar o `serve` não o zera. Depois de uma frase errada, **adicionar, configurar, remover e reiniciar**
-  também respondem 429 por até 60 s. Se o registro de tentativas (`_frase-erros.json`, na pasta de estado dos módulos) fica
-  ilegível, tudo isso responde 429 até apagar o arquivo que a mensagem indica (com a frase gravada; com a frase exigida e
-  ausente nesta máquina prevalece o 403 `ausente`).
+  estado, então reiniciar o `serve` não o zera. Depois de uma frase errada, as ações que **ampliam ou reiniciam com código
+  novo** (adicionar, ligar, configurar e reiniciar/**Tentar de novo**) também respondem 429 por até 60 s; ligar com a frase
+  certa zera a janela. As que só **restringem** (desligar, remover e restringir ao host desta máquina) são ações de
+  segurança e passam mesmo assim. Se o registro de tentativas (`_frase-erros.json`, na pasta de estado dos módulos) fica
+  ilegível, as que ampliam ou reiniciam respondem 429 até apagar o arquivo que a mensagem indica (com a frase gravada; com a
+  frase exigida e ausente nesta máquina prevalece o 403 `ausente`).
 - No máximo **2 conferências ao mesmo tempo**; a 3ª recebe 429 ("tente de novo em instantes").
 - A conferência roda o `brain modules check <pasta> --json` num **processo filho descartável**: estado em diretório
   temporário, sem `iniciar`, sem herdar o api-token nem o arquivo de sessões pelo ambiente, com tempo limite de 30 s. O `serve` em execução não
   carrega nada da pasta. O código do módulo roda com o seu usuário (como qualquer `modules check`); o aviso de confiança existe por
   isso.
-- A conferência devolve um **ticket** (aleatório, em memória, 15 min), ligado ao caminho real e à sessão que conferiu.
+- A conferência devolve um **ticket** (aleatório, em memória, 15 min), ligado ao caminho real, ao `id` conferido e à sessão
+  que conferiu.
   **Adicionar** usa o ticket e não pede a frase de novo. Se o `serve` reiniciou entre conferir e adicionar, ou o ticket
   expirou, a resposta é 409 `ticket_invalido` e a tela volta à etapa 1 pedindo para conferir a pasta de novo.
-- `PUT /api/settings` recusa as chaves `modules` e `review` (403): a frase-senha não pode ser contornada por ali.
+- `PUT /api/settings` aceita só as chaves que a tela de Configurações grava (`vault_name`, `embeddings`, `git`, `agents`,
+  `governance`, `retention`). `modules` recebe 403 "use Configurações › Módulos", `review` 403 apontando para
+  `brain admin passphrase`, e qualquer outra (`assistant.claude_path`, `state.external`, `limits`...) 403 "esta configuração
+  não se altera pela UI". Nada disso pode ser contornado pela sessão do navegador.
+- Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
+  `restringir_host` ou `remover`.
 
 ### Configurar: formulário ou editor JSON
 
-Se o módulo exporta `configJson` (JSON Schema da config), a tela monta campos para os tipos simples (texto, número,
-booleano, opção e objeto raso) e mostra a `description` de cada um. Sem `configJson`, ou com um tipo fora desses, aparece um
-editor de texto JSON. Em qualquer caso a validação final é a do `configSchema` do módulo, no processo filho, e o detector de
+Se o módulo exporta `configJson` (JSON Schema da config) com um objeto de um nível só, a tela monta campos para os tipos
+simples (texto, número, inteiro, booleano e opção de uma lista de textos) e mostra a `description` de cada um. Sem
+`configJson`, ou com qualquer outra forma (objeto aninhado, lista, `anyOf`, `$ref`...), aparece um editor de texto JSON.
+Salvar pelo formulário mantém as chaves da config atual que o schema não descreve. Em qualquer caso a validação final é a do `configSchema` do módulo, no processo filho, e o detector de
 segredos continua recusando valores sensíveis (credencial não vai na config: use variável de ambiente ou o cofre do sistema).
 O formulário aparece quando o `serve` tem o schema do módulo carregado (`configJson`), inclusive num módulo que falhou por
 configuração inválida, que é justamente quando ele ajuda. Sem o schema (módulo desligado, inativo nesta máquina, ausente,
 que falhou ao importar, ou que não exporta `configJson`) abre o editor JSON.
-Quando o módulo não carrega (falho ou ausente), o editor traz o aviso de que não deu para validar agora: a config é
-gravada sem o `configSchema` e conferida quando o módulo voltar a carregar.
+Quando o módulo não carrega (falho sem schema, ausente) ou não roda nesta máquina (desligado, inativo) num vault com
+frase-senha, o editor traz o aviso "Não foi possível validar agora: a configuração será conferida quando o módulo voltar a
+carregar.": a config é gravada só com o detector de segredos, sem o `configSchema`.
 
 ### Lista, ligar e desligar
 
 Cada módulo é um cartão: nome, versão, situação (ativo, desligado, falho com o motivo e uma dica, inativo nesta máquina,
 ausente), pasta, próxima e última execução de cada tarefa com o resultado e o gasto de IA do dia. Ações: Configurar,
 Ligar/Desligar, Rodar agora, Ver erros, Remover e, no falho, Tentar de novo. Salvar configuração, ligar, desligar, remover e
-tentar de novo pedem confirmação ("... O brain serve será reiniciado") e reiniciam o `serve`. Conta como **ligar**, e pede a
+tentar de novo (no cartão e no aviso de que o `serve` não reiniciou) pedem confirmação ("... O brain serve será
+reiniciado") e reiniciam o `serve`. Conta como **ligar**, e pede a
 frase quando ela existe, qualquer mudança que **amplie onde o módulo roda**: desligado para ligado (em qualquer `host`),
 passar a rodar nesta máquina e, com o módulo ligado, tirar ou trocar o `host`. Restringir a esta máquina não pede a frase.
 
