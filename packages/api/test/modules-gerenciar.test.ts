@@ -1,10 +1,13 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AvisosStore, Brain, ModuleRegistry, loadConfig, modulesStateRoot, setReviewerPassphrase, type ResumoDoModulo } from "@brain/core";
 import type { ModuleDef } from "@brain/module-sdk";
 import { issueHumanSession, startApi, type ApiHandle, type ModulesApiOptions } from "../src/index.js";
+import { umaVezAoTerminar } from "../src/modules-gerenciar.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 // Gerenciamento de módulos pela UI (spec gerenciar-modulos §7.2, §7.3, §7.5): só a sessão humana `full`, frase-senha para
@@ -201,8 +204,8 @@ describe("inspecionar e frase-senha", () => {
     let reinicios = 0;
     const s = await subir({ frase: FRASE, relogio: () => agora, reiniciarServe: async () => { reinicios++; } });
     expect((await inspecionar(s, pasta, { fraseSenha: "errada" })).status).toBe(403);
-    // um erro na janela: as rotas que reiniciam respondem 429 (reiniciar não zera o limite)
-    for (const [m, p, b] of [["POST", `${G}/reiniciar`, {}], ["DELETE", `${G}/lembrete`, undefined], ["PUT", `${G}/lembrete`, { enabled: false }], ["POST", `${G}/adicionar`, { ticket: "x" }]] as const) {
+    // um erro na janela: as rotas que ampliam ou reiniciam com código novo respondem 429 (reiniciar não zera o limite)
+    for (const [m, p, b] of [["POST", `${G}/reiniciar`, {}], ["PUT", `${G}/lembrete`, { config: { horario: "09:00" } }], ["POST", `${G}/adicionar`, { ticket: "x" }]] as const) {
       const r = await call(s.api, s.ui, m, p, b);
       expect([m, p, r.status, (await r.json()).error]).toEqual([m, p, 429, "tentativas"]);
     }
@@ -217,6 +220,29 @@ describe("inspecionar e frase-senha", () => {
     agora += 61_000;
     expect((await inspecionar(depois, pasta, { fraseSenha: FRASE })).status).toBe(200);
     expect((await call(depois.api, depois.ui, "POST", `${G}/reiniciar`, {})).status).toBe(200);
+  });
+
+  it("com erro de frase na janela, o que só restringe passa: desligar, restringir ao host e remover → 200; ligar, configurar e reiniciar → 429", async () => {
+    gravarModulos({ lembrete: { path: pasta, enabled: true }, outro: { path: pasta, enabled: true }, terceiro: { path: pasta, enabled: false } });
+    let reinicios = 0;
+    const s = await subir({ frase: FRASE, reiniciarServe: async () => { reinicios++; } });
+    expect((await inspecionar(s, pasta, { fraseSenha: "errada" })).status).toBe(403);
+    const status = async (m: string, p: string, b?: unknown) => (await call(s.api, s.ui, m, p, b)).status;
+    expect(await status("PUT", `${G}/lembrete`, { enabled: false })).toBe(200);
+    expect(modulosEmDisco().lembrete?.enabled).toBe(false);
+    expect(await status("PUT", `${G}/outro`, { soNestaMaquina: true })).toBe(200);
+    expect(modulosEmDisco().outro?.host).toBe(hostname());
+    expect(await status("DELETE", `${G}/outro`)).toBe(200);
+    expect(modulosEmDisco().outro).toBeUndefined();
+    // desligar junto com uma config nova não é só restringir
+    expect(await status("PUT", `${G}/lembrete`, { enabled: false, config: { horario: "09:00" } })).toBe(429);
+    expect(await status("PUT", `${G}/lembrete`, { config: { horario: "09:00" } })).toBe(429);
+    expect(await status("POST", `${G}/reiniciar`, {})).toBe(429);
+    // ligar continua exigindo a frase (sem ela, 403); só a certa zera a janela
+    expect(await status("PUT", `${G}/terceiro`, { enabled: true })).toBe(403);
+    expect(modulosEmDisco().terceiro?.enabled).toBe(false);
+    for (let n = 0; n < 50 && reinicios < 3; n++) await new Promise((ok) => setTimeout(ok, 20));
+    expect(reinicios).toBe(3);
   });
 
   it("a frase certa zera os erros: quem errou uma vez e acertou segue sem esperar", async () => {
@@ -395,6 +421,21 @@ describe("adicionar", () => {
     expect([(await a).status, (await b).status].sort()).toEqual([200, 409]);
   });
 
+  it("o id mudou entre a conferência e o adicionar → 409 id_mudou; nada gravado; o ticket não volta", async () => {
+    gravarModulos({});
+    let id = "lembrete";
+    const base = conferirFalso();
+    const s = await subir({ conferir: async (c, cfg) => { const r = await base(c, cfg); return r.resumo ? { ...r, resumo: resumo(id) } : r; } });
+    const t = (await inspecionar(s, pasta)).corpo.ticket;
+    id = "outro-id";
+    const r = await call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: {} });
+    expect(r.status).toBe(409);
+    expect(await r.json()).toMatchObject({ error: "id_mudou" });
+    expect(modulosEmDisco()).toEqual({});
+    id = "lembrete";
+    expect((await call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: {} })).status).toBe(409);
+  });
+
   it("id já configurado → 409 com o caminho; config inalterada", async () => {
     gravarModulos({ lembrete: { path: "/outra/pasta/lembrete" } });
     const antes = readFileSync(brain.vault.configPath, "utf8");
@@ -520,6 +561,28 @@ describe("configurar, remover e reiniciar", () => {
     } finally { writeFileSync(cfg, bom, "utf8"); }
   });
 
+  it("a auditoria registra a ação semântica de cada mudança", async () => {
+    gravarModulos({});
+    const s = await subir({ reiniciarServe: async () => {} });
+    const desde = new Date().toISOString();
+    const t = (await inspecionar(s, pasta)).corpo.ticket;
+    expect((await call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: {} })).status).toBe(200);
+    for (const b of [{ enabled: false }, { enabled: true }, { config: { horario: "09:00" } }, { soNestaMaquina: true }]) expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, b)).status).toBe(200);
+    expect((await call(s.api, s.ui, "DELETE", `${G}/lembrete`)).status).toBe(200);
+    const acoes = brain.db.activity({ action: "config_update", since: desde }).map((a) => (a.detail as { acao?: string }).acao).reverse();
+    expect(acoes).toEqual(["adicionar", "desligar", "ligar", "configurar", "restringir_host", "remover"]);
+  });
+
+  it("o reinício dispara uma vez só, no fim da resposta ou no fechamento da conexão", () => {
+    for (const eventos of [["finish", "close"], ["close"], ["close", "finish"]]) {
+      const res = new EventEmitter();
+      let n = 0;
+      umaVezAoTerminar(res as unknown as ServerResponse, () => { n++; });
+      for (const e of eventos) res.emit(e);
+      expect([eventos, n]).toEqual([eventos, 1]);
+    }
+  });
+
   it("reiniciar: dispara o reinício depois da resposta", async () => {
     let reinicios = 0;
     const s = await subir({ reiniciarServe: async () => { reinicios++; } });
@@ -543,6 +606,20 @@ describe("rotas do core", () => {
     expect(rv.status).toBe(403);
     expect(await rv.json()).toMatchObject({ error: "forbidden", message: "a frase-senha se configura no terminal (brain admin passphrase)" });
     expect((await call(s.api, s.ui, "PUT", "/api/settings", { git: { auto_commit: false } })).status).toBe(200);
+  });
+
+  it("settings grava só as chaves que a UI usa: o resto → 403 sem gravar nada", async () => {
+    const s = await subir();
+    const antes = readFileSync(brain.vault.configPath, "utf8");
+    for (const corpo of [{ assistant: { claude_path: "/tmp/outro" } }, { state: { external: true } }, { limits: { max_chars: 1 } }, { git: { auto_commit: true }, assistant: {} }]) {
+      const r = await call(s.api, s.ui, "PUT", "/api/settings", corpo);
+      expect([corpo, r.status]).toEqual([corpo, 403]);
+      expect(await r.json()).toMatchObject({ error: "forbidden", message: "esta configuração não se altera pela UI" });
+    }
+    expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
+    for (const corpo of [{ vault_name: brain.config.vault_name }, { embeddings: { provider: "hash" } }, { agents: { can_link: true } }, { governance: { stale_days: brain.config.governance.stale_days } }, { retention: { activity_days: brain.config.retention.activity_days } }, {}]) {
+      expect([corpo, (await call(s.api, s.ui, "PUT", "/api/settings", corpo)).status]).toEqual([corpo, 200]);
+    }
   });
 
   it("fs/pastas: relativo → 400; sessão → lista; api-token → 403", async () => {

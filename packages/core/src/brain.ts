@@ -9,7 +9,7 @@ import { ADDITIVE_RESOLUTION, INTERNAL_READER, authorize, isHumanReviewer, isPri
 const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
-import { ConfigSchema, dumpConfig, loadConfig, type BrainConfig, type ModuleEntry } from "./config.js";
+import { ConfigSchema, dumpConfig, loadConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
 import { MODULE_ID_RE } from "./modules/identity.js";
 import { IndexDb } from "./db.js";
 import { HashEmbedder, OpenAICompatibleEmbedder, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
@@ -843,9 +843,11 @@ export class Brain {
   /**
    * Grava (ou remove, com `null`) uma entrada do bloco `modules`. Substitui o bloco inteiro: o `deepMerge` do updateConfig não
    * remove chaves. Com uma função, ela recebe a entrada atual lida DENTRO do lock (edições concorrentes não se perdem) e devolve a
-   * nova (ou `null`); um erro lançado por ela cancela a gravação e propaga.
+   * nova (ou `null`); um erro lançado por ela cancela a gravação e propaga. `acao` é o rótulo da auditoria (`config_update`)
+   * que a API conhece (ligar, desligar...); uma função o decide pela entrada antes e depois, lidas dentro do lock. Sem ela, o
+   * rótulo genérico (`adicionar`, `atualizar`, `remover`).
    */
-  async setModuleEntry(id: string, entry: ModuleEntry | null | ((atual: ModuleEntry | undefined) => ModuleEntry | null), who: Principal): Promise<BrainConfig> {
+  async setModuleEntry(id: string, entry: ModuleEntry | null | ((atual: ModuleEntry | undefined) => ModuleEntry | null), who: Principal, acao?: AcaoDeModulo | ((antes: ModuleEntry | undefined, depois: ModuleEntry | null) => AcaoDeModulo)): Promise<BrainConfig> {
     const actor = authorize(who, "admin", { config: this.config });
     if (!MODULE_ID_RE.test(id)) throw new BrainError("invalid", `id de módulo inválido: "${id}"`);
     return this.write(async () => {
@@ -854,13 +856,14 @@ export class Brain {
       try { loadConfig(this.vault.configPath); }
       catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos"); }
       const modules = new Map(Object.entries(this.config.modules));
-      const proxima = typeof entry === "function" ? entry(modules.get(id)) : entry;
-      const acao = proxima === null ? "remover" : modules.has(id) ? "atualizar" : "adicionar";
+      const antes = modules.get(id);
+      const proxima = typeof entry === "function" ? entry(antes) : entry;
+      const rotulo = typeof acao === "function" ? acao(antes, proxima) : acao ?? (proxima === null ? "remover" : antes ? "atualizar" : "adicionar");
       if (proxima === null) modules.delete(id); else modules.set(id, proxima);
       const next = ConfigSchema.parse({ ...this.config, modules: Object.fromEntries(modules) });
       writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
       this.config = next;
-      this.log(actor, "config_update", null, { modulo: id, acao });
+      this.log(actor, "config_update", null, { modulo: id, acao: rotulo });
       return next;
     });
   }

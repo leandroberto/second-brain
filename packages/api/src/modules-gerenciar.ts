@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { MODULE_ID_RE, caminhoRealDePasta, checkReviewerPassphrase, hasReviewerPassphrase, loadConfig, resolveModuleDir, validarConfigDoModulo, writeFileAtomic, type Brain, type BrainConfig, type ModuleEntry, type ResultadoConfig, type ResumoDoModulo, type SessionStoreOptions } from "@brain/core";
+import { MODULE_ID_RE, caminhoRealDePasta, checkReviewerPassphrase, hasReviewerPassphrase, loadConfig, resolveModuleDir, validarConfigDoModulo, writeFileAtomic, type AcaoDeModulo, type Brain, type BrainConfig, type ModuleEntry, type ResultadoConfig, type ResumoDoModulo, type SessionStoreOptions } from "@brain/core";
 import type { ModuleDef } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 import type { ModulesApiOptions } from "./modules.js";
@@ -38,8 +38,8 @@ class Recusa extends Error {
   constructor(readonly status: number, readonly corpo: Record<string, unknown>) { super(String(corpo.error)); }
 }
 
-/** Ticket de conferência: emitido por `inspecionar` para a pasta conferida e a sessão que conferiu. */
-interface Ticket { caminhoReal: string; sessaoHash: string; expira: number }
+/** Ticket de conferência: emitido por `inspecionar` para a pasta conferida, o id que ela declarou e a sessão que conferiu. */
+interface Ticket { caminhoReal: string; id: string; sessaoHash: string; expira: number }
 
 /** `tem` = frase gravada; `ausente` = `review.passphrase_required` sem a frase nesta máquina (falha fechada); `nao` = sem frase. */
 type ModoFrase = "tem" | "ausente" | "nao";
@@ -141,7 +141,10 @@ export class GerenciarModulos {
     try { this.gravarErros([]); } catch { /* segue: a tentativa registrada sai da janela sozinha */ }
   }
 
-  /** Com frase-senha errada na janela, nada reinicia o serve (um reinício não serve para escapar do limite). */
+  /**
+   * Com frase-senha errada na janela, nada que amplie ou reinicie com código novo passa (um reinício não serve para escapar do
+   * limite): adicionar, ligar, configurar e reiniciar. Desligar, remover e restringir ao host desta máquina não passam por aqui.
+   */
   private recusarReinicioComErrosDeFrase(): void {
     const erros = this.errosNaJanela();
     if (erros === "ilegivel") { if (this.modoFrase() === "tem") throw registroIlegivel(this.arquivoErros); return; }
@@ -150,12 +153,12 @@ export class GerenciarModulos {
 
   // ---- tickets ----
 
-  private emitirTicket(caminhoReal: string, token: string): string {
+  private emitirTicket(caminhoReal: string, id: string, token: string): string {
     this.descartarExpirados();
     // teto: os mais antigos saem primeiro (a ordem de inserção do Map)
     while (this.tickets.size >= MAX_TICKETS) this.tickets.delete(this.tickets.keys().next().value!);
     const t = randomBytes(32).toString("base64url");
-    this.tickets.set(t, { caminhoReal, sessaoHash: sha(token), expira: this.agora() + TICKET_MS });
+    this.tickets.set(t, { caminhoReal, id, sessaoHash: sha(token), expira: this.agora() + TICKET_MS });
     return t;
   }
 
@@ -186,7 +189,7 @@ export class GerenciarModulos {
     this.exigirFrase(b.fraseSenha);
     const real = caminhoRealDePasta(b.caminho);
     const c = await this.conferir(real);
-    const ticket = c.ok ? this.emitirTicket(real, r.token) : undefined;
+    const ticket = c.ok && c.resumo ? this.emitirTicket(real, c.resumo.id, r.token) : undefined;
     return responder(r.res, 200, { ok: c.ok, causas: c.causas, resumo: c.resumo, caminho: real, ...(ticket ? { ticket } : {}) });
   }
 
@@ -206,12 +209,14 @@ export class GerenciarModulos {
       catch (e) { devolver = e instanceof Recusa && e.status === 429; throw e; }
       if (!c.ok || !c.resumo) throw new Recusa(400, { error: "modulo_invalido", message: "a pasta deixou de ser um módulo válido; confira de novo", causas: c.causas });
       const id = c.resumo.id;
+      // outro módulo na mesma pasta: o que a pessoa conferiu (e aceitou) não é o que seria gravado
+      if (id !== t.id) throw new Recusa(409, { error: "id_mudou", message: "o módulo mudou desde a conferência; confira de novo" });
       const existente = this.modulosEmDisco()[id];
       if (existente) throw idExistente(id, existente);
       const erros = await this.errosDaConfig(config, c.config);
       if (erros) { devolver = true; throw new Recusa(400, { error: "config_invalida", erros }); }
       const entrada = { enabled: true, path: t.caminhoReal, config, ...(soNestaMaquina ? { host: hostname() } : {}) } as ModuleEntry;
-      await this.gravar(id, (atual) => { if (atual) throw idExistente(id, atual); return entrada; }, r.who);
+      await this.gravar(id, (atual) => { if (atual) throw idExistente(id, atual); return entrada; }, r.who, "adicionar");
     } catch (e) {
       if (devolver && !this.tickets.has(String(b.ticket))) this.tickets.set(String(b.ticket), t);
       throw e;
@@ -240,8 +245,10 @@ export class GerenciarModulos {
     const modo = this.modoFrase();
     let fraseValida = false;
     if (liga(atual)) { this.exigirFrase(b.fraseSenha); fraseValida = modo === "tem"; }
-    // depois da frase: a certa zera os erros, e quem a digitou errado antes não fica preso
-    this.recusarReinicioComErrosDeFrase();
+    // só restringir (desligar, pôr o host desta máquina) é ação de segurança: passa mesmo com frase errada na janela. O resto
+    // espera, depois da frase: a certa zera os erros, e quem a digitou errado antes não fica preso
+    const soRestringe = b.config === undefined && enabled !== true && soNestaMaquina !== false && !liga(atual);
+    if (!soRestringe) this.recusarReinicioComErrosDeFrase();
 
     if (b.config !== undefined) {
       // rodar o código (num filho) para validar pelo schema só quando já está autorizado: sem frase no vault, ligando com a frase
@@ -258,17 +265,17 @@ export class GerenciarModulos {
       // a entrada mudou desde a leitura e agora este PUT ligaria o módulo: só com a frase já conferida
       if (liga(fresca) && modo !== "nao" && !fraseValida) throw new Recusa(403, { error: "frase_senha", motivo: "exigida", message: "este vault exige a frase-senha do revisor" });
       return aplicar(fresca);
-    }, r.who);
+    }, r.who, (antes, depois) => acaoDoPut(antes, depois, b.config !== undefined));
     return this.responderEReiniciar(r.res, { mensagem: `Módulo atualizado. ${REINICIO}` });
   }
 
   private async remover(r: ReqGerenciar, id: string): Promise<true> {
-    this.recusarReinicioComErrosDeFrase();
-    // só a entrada da config: a pasta e o estado do módulo ficam (adicionar de novo recupera tudo)
+    // remover só restringe (ação de segurança): não espera a janela de frase errada. Só a entrada da config: a pasta e o estado
+    // do módulo ficam (adicionar de novo recupera tudo)
     await this.gravar(id, (atual) => {
       if (!atual) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
       return null;
-    }, r.who);
+    }, r.who, "remover");
     return this.responderEReiniciar(r.res, { mensagem: `Módulo removido. ${REINICIO}` });
   }
 
@@ -283,8 +290,8 @@ export class GerenciarModulos {
     try { return await conferir(caminho, config); } finally { this.conferencias--; }
   }
 
-  private async gravar(id: string, atualizar: (atual: ModuleEntry | undefined) => ModuleEntry | null, who: Principal): Promise<BrainConfig> {
-    return this.brain.setModuleEntry(id, atualizar, who);
+  private async gravar(id: string, atualizar: (atual: ModuleEntry | undefined) => ModuleEntry | null, who: Principal, acao: Parameters<Brain["setModuleEntry"]>[3]): Promise<BrainConfig> {
+    return this.brain.setModuleEntry(id, atualizar, who, acao);
   }
 
   /**
@@ -315,11 +322,34 @@ export class GerenciarModulos {
   private responderEReiniciar(res: ServerResponse, corpo: Record<string, unknown>): true {
     const reiniciar = this.o.reiniciarServe;
     if (!reiniciar) return responder(res, 200, { ...corpo, reiniciar: true });
-    res.on("finish", () => {
+    umaVezAoTerminar(res, () => {
       reiniciar().catch((e: unknown) => { console.error(`[api] reinício do brain serve recusado: ${(e as Error)?.message ?? String(e)}`); });
     });
     return responder(res, 200, corpo);
   }
+}
+
+/**
+ * Chama `fn` uma vez só, quando a resposta termina (`finish`) ou a conexão fecha antes disso (`close`: o cliente caiu no meio):
+ * a ação já foi gravada, então o reinício não pode depender de a resposta chegar inteira.
+ */
+export function umaVezAoTerminar(res: ServerResponse, fn: () => void): void {
+  let feito = false;
+  const uma = () => { if (feito) return; feito = true; fn(); };
+  res.once("finish", uma);
+  res.once("close", uma);
+}
+
+/**
+ * Rótulo da auditoria de um PUT, pela entrada antes e depois (lidas dentro do lock): ampliar onde roda = `ligar`; desligar;
+ * pôr o host desta máquina = `restringir_host`; o resto (config, tirar o host de um desligado) = `configurar`.
+ */
+function acaoDoPut(antes: ModuleEntry | undefined, depois: ModuleEntry | null, mudouConfig: boolean): AcaoDeModulo {
+  if (!antes || !depois) return "configurar";
+  if (ampliaOndeRoda(antes, depois)) return "ligar";
+  if (antes.enabled !== false && depois.enabled === false) return "desligar";
+  if (!mudouConfig && depois.host === hostname() && antes.host !== depois.host) return "restringir_host";
+  return "configurar";
 }
 
 /**

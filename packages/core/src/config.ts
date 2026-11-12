@@ -64,6 +64,8 @@ export const ConfigSchema = z.object({
 export type BrainConfig = z.infer<typeof ConfigSchema>;
 /** Entrada de um módulo em `config.modules[id]`. */
 export type ModuleEntry = BrainConfig["modules"][string];
+/** Ação de gerenciamento de um módulo, registrada na auditoria `config_update` (`Brain.setModuleEntry`). */
+export type AcaoDeModulo = "adicionar" | "ligar" | "desligar" | "configurar" | "restringir_host" | "remover";
 
 export function loadConfig(path: string): BrainConfig {
   const raw = existsSync(path) ? parse(readFileSync(path, "utf8")) ?? {} : {};

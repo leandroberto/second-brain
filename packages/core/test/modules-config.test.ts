@@ -86,6 +86,16 @@ describe("config modules e identidade module/<id>", () => {
     expect(loadConfig(cfg).modules.lembrete).toBeUndefined();
   });
 
+  it("setModuleEntry audita a ação semântica que vem da API (valor ou função da entrada antes/depois)", async () => {
+    const b = await tempBrain();
+    await b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, human, "adicionar");
+    await b.setModuleEntry("lembrete", (e) => ({ ...e!, enabled: false }), human, (antes, depois) => (antes?.enabled !== false && depois?.enabled === false ? "desligar" : "configurar"));
+    await b.setModuleEntry("lembrete", (e) => ({ ...e!, host: "esta" }), human, "restringir_host");
+    await b.setModuleEntry("lembrete", null, human, "remover");
+    const acoes = b.db.activity({ action: "config_update" }).map((a) => (a.detail as { acao?: string }).acao).reverse();
+    expect(acoes).toEqual(["adicionar", "desligar", "restringir_host", "remover"]);
+  });
+
   it("setModuleEntry recusa agente", async () => {
     const b = await tempBrain();
     await expect(b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, claude)).rejects.toMatchObject({ code: "forbidden" });

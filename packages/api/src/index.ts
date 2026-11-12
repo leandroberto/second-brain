@@ -221,10 +221,12 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   r("GET", "/api/notes/:id/suggestions", ({ brain, params }) => brain.relationSuggestions(decodeURIComponent(params[0]!)));
   r("GET", "/api/settings", ({ brain }) => ({ config: brain.config, vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
   r("PUT", "/api/settings", async ({ brain, body, actor }) => {
-    // atalhos fechados: os módulos só pelo gerenciamento (frase-senha, conferência) e a frase-senha só no terminal
-    const tem = (k: string) => !!body && typeof body === "object" && Object.hasOwn(body, k);
-    if (tem("modules")) throw new BrainError("forbidden", "use Configurações › Módulos");
-    if (tem("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
+    // só as chaves que a tela de Configurações grava. Os módulos vão pelo gerenciamento (frase-senha, conferência), a frase-senha
+    // só no terminal, e o resto (`assistant.claude_path`, `state.external`, `limits`...) não se altera pela sessão do navegador
+    const chaves = body && typeof body === "object" ? Object.keys(body) : [];
+    if (chaves.includes("modules")) throw new BrainError("forbidden", "use Configurações › Módulos");
+    if (chaves.includes("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
+    if (chaves.some((k) => !SETTINGS_DA_UI.has(k))) throw new BrainError("forbidden", "esta configuração não se altera pela UI");
     return { config: await brain.updateConfig(body, actor) };
   });
   // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana). A
@@ -368,6 +370,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   };
 }
 
+/** Chaves de topo que `PUT /api/settings` aceita: as que a tela de Configurações grava (lista de permitidas, não de proibidas). */
+const SETTINGS_DA_UI = new Set(["vault_name", "embeddings", "git", "agents", "governance", "retention"]);
 const temporalOf = (v: any) => (v && typeof v === "object" ? { as_of: String(v.as_of ?? ""), ...(v.revalidate_when ? { revalidate_when: String(v.revalidate_when).slice(0, 200) } : {}) } : undefined);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : undefined);
 const safeEq = (a: string, b: string) => { const x = Buffer.from(a); const y = Buffer.from(b); return x.length === y.length && timingSafeEqual(x, y); };
