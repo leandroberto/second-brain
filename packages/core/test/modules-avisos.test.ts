@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AvisosStore, createModuleContext, type AvisosSink } from "../src/index.js";
 import type { Brain } from "../src/brain.js";
 
@@ -106,13 +106,66 @@ describe("AvisosStore", () => {
   it("arquivo fica limitado, com reescrita atômica", async () => {
     const root = nova();
     const s = new AvisosStore(root);
-    for (let i = 0; i < 1100; i++) await s.avisar("m", { titulo: `n${i}` });
+    const avisos: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m: unknown) => { avisos.push(String(m)); });
+    try { for (let i = 0; i < 1100; i++) await s.avisar("m", { titulo: `n${i}` }); } finally { spy.mockRestore(); }
+    // só não vistos (mais de 500): mantém os 500 mais recentes e avisa no stderr
+    expect(avisos.length).toBeGreaterThan(0);
+    expect(avisos[0]).toMatch(/500 avisos não vistos/);
+    expect(s.listar().avisos[0]!.titulo).toBe(`n${1100 - s.listar().avisos.length}`);
     const linhas = readFileSync(join(root, "_avisos.jsonl"), "utf8").trim().split("\n");
     expect(linhas.length).toBeLessThanOrEqual(1000);
     expect(s.listar().avisos.at(-1)!.titulo).toBe("n1099");
     expect(s.listar().avisos.length).toBeGreaterThanOrEqual(500);
     expect(readdirSync(root).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     expect(existsSync(join(root, "_badges.json"))).toBe(false);
+  });
+});
+
+describe("AvisosStore: falhas e casos de borda", () => {
+  it("chave vazia ou só com espaços é inválida", async () => {
+    const s = new AvisosStore(nova());
+    for (const chave of ["", "   "]) await expect(s.avisar("m", { titulo: "t", chave })).rejects.toMatchObject({ code: "invalid" });
+    expect(s.listar().avisos).toEqual([]);
+  });
+
+  it("compactação nunca descarta aviso não visto, por mais antigo que seja", async () => {
+    const s = new AvisosStore(nova());
+    const antigo = await s.avisar("m", { titulo: "antigo" });
+    for (let i = 0; i < 1100; i++) { const a = await s.avisar("m", { titulo: `n${i}` }); s.marcarVisto(a.id); }
+    const ultimo = await s.avisar("m", { titulo: "novo" });
+    expect(s.listar().avisos.map((a) => a.id)).toEqual([antigo.id, ultimo.id]);
+  });
+
+  it("badge: falha ao gravar não altera a memória nem emite, e o erro é relançado", () => {
+    const root = nova();
+    const evs: string[] = [];
+    const s = new AvisosStore(root, (ev) => evs.push(ev));
+    s.badge("a", 1);
+    rmSync(join(root, "_badges.json"));
+    mkdirSync(join(root, "_badges.json", "x"), { recursive: true }); // rename do tmp sobre diretório não vazio falha
+    expect(() => s.badge("a", 5)).toThrow();
+    expect(() => s.badge("b", 2)).toThrow();
+    expect(s.listar().badges).toEqual({ a: 1 });
+    expect(s.listar().total).toBe(1);
+    expect(evs).toEqual(["module.badge"]);
+  });
+
+  it("dedupe por chave: falha no meio dá duplicata, nunca perda", async () => {
+    const s = new AvisosStore(nova());
+    const um = await s.avisar("m", { titulo: "um", chave: "k" });
+    const interno = s as unknown as { acrescentar(l: unknown): void };
+    const original = interno.acrescentar.bind(s);
+    let n = 0;
+    // a 2ª gravação do avisar falha (seja ela a do aviso novo ou a marca de visto do anterior)
+    interno.acrescentar = (l) => { if (n++ === 1) throw new Error("disco cheio"); original(l); };
+    await expect(s.avisar("m", { titulo: "dois", chave: "k" })).rejects.toThrow("disco cheio");
+    const ficou = s.listar().avisos;
+    expect(ficou.map((a) => a.titulo)).toEqual(["um", "dois"]); // duplicata: o novo foi gravado e o anterior não foi apagado
+    expect(ficou[0]!.id).toBe(um.id);
+    interno.acrescentar = original;
+    const tres = await s.avisar("m", { titulo: "tres", chave: "k" });
+    expect(s.listar().avisos.map((a) => a.id)).toEqual([tres.id]);
   });
 });
 

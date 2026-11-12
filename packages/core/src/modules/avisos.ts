@@ -31,7 +31,8 @@ function validar(a: Aviso): void {
   texto("titulo", a?.titulo, MAX_TITULO, true);
   texto("corpo", a?.corpo, MAX_CORPO);
   texto("link", a?.link, MAX_LINK);
-  texto("chave", a?.chave, MAX_CHAVE);
+  // chave definida precisa ter conteúdo: "" deduplicaria todos os avisos do módulo entre si
+  texto("chave", a?.chave, MAX_CHAVE, a?.chave !== undefined);
   // o link é o `resto` relativo da aba (#/m/<id>/<link>): nada de caminho absoluto, //host ou esquema
   if (a.link !== undefined && (a.link.startsWith("/") || a.link.includes(":") || a.link.includes("\\"))) {
     throw new BrainError("invalid", "aviso: link deve ser relativo à aba do módulo (sem /, // nem esquema)");
@@ -42,7 +43,7 @@ function validar(a: Aviso): void {
 export class AvisosStore implements AvisosSink {
   private readonly arq: string;
   private readonly arqBadges: string;
-  private readonly badges: Record<string, number> = {};
+  private badges: Record<string, number> = {};
   private readonly ouvintes = new Set<Ouvinte>();
   private ultimoTs = 0;
   private linhas = 0;
@@ -105,10 +106,20 @@ export class AvisosStore implements AvisosSink {
     this.linhas++;
   }
 
+  /**
+   * Reescreve o arquivo (atômico) com no máximo `MANTER` avisos: TODOS os não vistos mais os vistos mais recentes até o limite.
+   * Um não visto só sai se os não vistos sozinhos passarem do limite (ficam os mais recentes), com aviso no stderr.
+   */
   private compactar(): void {
-    const todos = this.ler().slice(-MANTER);
-    writeFileAtomic(this.arq, todos.map((a) => `${JSON.stringify(a)}\n`).join(""));
-    this.linhas = todos.length;
+    const todos = this.ler();
+    const naoVistos = todos.filter((a) => !a.visto);
+    if (naoVistos.length > MANTER) {
+      console.error(`[brain] avisos dos módulos: mais de ${MANTER} avisos não vistos; os mais antigos foram descartados (ficam os ${MANTER} mais recentes)`);
+    }
+    const manter = new Set((naoVistos.length >= MANTER ? naoVistos.slice(-MANTER) : [...naoVistos, ...todos.filter((a) => a.visto).slice(-(MANTER - naoVistos.length))]).map((a) => a.id));
+    const mantidos = todos.filter((a) => manter.has(a.id));
+    writeFileAtomic(this.arq, mantidos.map((a) => `${JSON.stringify(a)}\n`).join(""));
+    this.linhas = mantidos.length;
   }
 
   async avisar(modulo: string, a: Aviso): Promise<AvisoGravado> {
@@ -117,13 +128,15 @@ export class AvisosStore implements AvisosSink {
     if (a.corpo !== undefined) g.corpo = a.corpo;
     if (a.link !== undefined) g.link = a.link;
     if (a.chave !== undefined) g.chave = a.chave;
-    if (g.chave !== undefined) {
-      // a mesma chave substitui o aviso anterior ainda não visto: marca-o como visto
-      for (const ant of this.ler()) if (!ant.visto && ant.modulo === modulo && ant.chave === g.chave) this.acrescentar({ id: ant.id, visto: true, marca: true });
-    }
+    // a mesma chave substitui o aviso anterior ainda não visto: o novo é gravado ANTES de o anterior ser marcado como visto
+    // (falha no meio deixa uma duplicata, nunca perde o aviso)
+    const anteriores = g.chave === undefined ? [] : this.ler().filter((ant) => !ant.visto && ant.modulo === modulo && ant.chave === g.chave);
     this.acrescentar(g);
-    if (this.linhas > LIMITE_LINHAS) this.compactar();
+    let falha: unknown;
+    try { for (const ant of anteriores) this.acrescentar({ id: ant.id, visto: true, marca: true }); } catch (e) { falha = e; }
+    if (falha === undefined && this.linhas > LIMITE_LINHAS) this.compactar();
     this.emitir("module.notification", g);
+    if (falha !== undefined) throw falha;
     return g;
   }
 
@@ -142,8 +155,11 @@ export class AvisosStore implements AvisosSink {
 
   badge(modulo: string, n: number): void {
     const v = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
-    if (v === 0) delete this.badges[modulo]; else this.badges[modulo] = v;
-    writeFileAtomic(this.arqBadges, JSON.stringify(this.badges));
+    // disco primeiro, memória depois: se a gravação falhar, a memória fica como estava e o erro sobe
+    const novos = { ...this.badges };
+    if (v === 0) delete novos[modulo]; else novos[modulo] = v;
+    writeFileAtomic(this.arqBadges, JSON.stringify(novos));
+    this.badges = novos;
     const total = Object.values(this.badges).reduce((s, x) => s + x, 0);
     this.emitir("module.badge", { modulo, n: v, total });
   }

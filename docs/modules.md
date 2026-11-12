@@ -238,7 +238,10 @@ ctx.badge(3);   // pendências do módulo
   visto fica guardado. `link` é **relativo à aba**: vira `#/m/<id>/<link>` e a página o recebe em `sb.resto`. Caminho absoluto,
   `//host` e esquema (`https:`) são recusados.
 - `chave` deduplica: um aviso novo com a mesma chave substitui o anterior ainda não visto. Use uma chave por assunto
-  (`dia-2026-11-11`) para que reexecuções não acumulem avisos.
+  (`dia-2026-11-11`) para que reexecuções não acumulem avisos. Chave vazia (ou só espaços) é recusada. O novo é gravado
+  antes de o anterior sair: uma falha no meio deixa os dois, nunca nenhum.
+- O arquivo de avisos guarda até 500: todos os não vistos mais os vistos mais recentes. Um aviso não visto só é descartado
+  se houver mais de 500 não vistos (ficam os mais recentes, com aviso no stderr do `serve`).
 - Título, corpo, link e chave passam pelo detector de segredos.
 - `badge(n)` é o **estado** de pendências, não um evento: aparece no menu da UI, em `GET /api/modules` e, somado, no ícone da
   bandeja do desktop. Chame de novo a cada mudança.
