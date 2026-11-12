@@ -10,6 +10,7 @@ const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
 import { ConfigSchema, dumpConfig, loadConfig, type BrainConfig, type ModuleEntry } from "./config.js";
+import { MODULE_ID_RE } from "./modules/identity.js";
 import { IndexDb } from "./db.js";
 import { HashEmbedder, OpenAICompatibleEmbedder, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
 import { VaultGit } from "./git.js";
@@ -842,11 +843,13 @@ export class Brain {
   /** Grava (ou remove, com `null`) uma entrada do bloco `modules`. Substitui o bloco inteiro: o `deepMerge` do updateConfig não remove chaves. */
   async setModuleEntry(id: string, entry: ModuleEntry | null, who: Principal): Promise<BrainConfig> {
     const actor = authorize(who, "admin", { config: this.config });
+    if (!MODULE_ID_RE.test(id)) throw new BrainError("invalid", `id de módulo inválido: "${id}"`);
     return this.write(async () => {
-      const modules = { ...this.config.modules };
-      const acao = entry === null ? "remover" : id in modules ? "atualizar" : "adicionar";
-      if (entry === null) delete modules[id]; else modules[id] = entry;
-      const next = ConfigSchema.parse({ ...this.config, modules });
+      // `write` já relê o config.yaml do disco dentro do lock: edições manuais posteriores à subida são preservadas
+      const modules = new Map(Object.entries(this.config.modules));
+      const acao = entry === null ? "remover" : modules.has(id) ? "atualizar" : "adicionar";
+      if (entry === null) modules.delete(id); else modules.set(id, entry);
+      const next = ConfigSchema.parse({ ...this.config, modules: Object.fromEntries(modules) });
       writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
       this.config = next;
       this.log(actor, "config_update", null, { modulo: id, acao });

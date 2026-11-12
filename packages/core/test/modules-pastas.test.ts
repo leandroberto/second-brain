@@ -42,4 +42,17 @@ describe("listarPastas e caminho real", () => {
     expect(() => caminhoRealDePasta(arq)).toThrowError(expect.objectContaining({ code: "invalid" }));
     expect(() => caminhoRealDePasta(join(home, "nao-existe"))).toThrowError(expect.objectContaining({ code: "invalid" }));
   });
+
+  it("package.json grande, diretório, JSON inválido e symlink quebrado", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "brain-pastas-")));
+    const dep = JSON.stringify({ dependencies: { "@brain/module-sdk": "*" } });
+    mkdirSync(join(home, "grande"));
+    writeFileSync(join(home, "grande", "package.json"), dep + " ".repeat(1024 * 1024 + 1));
+    mkdirSync(join(home, "dir", "package.json"), { recursive: true });
+    mkdirSync(join(home, "invalido"));
+    writeFileSync(join(home, "invalido", "package.json"), "{ não é json");
+    symlinkSync(join(home, "nao-existe"), join(home, "quebrado"));
+    const r = listarPastas(home, { home });
+    expect(r.pastas.map((p) => [p.nome, p.provavelModulo])).toEqual([["dir", false], ["grande", false], ["invalido", false]]);
+  });
 });

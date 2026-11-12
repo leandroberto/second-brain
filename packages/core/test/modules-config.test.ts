@@ -73,4 +73,27 @@ describe("config modules e identidade module/<id>", () => {
     const b = await tempBrain();
     await expect(b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, claude)).rejects.toMatchObject({ code: "forbidden" });
   });
+
+  it("setModuleEntry valida o id e não usa o protótipo", async () => {
+    const b = await tempBrain();
+    for (const id of ["__proto__", "Lembrete"]) {
+      await expect(b.setModuleEntry(id, { enabled: true, ia_max_usd_dia: 2 }, human)).rejects.toMatchObject({ code: "invalid" });
+    }
+    expect(Object.keys(b.config.modules)).toEqual([]);
+    // "constructor" passa na regex: vale como id comum e conta como "adicionar" (não existe como chave própria)
+    await b.setModuleEntry("constructor", { enabled: true, ia_max_usd_dia: 2 }, human);
+    expect(Object.keys(b.config.modules)).toEqual(["constructor"]);
+    expect(b.db.activity({ action: "config_update" })[0]?.detail).toMatchObject({ modulo: "constructor", acao: "adicionar" });
+    expect(({} as Record<string, unknown>).enabled).toBeUndefined();
+  });
+
+  it("setModuleEntry preserva edição externa do config.yaml feita após a subida", async () => {
+    const b = await tempBrain();
+    const atual = parse(readFileSync(b.vault.configPath, "utf8"));
+    writeFileSync(b.vault.configPath, stringify({ ...atual, vault_name: "Editado por fora" }), "utf8");
+    await b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, human);
+    const lido = parse(readFileSync(b.vault.configPath, "utf8"));
+    expect(lido.vault_name).toBe("Editado por fora");
+    expect(lido.modules.lembrete.enabled).toBe(true);
+  });
 });

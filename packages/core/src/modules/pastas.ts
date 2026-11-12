@@ -7,13 +7,17 @@ export interface PastaListada { nome: string; caminho: string; provavelModulo: b
 export interface ListagemDePastas { caminho: string; pai?: string; pastas: PastaListada[] }
 
 const SDK = "@brain/module-sdk";
+const MAX_PACKAGE_JSON = 1024 * 1024;
 
 const ehPasta = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };
 
 /** Leitura estática do package.json: nunca importa nem executa nada da pasta. */
 function dependeDoSdk(pasta: string): boolean {
   try {
-    const pkg = JSON.parse(readFileSync(join(pasta, "package.json"), "utf8")) as Record<string, unknown>;
+    const arq = join(pasta, "package.json");
+    const st = statSync(arq);
+    if (!st.isFile() || st.size > MAX_PACKAGE_JSON) return false; // nunca lê FIFO, diretório nem arquivo enorme
+    const pkg = JSON.parse(readFileSync(arq, "utf8")) as Record<string, unknown>;
     return ["dependencies", "devDependencies", "peerDependencies"].some((k) => {
       const d = pkg[k];
       return typeof d === "object" && d !== null && SDK in d;
