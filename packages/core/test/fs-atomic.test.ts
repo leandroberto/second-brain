@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -29,6 +29,22 @@ describe("writeFileAtomic", () => {
     expect(tmps(dir)).toEqual([]);
   });
 
+  it("destino que é symlink: grava atomicamente no alvo real e o link continua link", () => {
+    const dir = nova(); const outra = nova();
+    const real = join(outra, "real.json"); const link = join(dir, "link.json");
+    writeFileSync(real, "velho");
+    symlinkSync(real, link);
+    writeFileAtomic(link, "novo");
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(real, "utf8")).toBe("novo");
+    expect(tmps(dir)).toEqual([]); expect(tmps(outra)).toEqual([]);
+    // symlink pendente (alvo ainda não existe, caminho relativo): cria o alvo
+    symlinkSync("futuro.json", join(dir, "pendente.json"));
+    writeFileAtomic(join(dir, "pendente.json"), "x");
+    expect(lstatSync(join(dir, "pendente.json")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(dir, "futuro.json"), "utf8")).toBe("x");
+  });
+
   it("escrita que falha (pasta inexistente): relança", () => {
     expect(() => writeFileAtomic(join(nova(), "nao", "existe.json"), "x")).toThrow(/ENOENT/);
   });
@@ -43,6 +59,15 @@ describe("preservarCorrompido", () => {
     expect(readFileSync(p, "utf8")).toBe("{lixo");
     expect(readdirSync(dir)).toEqual([p.slice(dir.length + 1)]);
     expect(preservarCorrompido(alvo)).toBeUndefined();
+  });
+
+  it("falha que não é ausência (ex.: pasta sem permissão) lança em vez de fingir que preservou", () => {
+    const dir = nova(); const alvo = join(dir, "_x.json");
+    writeFileSync(alvo, "{lixo");
+    chmodSync(dir, 0o500);
+    try { expect(() => preservarCorrompido(alvo)).toThrow(/EACCES|EPERM/); }
+    finally { chmodSync(dir, 0o700); }
+    expect(readFileSync(alvo, "utf8")).toBe("{lixo");
   });
 });
 
