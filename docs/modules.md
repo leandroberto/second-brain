@@ -466,7 +466,9 @@ configuração inválida, que é justamente quando ele ajuda. Sem o schema (mód
 que falhou ao importar, ou que não exporta `configJson`) abre o editor JSON.
 Quando o módulo não carrega (falho sem schema, ausente) ou não roda nesta máquina (desligado, inativo) num vault com
 frase-senha, o editor traz o aviso "Não foi possível validar agora: a configuração será conferida quando o módulo voltar a
-carregar.": a config é gravada só com o detector de segredos, sem o `configSchema`.
+carregar.": a config é gravada só com o detector de segredos, sem o `configSchema`. Se a tela não conseguiu saber se o vault
+tem frase (a consulta falhou ou ainda não respondeu), o aviso aparece para desligado e inativo do mesmo jeito: quem decide é
+o servidor.
 
 ### Lista, ligar e desligar
 

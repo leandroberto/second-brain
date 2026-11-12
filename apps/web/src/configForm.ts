@@ -78,11 +78,13 @@ export const AVISO_SEM_VALIDAR = "Não foi possível validar agora: a configura�
 /**
  * Aviso de Configurar quando o servidor grava sem validar pelo schema do módulo (só o detector de segredos): o módulo não
  * carrega (falho sem schema, ausente) ou não roda nesta máquina (desligado, inativo) num vault com frase-senha, onde o código
- * dele só roda para conferir depois da frase. `status` indefinido = o serve não conhece o módulo (desligado).
+ * dele só roda para conferir depois da frase. `status` indefinido = o serve não conhece o módulo (desligado). `fraseSenha`
+ * indefinido = `GET _gerenciar/estado` falhou ou ainda não respondeu: pode haver frase, então o aviso aparece (é só texto;
+ * quem decide é o servidor).
  */
-export function avisoDeValidacao(m: { status?: "ativo" | "falho" | "inativo" | "ausente"; temSchema: boolean; desligado: boolean; fraseSenha: boolean }): string | undefined {
+export function avisoDeValidacao(m: { status?: "ativo" | "falho" | "inativo" | "ausente"; temSchema: boolean; desligado: boolean; fraseSenha?: boolean }): string | undefined {
   if (!m.temSchema && (m.status === "falho" || m.status === "ausente")) return AVISO_SEM_VALIDAR;
-  if (m.fraseSenha && (m.desligado || m.status === "inativo")) return AVISO_SEM_VALIDAR;
+  if (m.fraseSenha !== false && (m.desligado || m.status === "inativo")) return AVISO_SEM_VALIDAR;
   return undefined;
 }
 

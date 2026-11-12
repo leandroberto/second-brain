@@ -115,7 +115,7 @@ export function ModulesPage() {
 
               {editando === id && <ConfigurarModulo
                 nome={nome} atual={e?.config ?? {}} configJson={m?.configJson} ativo={m?.status === "ativo"} ocupado={ocupado}
-                aviso={avisoDeValidacao({ status: m?.status, temSchema: !!m?.configJson, desligado, fraseSenha: estado?.fraseSenha === true })}
+                aviso={avisoDeValidacao({ status: m?.status, temSchema: !!m?.configJson, desligado, fraseSenha: estado?.fraseSenha })}
                 onCancelar={() => setEditando(undefined)}
                 onSalvar={(config, setErros) => {
                   if (!confirmar("Salvar configuração de", nome)) return;

@@ -76,6 +76,10 @@ describe("avisoDeValidacao", () => {
     expect(avisoDeValidacao({ ...sem, status: undefined, desligado: true })).toBeUndefined(); // sem frase: a conferência valida
     expect(avisoDeValidacao({ ...sem, status: undefined, desligado: true, fraseSenha: true })).toBe(AVISO_SEM_VALIDAR);
     expect(avisoDeValidacao({ ...sem, status: "inativo", fraseSenha: true })).toBe(AVISO_SEM_VALIDAR);
+    // `GET _gerenciar/estado` falhou ou não respondeu ainda: pode haver frase, o aviso aparece (o servidor decide)
+    expect(avisoDeValidacao({ ...sem, status: undefined, desligado: true, fraseSenha: undefined })).toBe(AVISO_SEM_VALIDAR);
+    expect(avisoDeValidacao({ ...sem, status: "inativo", fraseSenha: undefined })).toBe(AVISO_SEM_VALIDAR);
+    expect(avisoDeValidacao({ ...sem, status: "ativo", temSchema: true, fraseSenha: undefined })).toBeUndefined();
     expect(AVISO_SEM_VALIDAR).toBe("Não foi possível validar agora: a configuração será conferida quando o módulo voltar a carregar.");
   });
 });
