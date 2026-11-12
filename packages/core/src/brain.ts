@@ -10,7 +10,7 @@ import { ADDITIVE_RESOLUTION, INTERNAL_READER, authorize, isHumanReviewer, isPri
 const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
-import { ConfigSchema, dumpConfig, loadConfig, parseConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
+import { ConfigSchema, gravarConfig, loadConfig, parseConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
 import { MODULE_ID_RE } from "./modules/identity.js";
 import { IndexDb } from "./db.js";
 import { HashEmbedder, OpenAICompatibleEmbedder, chaveDeEmbeddings, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
@@ -164,8 +164,9 @@ export class Brain {
    * depois de um "nada mudou" do gerenciamento de módulos (decidido pelo disco) a tela seguiria mostrando a cópia da memória.
    */
   freshConfig(): BrainConfig {
-    // lido sem o lock: vazio ou ilegível pode ser outro processo no meio da gravação (o writeFileSync trunca antes de escrever),
-    // e aplicar isso traria os padrões para a memória. Nesse caso fica a config que já está em memória.
+    // lido sem o lock: o Brain grava o config.yaml de forma atômica (`gravarConfig`), mas um editor ou um processo de versão
+    // anterior pode truncar antes de escrever, e um arquivo vazio ou ilegível traria os padrões para a memória. Nesse caso fica a
+    // config que já está em memória.
     let texto: string;
     try { texto = readFileSync(this.vault.configPath, "utf8"); } catch { return this.config; }
     if (!texto.trim()) return this.config;
@@ -868,7 +869,7 @@ export class Brain {
       // o campo e o tipo esperado, nunca o valor recebido (a mensagem volta para a UI)
       if (!r.success) throw new BrainError("invalid", `configuração inválida: ${r.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(raiz)"}: ${i.message}`).join("; ")}`);
       const next = r.data;
-      writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
+      gravarConfig(this.vault.configPath, next);
       const providerChanged = JSON.stringify(next.embeddings) !== JSON.stringify(this.config.embeddings);
       this.config = next;
       if (providerChanged) { this._embedder = this.makeEmbedder(); await this.indexer.embedMissing(); }
@@ -899,7 +900,7 @@ export class Brain {
       const rotulo = typeof acao === "function" ? acao(antes, proxima) : acao ?? (proxima === null ? "remover" : antes ? "atualizar" : "adicionar");
       if (proxima === null) modules.delete(id); else modules.set(id, proxima);
       const next = ConfigSchema.parse({ ...this.config, modules: Object.fromEntries(modules) });
-      writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
+      gravarConfig(this.vault.configPath, next);
       this.config = next;
       this.log(actor, "config_update", null, { modulo: id, acao: rotulo, ...(antes && proxima ? mudancasDaEntrada(antes, proxima) : {}) });
       return next;

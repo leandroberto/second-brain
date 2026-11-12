@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { parse, stringify } from "yaml";
 import { existsSync, readFileSync } from "node:fs";
+import { writeFileAtomic } from "./fs-atomic.js";
 
 export const ConfigSchema = z.object({
   vault_name: z.string().default("Second Brain"),
@@ -77,3 +78,8 @@ export function parseConfig(texto: string): BrainConfig {
   return ConfigSchema.parse(parse(texto) ?? {});
 }
 export const dumpConfig = (c: BrainConfig): string => stringify(c, { lineWidth: 0 });
+/**
+ * Grava o config.yaml de forma atômica (tmp + rename): quem lê sem o lock (`freshConfig`, outro processo) nunca vê um arquivo vazio
+ * ou gravado só em parte. Mantém o modo atual do arquivo (o config.yaml não é segredo: nada de forçar 0600).
+ */
+export const gravarConfig = (path: string, c: BrainConfig): void => writeFileAtomic(path, dumpConfig(c), "manter");

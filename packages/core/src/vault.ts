@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Note, NoteType } from "@brain/shared";
 import { safeResolve, toPosix } from "./paths.js";
-import { dumpConfig, ConfigSchema } from "./config.js";
+import { gravarConfig, ConfigSchema } from "./config.js";
 
 export const TYPE_DIR: Record<NoteType, string> = {
   decision: "decisions", learning: "learnings", fact: "facts", preference: "preferences",
@@ -75,6 +75,6 @@ export class Vault {
     mkdirSync(this.pendingDir, { recursive: true });
   }
   writeDefaultConfig(): void {
-    if (!existsSync(this.configPath)) writeFileSync(this.configPath, dumpConfig(ConfigSchema.parse({})), "utf8");
+    if (!existsSync(this.configPath)) gravarConfig(this.configPath, ConfigSchema.parse({}));
   }
 }
