@@ -85,7 +85,7 @@ export interface CaptureResponse { capture_id: string; state: "pendente" | "proc
 export type AskOutcome = { ok: true; resposta: string; fontes: string[] } | { ok: false; tipo: AssistantErrorKind; mensagem: string };
 
 export interface ModuloTarefa { tarefa: string; quando: string; proxima: string; ultimaOcorrencia?: string; inicio?: string; fim?: string; resultado?: "ok" | "erro" | "timeout"; erro?: string; suspensa: boolean; errosSeguidos: number }
-export interface ModuloInfo { id: string; nome: string; icone?: string; aba: boolean; badge: number; status: "ativo" | "falho" | "inativo" | "ausente"; causa?: string; versao?: string; sdk?: number; pasta: string; iaHojeUsd: number; iaBloqueada?: boolean; iaBloqueio?: string; tarefas: ModuloTarefa[]; erros: Array<{ em: string; onde: string; mensagem: string }> }
+export interface ModuloInfo { id: string; nome: string; icone?: string; aba: boolean; badge: number; status: "ativo" | "falho" | "inativo" | "ausente"; causa?: string; versao?: string; sdk?: number; pasta: string; configJson?: Record<string, unknown>; iaHojeUsd: number; iaBloqueada?: boolean; iaBloqueio?: string; tarefas: ModuloTarefa[]; erros: Array<{ em: string; onde: string; mensagem: string }> }
 export interface ModulosResp { modulos: ModuloInfo[]; reiniciar: boolean }
 
 // ---- gerenciar módulos (`/api/modules/_gerenciar/*`, `/api/fs/pastas`) ----

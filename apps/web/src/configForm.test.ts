@@ -72,4 +72,12 @@ describe("esperarReinicio", () => {
   it("sempre o pid antigo → tempo", async () => {
     expect(await esperarReinicio(10, { buscar: async () => ({ pid: 10 }), intervaloMs: 2, limiteMs: 40 })).toBe("tempo");
   });
+
+  it("sem pid antigo: ok só depois de uma falha e de a resposta voltar", async () => {
+    const r: Array<() => Promise<{ pid: number } | undefined>> = [async () => ({ pid: 5 }), async () => { throw new Error("rede"); }, async () => ({ pid: 5 })];
+    let i = 0;
+    expect(await esperarReinicio(undefined, { buscar: () => r[i++]!(), intervaloMs: 1, limiteMs: 2000 })).toBe("ok");
+    expect(i).toBe(3);
+    expect(await esperarReinicio(undefined, { buscar: async () => ({ pid: 5 }), intervaloMs: 2, limiteMs: 30 })).toBe("tempo");
+  });
 });

@@ -12,6 +12,7 @@ const entradaEco = {
 
 export default {
   sdk: 1, id: "ok", nome: "Ok", versao: "1.2.3", icone: "sino",
+  configJson: { type: "object", properties: { horario: { type: "string" } } },
   aba: { titulo: "Ok", pasta: "ui" },
   rotas: [
     { metodo: "GET", caminho: "/eco", async rodar(req) { return { chamador: req.chamador }; } },

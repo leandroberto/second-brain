@@ -164,6 +164,10 @@ describe("rotas de módulo", () => {
     expect(por.lanca).toMatchObject({ status: "falho", badge: 0, tarefas: [] });
     expect(por.lanca.causa).toContain("iniciar falhou");
     expect(por.sumido).toMatchObject({ id: "sumido", nome: "sumido", status: "ausente", aba: false });
+    // schema da config só de módulo carregado (a UI monta o formulário de Configurar); sem `def`, sem o campo
+    expect(por.ok.configJson).toEqual({ type: "object", properties: { horario: { type: "string" } } });
+    expect(por.lanca.configJson).toBeUndefined();
+    expect(por.sumido.configJson).toBeUndefined();
     okCtx().badge(0);
   });
 

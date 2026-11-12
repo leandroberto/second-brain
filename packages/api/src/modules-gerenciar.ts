@@ -130,14 +130,14 @@ export class GerenciarModulos {
   private exigirFrase(frase: unknown): void {
     const modo = this.modoFrase();
     if (modo === "nao") return;
-    if (modo === "ausente") throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
+    if (modo === "ausente") throw new Recusa(403, { error: "frase_senha", motivo: "ausente", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
     const erros = this.errosNaJanela();
     if (erros === "ilegivel") throw registroIlegivel(this.arquivoErros);
     if (erros.length >= MAX_ERROS_FRASE) throw new Recusa(429, { error: "tentativas", message: "muitas tentativas de frase-senha; espere um minuto e tente de novo" });
-    if (typeof frase !== "string" || !frase) throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
+    if (typeof frase !== "string" || !frase) throw new Recusa(403, { error: "frase_senha", motivo: "exigida", message: "este vault exige a frase-senha do revisor" });
     try { this.gravarErros([...erros, this.agora()]); }
     catch { throw new Recusa(429, { error: "tentativas", message: "não foi possível registrar a tentativa; tente mais tarde" }); }
-    if (!checkReviewerPassphrase(frase, this.sessions)) throw new Recusa(403, { error: "frase_senha", message: "frase-senha incorreta" });
+    if (!checkReviewerPassphrase(frase, this.sessions)) throw new Recusa(403, { error: "frase_senha", motivo: "errada", message: "frase-senha incorreta" });
     try { this.gravarErros([]); } catch { /* segue: a tentativa registrada sai da janela sozinha */ }
   }
 
@@ -256,7 +256,7 @@ export class GerenciarModulos {
     await this.gravar(id, (fresca) => {
       if (!fresca) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
       // a entrada mudou desde a leitura e agora este PUT ligaria o módulo: só com a frase já conferida
-      if (liga(fresca) && modo !== "nao" && !fraseValida) throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
+      if (liga(fresca) && modo !== "nao" && !fraseValida) throw new Recusa(403, { error: "frase_senha", motivo: "exigida", message: "este vault exige a frase-senha do revisor" });
       return aplicar(fresca);
     }, r.who);
     return this.responderEReiniciar(r.res, { mensagem: `Módulo atualizado. ${REINICIO}` });

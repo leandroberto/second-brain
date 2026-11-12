@@ -8,53 +8,59 @@ const TETO_IA_PADRAO_USD = 2;
 export const TEXTO_DE_CONFIANCA = "Para conferir, o código desta pasta será carregado no seu computador. Continue só com módulos em que você confia.";
 const ETAPAS = ["Pasta", "Conferir", "Configurar", "Confirmar"];
 
-/** O servidor recusou por falta da frase-senha (errada ou ausente) e ela pode ser digitada aqui. */
-export const pedeFrase = (e: unknown): e is ApiError => e instanceof ApiError && e.status === 403 && e.code === "frase_senha" && !/nesta máquina/.test(e.message);
+/** O servidor recusou por falta da frase-senha (`motivo` "errada" ou "exigida") e ela pode ser digitada aqui; "ausente" não pode. */
+export const pedeFrase = (e: unknown): e is ApiError => e instanceof ApiError && e.status === 403 && e.code === "frase_senha" && e.corpo?.motivo !== "ausente";
+
+const FOCAVEIS = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
- * Pede a frase-senha do revisor. O valor fica só no campo (não controlado): sai no envio e o campo é limpo; nunca vai a storage
- * nem ao estado.
+ * Diálogo modal acessível: ao montar foca o primeiro campo (senão o botão primário), prende o Tab dentro dele, Escape fecha e,
+ * ao sair, o foco volta ao elemento que o abriu.
  */
-export function PedidoDeFrase({ titulo, texto, mensagem, ocupado, onEnviar, onCancelar }: { titulo: string; texto?: string; mensagem?: string; ocupado?: boolean; onEnviar: (frase: string | undefined) => void; onCancelar: () => void }) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { ref.current?.focus(); }, [mensagem]);
-  const enviar = () => {
-    const frase = ref.current?.value || undefined;
-    if (ref.current) ref.current.value = "";
-    onEnviar(frase);
+export function Dialogo({ titulo, onFechar, fechavel = true, children }: { titulo: string; onFechar: () => void; fechavel?: boolean; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const origem = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    const el = ref.current;
+    (el?.querySelector<HTMLElement>("input") ?? el?.querySelector<HTMLElement>("button.primary") ?? el)?.focus();
+    return () => { origem?.focus(); };
+  }, []);
+  const teclas = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { if (fechavel) { e.stopPropagation(); onFechar(); } return; }
+    if (e.key !== "Tab") return;
+    const itens = [...(ref.current?.querySelectorAll<HTMLElement>(FOCAVEIS) ?? [])];
+    if (!itens.length) { e.preventDefault(); return; }
+    const primeiro = itens[0]!; const ultimo = itens[itens.length - 1]!; const ativo = document.activeElement;
+    if (e.shiftKey && (ativo === primeiro || ativo === ref.current)) { e.preventDefault(); ultimo.focus(); }
+    else if (!e.shiftKey && ativo === ultimo) { e.preventDefault(); primeiro.focus(); }
   };
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-label={titulo} onKeyDown={(e) => e.key === "Escape" && !ocupado && onCancelar()}>
-      <div className="modal" style={{ padding: 22 }}>
-        <h1 style={{ fontSize: 18 }}>{titulo}</h1>
-        {texto && <p className="sub">{texto}</p>}
-        {mensagem && <div className="banner danger" role="alert">{mensagem}</div>}
-        <form onSubmit={(e) => { e.preventDefault(); enviar(); }}>
-          <div className="field"><label htmlFor="mod-frase">Frase-senha do revisor</label><input id="mod-frase" ref={ref} type="password" autoComplete="off" /></div>
-          <div className="actions"><button type="submit" className="btn primary" disabled={ocupado}>{ocupado ? "Enviando…" : "Continuar"}</button><button type="button" className="btn ghost" disabled={ocupado} onClick={onCancelar}>Cancelar</button></div>
-        </form>
-      </div>
+    <div className="overlay" onKeyDown={teclas}>
+      <div className="modal" style={{ padding: 22 }} role="dialog" aria-modal="true" aria-label={titulo} tabIndex={-1} ref={ref}>{children}</div>
     </div>
   );
 }
 
-/** Aviso de confiança (etapa 1) com o campo de frase-senha só quando o servidor pediu. */
-function DialogoDeConfianca({ pedirFrase, mensagem, ocupado, onContinuar, onCancelar }: { pedirFrase: boolean; mensagem?: string; ocupado: boolean; onContinuar: (frase?: string) => void; onCancelar: () => void }) {
+/**
+ * Diálogo com texto e, quando `mostrarCampo`, o campo da frase-senha do revisor (aviso de confiança da etapa 1 e pedido ao ligar).
+ * O valor fica só no campo (não controlado): sai no envio e o campo é limpo; nunca vai a storage nem ao estado.
+ */
+export function DialogoDeFrase({ titulo, texto, mensagem, mostrarCampo, ocupado, rotuloOcupado, onEnviar, onCancelar }: { titulo: string; texto?: string; mensagem?: string; mostrarCampo: boolean; ocupado?: boolean; rotuloOcupado: string; onEnviar: (frase: string | undefined) => void; onCancelar: () => void }) {
   const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { ref.current?.focus(); }, [pedirFrase]);
-  const enviar = () => { const frase = ref.current?.value || undefined; if (ref.current) ref.current.value = ""; onContinuar(frase); };
+  const botao = useRef<HTMLButtonElement>(null);
+  // depois de enviar (botão desabilitado) o foco se perde: volta ao campo, ou ao botão primário quando não há campo
+  useEffect(() => { if (!ocupado) (mostrarCampo ? ref.current : botao.current)?.focus(); }, [mostrarCampo, mensagem, ocupado]);
+  const enviar = () => { const frase = ref.current?.value || undefined; if (ref.current) ref.current.value = ""; onEnviar(frase); };
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-label="Aviso de confiança" onKeyDown={(e) => e.key === "Escape" && !ocupado && onCancelar()}>
-      <div className="modal" style={{ padding: 22 }}>
-        <h1 style={{ fontSize: 18 }}>Conferir o módulo</h1>
-        <p>{TEXTO_DE_CONFIANCA}</p>
-        {mensagem && <div className="banner danger" role="alert">{mensagem}</div>}
-        <form onSubmit={(e) => { e.preventDefault(); enviar(); }}>
-          {pedirFrase && <div className="field"><label htmlFor="mod-frase-1">Frase-senha do revisor</label><input id="mod-frase-1" ref={ref} type="password" autoComplete="off" /></div>}
-          <div className="actions"><button type="submit" className="btn primary" disabled={ocupado}>{ocupado ? "Conferindo…" : "Continuar"}</button><button type="button" className="btn ghost" disabled={ocupado} onClick={onCancelar}>Cancelar</button></div>
-        </form>
-      </div>
-    </div>
+    <Dialogo titulo={titulo} onFechar={onCancelar} fechavel={!ocupado}>
+      <h1 style={{ fontSize: 18 }}>{titulo}</h1>
+      {texto && <p>{texto}</p>}
+      {mensagem && <div className="banner danger" role="alert">{mensagem}</div>}
+      <form onSubmit={(e) => { e.preventDefault(); enviar(); }}>
+        {mostrarCampo && <div className="field"><label htmlFor="mod-frase">Frase-senha do revisor</label><input id="mod-frase" ref={ref} type="password" autoComplete="off" /></div>}
+        <div className="actions"><button type="submit" className="btn primary" ref={botao} disabled={ocupado}>{ocupado ? rotuloOcupado : "Continuar"}</button><button type="button" className="btn ghost" disabled={ocupado} onClick={onCancelar}>Cancelar</button></div>
+      </form>
+    </Dialogo>
   );
 }
 
@@ -73,7 +79,7 @@ export const errosDaConfig = (e: unknown): ErroDeCampo[] | undefined => {
  * Edita a config de um módulo: formulário quando há `campos`, senão editor JSON. `valores` é o estado controlado do formulário;
  * `json` o texto do editor. Erro por campo ao lado dele; `campo: ""` (e campos sem correspondência) ficam no topo.
  */
-export function EditorDeConfig({ campos, valores, onValores, json, onJson, erros }: { campos?: Campo[]; valores: Record<string, unknown>; onValores: (v: Record<string, unknown>) => void; json: string; onJson: (t: string) => void; erros: ErroDeCampo[] }) {
+export function EditorDeConfig({ campos, valores, onValores, json, onJson, erros, nota }: { campos?: Campo[]; valores: Record<string, unknown>; onValores: (v: Record<string, unknown>) => void; json: string; onJson: (t: string) => void; erros: ErroDeCampo[]; nota?: string }) {
   const nomes = new Set((campos ?? []).map((c) => c.nome));
   const gerais = erros.filter((e) => !nomes.has(e.campo));
   const set = (nome: string, v: unknown) => onValores({ ...valores, [nome]: v });
@@ -99,7 +105,7 @@ export function EditorDeConfig({ campos, valores, onValores, json, onJson, erros
           </div>
         );
       })) : (
-        <div className="field"><label htmlFor="cfg-json">Configuração (JSON)</label><textarea id="cfg-json" className="mono" spellCheck={false} rows={8} value={json} onChange={(e) => onJson(e.target.value)} /><div className="small muted">Este módulo não declara campos simples; edite o objeto de configuração em JSON.</div></div>
+        <div className="field"><label htmlFor="cfg-json">Configuração (JSON)</label><textarea id="cfg-json" className="mono" spellCheck={false} rows={8} value={json} onChange={(e) => onJson(e.target.value)} /><div className="small muted">{nota ?? "Este módulo não declara campos simples; edite o objeto de configuração em JSON."}</div></div>
       )}
     </div>
   );
@@ -250,7 +256,7 @@ export function AddModuleWizard({ onFechar, executar }: { onFechar: () => void; 
         );
       })()}
 
-      {dialogo && <DialogoDeConfianca pedirFrase={dialogo.fase === "frase"} mensagem={dialogo.fase === "frase" ? dialogo.mensagem : undefined} ocupado={ocupado} onContinuar={(f) => void conferir(f)} onCancelar={() => setDialogo(undefined)} />}
+      {dialogo && <DialogoDeFrase titulo="Conferir o módulo" texto={TEXTO_DE_CONFIANCA} mostrarCampo={dialogo.fase === "frase"} mensagem={dialogo.fase === "frase" ? dialogo.mensagem : undefined} ocupado={ocupado} rotuloOcupado="Conferindo…" onEnviar={(f) => void conferir(f)} onCancelar={() => setDialogo(undefined)} />}
     </section>
   );
 }

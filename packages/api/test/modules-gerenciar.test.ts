@@ -164,10 +164,10 @@ describe("inspecionar e frase-senha", () => {
     const s = await subir({ frase: FRASE, reiniciarServe: async () => {} });
     const sem = await inspecionar(s, pasta);
     expect(sem.status).toBe(403);
-    expect(sem.corpo).toEqual({ error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
+    expect(sem.corpo).toEqual({ error: "frase_senha", motivo: "exigida", message: "este vault exige a frase-senha do revisor" });
     const errada = await inspecionar(s, pasta, { fraseSenha: "nao e esta" });
     expect(errada.status).toBe(403);
-    expect(errada.corpo).toEqual({ error: "frase_senha", message: "frase-senha incorreta" });
+    expect(errada.corpo).toEqual({ error: "frase_senha", motivo: "errada", message: "frase-senha incorreta" });
     expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(200);
 
     expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: true })).status).toBe(403);
@@ -237,7 +237,7 @@ describe("inspecionar e frase-senha", () => {
       const s = await subir();
       const r = await inspecionar(s, pasta, { fraseSenha: "qualquer uma" });
       expect(r.status).toBe(403);
-      expect(r.corpo).toEqual({ error: "frase_senha", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
+      expect(r.corpo).toEqual({ error: "frase_senha", motivo: "ausente", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
       expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: true })).status).toBe(403);
     } finally { writeFileSync(cfg, bom, "utf8"); }
   });

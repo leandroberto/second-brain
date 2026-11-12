@@ -75,17 +75,23 @@ const consultarServe = () => api<{ pid: number }>("/api/serve").catch(() => unde
 
 /**
  * Espera o `brain serve` reiniciar: consulta `GET /api/serve` até o `pid` mudar. Falha de rede (o serve caído) é esperada e
- * só tenta de novo. Passado o limite (60 s), `"tempo"`.
+ * só tenta de novo. Sem `pidAntigo` (a consulta antes da ação falhou), vale qualquer resposta depois de ao menos uma falha.
+ * Passado o limite (60 s), `"tempo"`.
  */
 export async function esperarReinicio(
-  pidAntigo: number,
+  pidAntigo: number | undefined,
   o: { buscar?: () => Promise<{ pid: number } | undefined>; intervaloMs?: number; limiteMs?: number } = {},
 ): Promise<"ok" | "tempo"> {
   const buscar = o.buscar ?? consultarServe; const intervalo = o.intervaloMs ?? 1000; const limite = o.limiteMs ?? 60_000;
   const fim = Date.now() + limite;
+  let falhou = false;
   while (Date.now() < fim) {
     await dorme(intervalo);
-    try { const r = await buscar(); if (r && r.pid !== pidAntigo) return "ok"; } catch { /* serve reiniciando */ }
+    try {
+      const r = await buscar();
+      if (!r) falhou = true;
+      else if (pidAntigo === undefined ? falhou : r.pid !== pidAntigo) return "ok";
+    } catch { falhou = true; /* serve reiniciando */ }
   }
   return "tempo";
 }

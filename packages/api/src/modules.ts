@@ -257,6 +257,8 @@ function resumo(o: ModulesApiOptions, m: LoadedModule, badge: number) {
   return {
     id: m.id, nome: m.def?.nome ?? m.id, icone: m.def?.icone, aba: !!m.def?.aba,
     badge, status: m.status, causa: m.causa, versao: m.versao, sdk: m.def?.sdk, pasta: m.dir,
+    // schema JSON da config (já carregado no serve; não é segredo): a UI monta o formulário de "Configurar"
+    configJson: m.def?.configJson,
     iaHojeUsd: gastoIaDoDia(o.root, m.id),
     // registro de gasto de IA ilegível ou inacessível: a IA de todos os módulos fica bloqueada (o motivo diz até quando)
     iaBloqueada: !!bloqueio,
