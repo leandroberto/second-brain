@@ -72,8 +72,12 @@ A CSP completa do estático da aba é:
 `default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'; form-action 'self'; sandbox allow-scripts allow-forms`.
 `form-action 'self'` impede que um formulário da aba envie dados para fora. Como defesa em profundidade, a UI aceita
 `brain:pronto` uma única vez por montagem do iframe e, se o iframe carregar um segundo documento (link externo, formulário,
-`location = ...`), para de enviar o token (inclusive a renovação, que vai com `"*"` por causa da origem opaca), tira o iframe
-da tela e oferece recarregar a aba.
+`location = ...`), para de enviar o token, tira o iframe da tela e oferece recarregar a aba. A renovação do token é por
+pedido (pull) com nonce: o `brain:init` traz um `nonce` aleatório por montagem e a data de `expira`; a página pede
+`{ type: "brain:renovar", nonce }` (o client, 1 h antes de expirar) e o second-brain só responde com `brain:token` se o nonce
+bater e a ponte ainda estiver viva. O second-brain nunca empurra token sem pedido (as mensagens vão com `"*"` por causa da
+origem opaca, então só quem tem o nonce recebe um token novo). O iframe segue com `sandbox="allow-scripts allow-forms"` e o
+second-brain só aceita mensagens com `origin === "null"` vindas de `iframe.contentWindow`.
 
 ### Tarefas agendadas
 

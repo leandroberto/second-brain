@@ -1,0 +1,85 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// O cliente da aba (static do SDK) é um ES module sem tipos que lê `window`/`document`: aqui rodam sobre um janela falsa.
+const CLIENTE = new URL("../../../packages/module-sdk/static/brain-module-client.js", import.meta.url).href;
+type Ouvinte = (ev: { source: unknown; data: unknown }) => void;
+interface Conexao { api(c: string): Promise<unknown>; resto: string }
+
+let pai: { postMessage: ReturnType<typeof vi.fn> };
+let ouvintes: Ouvinte[];
+const enviar = (data: unknown, source: unknown = pai) => ouvintes.forEach((f) => f({ source, data }));
+const enviados = () => pai.postMessage.mock.calls.map((c) => c[0] as { type: string; nonce?: string });
+const carregar = async () => { vi.resetModules(); return await import(/* @vite-ignore */ CLIENTE) as { conectar(): Promise<Conexao> }; };
+const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
+const init = (over: Record<string, unknown> = {}) => ({ type: "brain:init", token: "t1", expira: iso(12 * 3600_000), nonce: "n1", apiBase: "/api/modules/x", tema: "escuro", resto: "a/b", ...over });
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  pai = { postMessage: vi.fn() };
+  ouvintes = [];
+  vi.stubGlobal("window", { parent: pai, addEventListener: (_t: string, f: Ouvinte) => ouvintes.push(f) });
+  vi.stubGlobal("document", { documentElement: { dataset: {} } });
+});
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+describe("brain-module-client", () => {
+  it("conectar() repetido devolve a mesma conexão e um só handshake", async () => {
+    const { conectar } = await carregar();
+    const a = conectar(); const b = conectar();
+    expect(b).toBe(a);
+    expect(enviados().filter((m) => m.type === "brain:pronto")).toHaveLength(1);
+    enviar(init());
+    expect((await a).resto).toBe("a/b");
+    expect(await conectar()).toBe(await a);
+  });
+
+  it("pede a renovação com o nonce 1 h antes de expirar e só aceita token como resposta", async () => {
+    const { conectar } = await carregar();
+    const c = conectar();
+    enviar(init({ expira: iso(2 * 3600_000) }));
+    const sb = await c;
+    const fetchFalso = vi.fn(async (_u: string, _i: { headers: Headers }) => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchFalso);
+    // token empurrado sem pedido: ignorado
+    enviar({ type: "brain:token", token: "empurrado", expira: iso(3600_000) });
+    await sb.api("/p");
+    expect(fetchFalso.mock.calls[0]![1].headers.get("authorization")).toBe("Bearer t1");
+    expect(enviados().some((m) => m.type === "brain:renovar")).toBe(false);
+    await vi.advanceTimersByTimeAsync(3600_000 + 1000); // 1 h antes de expirar = daqui a 1 h
+    expect(enviados().filter((m) => m.type === "brain:renovar")).toEqual([{ type: "brain:renovar", nonce: "n1" }]);
+    enviar({ type: "brain:token", token: "t2", expira: iso(12 * 3600_000) });
+    await sb.api("/p");
+    expect(fetchFalso.mock.calls[1]![1].headers.get("authorization")).toBe("Bearer t2");
+    // respondido: o próximo pedido só daqui a ~11 h, e um token sem pedido pendente volta a ser ignorado
+    enviar({ type: "brain:token", token: "t3", expira: iso(3600_000) });
+    await sb.api("/p");
+    expect(fetchFalso.mock.calls[2]![1].headers.get("authorization")).toBe("Bearer t2");
+    await vi.advanceTimersByTimeAsync(10 * 3600_000);
+    expect(enviados().filter((m) => m.type === "brain:renovar")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3600_000);
+    expect(enviados().filter((m) => m.type === "brain:renovar")).toHaveLength(2);
+  });
+
+  it("sem resposta, pergunta de novo a cada 30 s (um temporizador só)", async () => {
+    const { conectar } = await carregar();
+    const c = conectar();
+    enviar(init({ expira: iso(10_000) })); // já dentro da antecedência: pede em 30 s
+    await c;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(enviados().filter((m) => m.type === "brain:renovar")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(enviados().filter((m) => m.type === "brain:renovar")).toHaveLength(3);
+  });
+
+  it("ignora mensagens de outra janela, init sem nonce e init repetido", async () => {
+    const { conectar } = await carregar();
+    const c = conectar();
+    enviar(init(), {}); // outra janela
+    enviar(init({ nonce: undefined })); // sem nonce
+    enviar(init({ nonce: "n1", resto: "primeiro" }));
+    enviar(init({ nonce: "n2", resto: "segundo" })); // não troca o nonce
+    expect((await c).resto).toBe("primeiro");
+    await vi.advanceTimersByTimeAsync(12 * 3600_000);
+    expect(enviados().filter((m) => m.type === "brain:renovar").every((m) => m.nonce === "n1")).toBe(true);
+  });
+});

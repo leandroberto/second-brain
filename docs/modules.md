@@ -185,6 +185,24 @@ await sb.api(`/api/modules/lembrete/itens/${id}/feito`, { method: "POST" });
 `conectar()` devolve `resto` (o trecho da URL depois de `#/m/<id>/`, como o `link` de um aviso), `api(caminho, init)`,
 `navegar(resto)`, `abrirNota(id)` e `aoMudarTema(fn)`. A renovação do token é automática.
 
+**Chame `conectar()` uma vez por página.** Chamadas repetidas reutilizam a conexão (devolvem a mesma promessa), então vale
+guardar o resultado num módulo próprio e importá-lo onde precisar.
+
+**Protocolo da ponte (para quem não usa o client).** A página e o second-brain conversam só por `postMessage`; o second-brain
+aceita mensagens apenas do iframe que ele montou, com `origin === "null"`, e a página só aceita as da janela pai.
+
+| Direção | Mensagem | Quando |
+|---|---|---|
+| página → SB | `{ type: "brain:pronto" }` | ao carregar; o SB aceita **uma vez** por montagem do iframe |
+| SB → página | `{ type: "brain:init", token, expira, nonce, apiBase, tema, resto }` | resposta ao `brain:pronto`; `nonce` é aleatório e vale só para esta montagem |
+| página → SB | `{ type: "brain:renovar", nonce }` | o client pede 1 h antes de `expira` (e de novo a cada 30 s sem resposta) |
+| SB → página | `{ type: "brain:token", token, expira }` | **só** como resposta a um `brain:renovar` com o nonce certo |
+| SB → página | `{ type: "brain:tema", tema }` | o tema da UI mudou |
+| página → SB | `brain:navegar`, `brain:abrirNota`, `brain:badge` | ver acima |
+
+O second-brain nunca envia um token novo sem pedido: um documento que carregue no mesmo iframe depois (link externo,
+formulário) não tem o nonce, e a ponte é cortada no segundo `load`.
+
 ## Tarefas agendadas
 
 ```ts

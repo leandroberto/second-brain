@@ -205,8 +205,8 @@ defineModule({
   - como `null` vale para qualquer origem opaca, a segurança vem do token de página (curto, por módulo, só emitido a sessão
     humana), não da origem. Fica escrito no ADR.
 - Ponte `postMessage` (origem verificada dos dois lados, mensagens com schema):
-  - página → SB: `brain:pronto`, `brain:navegar {resto}` (atualiza o hash do SB), `brain:abrirNota {id}`, `brain:badge {n}` (opcional, só visual);
-  - SB → página: `brain:init { token, apiBase, tema: "claro"|"escuro", resto }`, `brain:token {token}` (renovação), `brain:tema`.
+  - página → SB: `brain:pronto`, `brain:renovar {nonce}`, `brain:navegar {resto}` (atualiza o hash do SB), `brain:abrirNota {id}`, `brain:badge {n}` (opcional, só visual);
+  - SB → página: `brain:init { token, expira, nonce, apiBase, tema: "claro"|"escuro", resto }`, `brain:token { token, expira }` (só como resposta a `brain:renovar { nonce }` da página; o SB nunca empurra token), `brain:tema`.
 - `GET /modules/_sdk/base.css`: tokens de cor/tipografia do SB (claro/escuro) para as páginas de módulo ficarem coerentes.
   O SDK traz um helper JS mínimo opcional (`brain-module-client.js`) que faz o handshake e o `fetch` com o token.
 

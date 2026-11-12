@@ -8,17 +8,32 @@
 
 const DO_SB = new Set(["brain:init", "brain:token", "brain:tema"]);
 const TEMAS = new Set(["claro", "escuro"]);
+const ANTECEDENCIA_MS = 3600_000; // pede um token novo 1 h antes de `expira`
+const MIN_ESPERA_MS = 30_000; // nunca pede com menos de 30 s de intervalo
+const SEM_EXPIRA_MS = 11 * 3600_000; // `expira` ausente ou ilegível: o token de página dura 12 h
+
+let conexao;
 
 /**
- * Faz o handshake com o SB (`brain:pronto` → `brain:init`) e devolve o cliente. `brain:token` renova o token e
- * `brain:tema` troca o tema. Só aceita mensagens da janela pai, com `type` conhecido.
+ * Faz o handshake com o SB (`brain:pronto` → `brain:init`) e devolve o cliente. Chame uma vez por página: chamadas repetidas
+ * devolvem a mesma conexão (a mesma promessa). A renovação do token é por pedido: o `brain:init` traz `nonce` e `expira`, o
+ * cliente pede `brain:renovar` (com o nonce) 1 h antes de expirar e só aceita um `brain:token` enquanto espera a resposta; o
+ * SB nunca empurra token sem pedido. `brain:tema` troca o tema. Só aceita mensagens da janela pai, com `type` conhecido.
  * @returns {Promise<{ api(caminho: string, init?: RequestInit): Promise<unknown>; navegar(resto: string): void; abrirNota(id: string): void; aoMudarTema(fn: (t: "claro" | "escuro") => void): void; resto: string }>}
  */
 export function conectar() {
+  conexao ??= abrirConexao();
+  return conexao;
+}
+
+function abrirConexao() {
   const pai = window.parent;
   let token = "";
   let apiBase = "";
+  let nonce = "";
   let tema = "escuro";
+  let aguardando = false; // há um `brain:renovar` sem resposta
+  let temporizador;
   const ouvintesTema = new Set();
   const avisar = (tipo, dados) => pai.postMessage({ type: tipo, ...dados }, "*");
   const aplicarTema = (t) => {
@@ -26,6 +41,19 @@ export function conectar() {
     document.documentElement.dataset.theme = t === "claro" ? "light" : "dark";
     for (const fn of ouvintesTema) { try { fn(t); } catch (e) { console.error(e); } }
   };
+  const agendar = (expira) => {
+    clearTimeout(temporizador);
+    const fim = typeof expira === "string" ? Date.parse(expira) : NaN;
+    const espera = Number.isFinite(fim) ? fim - ANTECEDENCIA_MS - Date.now() : SEM_EXPIRA_MS;
+    temporizador = setTimeout(pedirRenovacao, Math.max(MIN_ESPERA_MS, espera));
+  };
+  function pedirRenovacao() {
+    aguardando = true;
+    avisar("brain:renovar", { nonce });
+    // sem resposta (SB ocupado ou ponte cortada): pergunta de novo, sem acumular temporizadores
+    clearTimeout(temporizador);
+    temporizador = setTimeout(pedirRenovacao, MIN_ESPERA_MS);
+  }
 
   return new Promise((resolve) => {
     let conectado = false;
@@ -33,14 +61,20 @@ export function conectar() {
       if (event.source !== pai) return;
       const d = event.data;
       if (!d || typeof d !== "object" || typeof d.type !== "string" || !DO_SB.has(d.type)) return;
-      if (d.type === "brain:token") { if (typeof d.token === "string" && d.token) token = d.token; return; }
+      if (d.type === "brain:token") {
+        // só como resposta a um pedido nosso: token empurrado sem pedido é ignorado
+        if (conectado && aguardando && typeof d.token === "string" && d.token) { token = d.token; aguardando = false; agendar(d.expira); }
+        return;
+      }
       if (d.type === "brain:tema") { if (TEMAS.has(d.tema)) aplicarTema(d.tema); return; }
-      // brain:init
-      if (typeof d.token !== "string" || !d.token || typeof d.apiBase !== "string") return;
-      token = d.token;
-      if (TEMAS.has(d.tema)) aplicarTema(d.tema);
-      if (conectado) return; // um init repetido só renova token e tema
+      // brain:init: uma vez por documento (o nonce desta montagem não é trocado por um init repetido)
+      if (conectado) return;
+      if (typeof d.token !== "string" || !d.token || typeof d.apiBase !== "string" || typeof d.nonce !== "string" || !d.nonce) return;
       conectado = true;
+      token = d.token;
+      nonce = d.nonce;
+      if (TEMAS.has(d.tema)) aplicarTema(d.tema);
+      agendar(d.expira);
       apiBase = d.apiBase.replace(/\/+$/, "");
       resolve({
         resto: typeof d.resto === "string" ? d.resto : "",
