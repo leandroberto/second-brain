@@ -69,6 +69,23 @@ describe("config modules e identidade module/<id>", () => {
     ]));
   });
 
+  it("setModuleEntry com atualizador: recebe a entrada lida dentro do lock; erro dele cancela a gravação", async () => {
+    const b = await tempBrain();
+    await b.setModuleEntry("lembrete", { enabled: true, path: "/x/lembrete", ia_max_usd_dia: 2 }, human);
+    // edição manual depois da última leitura da Brain: o atualizador vê a do disco
+    const cfg = b.vault.configPath;
+    writeFileSync(cfg, readFileSync(cfg, "utf8").replace("enabled: true", "enabled: false"), "utf8");
+    const vistos: unknown[] = [];
+    await b.setModuleEntry("lembrete", (atual) => { vistos.push(atual?.enabled); return { ...atual!, config: { horario: "09:00" } }; }, human);
+    expect(vistos).toEqual([false]);
+    expect(loadConfig(cfg).modules.lembrete).toMatchObject({ enabled: false, config: { horario: "09:00" } });
+    const antes = readFileSync(cfg, "utf8");
+    await expect(b.setModuleEntry("lembrete", () => { throw new Error("não"); }, human)).rejects.toThrow("não");
+    expect(readFileSync(cfg, "utf8")).toBe(antes);
+    await b.setModuleEntry("lembrete", () => null, human);
+    expect(loadConfig(cfg).modules.lembrete).toBeUndefined();
+  });
+
   it("setModuleEntry recusa agente", async () => {
     const b = await tempBrain();
     await expect(b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, claude)).rejects.toMatchObject({ code: "forbidden" });

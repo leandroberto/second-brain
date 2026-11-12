@@ -840,8 +840,12 @@ export class Brain {
     });
   }
 
-  /** Grava (ou remove, com `null`) uma entrada do bloco `modules`. Substitui o bloco inteiro: o `deepMerge` do updateConfig não remove chaves. */
-  async setModuleEntry(id: string, entry: ModuleEntry | null, who: Principal): Promise<BrainConfig> {
+  /**
+   * Grava (ou remove, com `null`) uma entrada do bloco `modules`. Substitui o bloco inteiro: o `deepMerge` do updateConfig não
+   * remove chaves. Com uma função, ela recebe a entrada atual lida DENTRO do lock (edições concorrentes não se perdem) e devolve a
+   * nova (ou `null`); um erro lançado por ela cancela a gravação e propaga.
+   */
+  async setModuleEntry(id: string, entry: ModuleEntry | null | ((atual: ModuleEntry | undefined) => ModuleEntry | null), who: Principal): Promise<BrainConfig> {
     const actor = authorize(who, "admin", { config: this.config });
     if (!MODULE_ID_RE.test(id)) throw new BrainError("invalid", `id de módulo inválido: "${id}"`);
     return this.write(async () => {
@@ -850,8 +854,9 @@ export class Brain {
       try { loadConfig(this.vault.configPath); }
       catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos"); }
       const modules = new Map(Object.entries(this.config.modules));
-      const acao = entry === null ? "remover" : modules.has(id) ? "atualizar" : "adicionar";
-      if (entry === null) modules.delete(id); else modules.set(id, entry);
+      const proxima = typeof entry === "function" ? entry(modules.get(id)) : entry;
+      const acao = proxima === null ? "remover" : modules.has(id) ? "atualizar" : "adicionar";
+      if (proxima === null) modules.delete(id); else modules.set(id, proxima);
       const next = ConfigSchema.parse({ ...this.config, modules: Object.fromEntries(modules) });
       writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
       this.config = next;

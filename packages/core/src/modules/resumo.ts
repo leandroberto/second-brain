@@ -1,4 +1,5 @@
 import type { ModuleDef } from "@brain/module-sdk";
+import { z } from "zod";
 import { scanSecrets } from "../secrets.js";
 import { validar } from "./schema.js";
 
@@ -83,4 +84,28 @@ export async function validarConfigDoModulo(def: ModuleDef, config: unknown): Pr
     erros.push({ campo, mensagem: MSG_SEGREDO });
   }
   return erros.length ? { ok: false, erros } : { ok: true };
+}
+
+const ErroDeCampo = z.object({ campo: z.string(), mensagem: z.string() });
+/** Forma do `brain modules check --json` lida pelo pai da conferência (o filho roda código do módulo: nada é confiado sem checar). */
+const ResultadoDaConferenciaSchema = z.object({
+  ok: z.boolean(),
+  causas: z.array(z.string()),
+  resumo: z.object({
+    id: z.string(), nome: z.string(), versao: z.string(), sdk: z.number(),
+    aba: z.object({ titulo: z.string() }).optional(),
+    tarefas: z.array(z.object({ id: z.string(), quando: z.string(), quandoTexto: z.string() })),
+    ferramentas: z.array(z.string()),
+    rotas: z.object({ total: z.number(), humanas: z.number() }),
+    usaIa: z.boolean(),
+    configJson: z.record(z.string(), z.unknown()).optional(),
+  }).optional(),
+  config: z.union([z.object({ ok: z.literal(true) }), z.object({ ok: z.literal(false), erros: z.array(ErroDeCampo) })]).optional(),
+});
+export type ResultadoDaConferencia = { ok: boolean; causas: string[]; resumo?: ResumoDoModulo; config?: ResultadoConfig };
+
+/** Valida o resultado de uma conferência; `undefined` se a forma não confere. */
+export function lerResultadoDaConferencia(valor: unknown): ResultadoDaConferencia | undefined {
+  const r = ResultadoDaConferenciaSchema.safeParse(valor);
+  return r.success ? r.data as ResultadoDaConferencia : undefined;
 }
