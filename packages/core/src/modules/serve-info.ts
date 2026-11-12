@@ -208,7 +208,8 @@ const lerLock = (arq: string): { pid: number; nonce?: string } => {
  *   `indeterminado` = recusa);
  * - pid vivo sem `serve.json` dele (o dono ainda está subindo): recusa, a menos que o lock tenha mais de 10 min (velho).
  * Lock velho é retomado com `rename` para um nome único e só então o novo é criado. As retomadas são serializadas pelo mutex
- * `serve.lock.retomando` (ver `retomar`): entre concorrentes só um retoma; os outros recomeçam e reavaliam o lock novo. `liberar()` para a renovação e só apaga o lock se ele ainda for desta aquisição.
+ * `serve.lock.retomando` (ver `retomar`): entre concorrentes só um retoma; os outros recomeçam e reavaliam o lock novo.
+ * `liberar()` para a renovação e só apaga o lock se ele ainda for desta aquisição.
  */
 export async function acquireServeLock(root: string, vault: { root: string; tokenPath: string }): Promise<{ liberar(): void }> {
   const alvo = arquivoLock(root);
