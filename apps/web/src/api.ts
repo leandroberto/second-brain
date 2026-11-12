@@ -11,7 +11,8 @@ export const getToken = (): string => { try { return localStorage.getItem(KEY) ?
 export const setToken = (t: string) => { try { localStorage.setItem(KEY, t); } catch { /* */ } };
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string, public details?: unknown) { super(message); }
+  /** `corpo`: a resposta de erro inteira (`erros`, `caminho`, `causas`... das rotas de gerenciar módulos). */
+  constructor(public status: number, public code: string, message: string, public details?: unknown, public corpo?: Record<string, unknown>) { super(message); }
 }
 export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const r = await fetch(path, {
@@ -21,7 +22,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
   });
   const text = await r.text();
   let data: any; try { data = text ? JSON.parse(text) : {}; } catch { data = { message: text }; }
-  if (!r.ok) throw new ApiError(r.status, data.error ?? "error", data.message ?? `HTTP ${r.status}`, data.details);
+  if (!r.ok) throw new ApiError(r.status, data.error ?? "error", data.message ?? `HTTP ${r.status}`, data.details, data);
   return data as T;
 }
 
@@ -86,3 +87,25 @@ export type AskOutcome = { ok: true; resposta: string; fontes: string[] } | { ok
 export interface ModuloTarefa { tarefa: string; quando: string; proxima: string; ultimaOcorrencia?: string; inicio?: string; fim?: string; resultado?: "ok" | "erro" | "timeout"; erro?: string; suspensa: boolean; errosSeguidos: number }
 export interface ModuloInfo { id: string; nome: string; icone?: string; aba: boolean; badge: number; status: "ativo" | "falho" | "inativo" | "ausente"; causa?: string; versao?: string; sdk?: number; pasta: string; iaHojeUsd: number; iaBloqueada?: boolean; iaBloqueio?: string; tarefas: ModuloTarefa[]; erros: Array<{ em: string; onde: string; mensagem: string }> }
 export interface ModulosResp { modulos: ModuloInfo[]; reiniciar: boolean }
+
+// ---- gerenciar módulos (`/api/modules/_gerenciar/*`, `/api/fs/pastas`) ----
+export interface PastaListada { nome: string; caminho: string; provavelModulo: boolean }
+export interface ListagemDePastas { caminho: string; pai?: string; pastas: PastaListada[] }
+export interface ResumoModulo {
+  id: string; nome: string; versao: string; sdk: number; aba?: { titulo: string };
+  tarefas: Array<{ id: string; quando: string; quandoTexto: string }>;
+  ferramentas: string[]; rotas: { total: number; humanas: number }; usaIa: boolean;
+  configJson?: Record<string, unknown>;
+}
+export interface Conferencia { ok: boolean; causas: string[]; resumo?: ResumoModulo; caminho: string; ticket?: string }
+export interface ErroDeCampo { campo: string; mensagem: string }
+export interface RespostaGerenciar { mensagem: string; reiniciar?: boolean }
+export interface EntradaDeModulo { enabled?: boolean; path?: string; host?: string; config?: Record<string, unknown> }
+
+const GER = "/api/modules/_gerenciar";
+export const listarPastas = (caminho?: string) => api<ListagemDePastas>(`/api/fs/pastas${caminho ? `?caminho=${encodeURIComponent(caminho)}` : ""}`);
+export const inspecionarModulo = (caminho: string, fraseSenha?: string) => api<Conferencia>(`${GER}/inspecionar`, { method: "POST", body: { caminho, ...(fraseSenha ? { fraseSenha } : {}) } });
+export const adicionarModulo = (b: { ticket: string; config: Record<string, unknown>; soNestaMaquina: boolean }) => api<RespostaGerenciar>(`${GER}/adicionar`, { method: "POST", body: b });
+export const atualizarModulo = (id: string, b: { enabled?: boolean; config?: Record<string, unknown>; soNestaMaquina?: boolean; fraseSenha?: string }) => api<RespostaGerenciar>(`${GER}/${encodeURIComponent(id)}`, { method: "PUT", body: b });
+export const removerModulo = (id: string) => api<RespostaGerenciar>(`${GER}/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const reiniciarServe = () => api<RespostaGerenciar>(`${GER}/reiniciar`, { method: "POST", body: {} });

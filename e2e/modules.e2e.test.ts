@@ -98,11 +98,11 @@ describe.skipIf(!pronto)("módulos na UI web (browser real)", () => {
     expect(await frame().locator("li.card.destaque .texto").innerText()).toContain("Lembrete de");
   });
 
-  it("a seção Módulos mostra status e tarefa, e Rodar agora (confirmado) devolve o resultado", async () => {
-    await nav("#/settings");
-    const sec = page.getByTestId("modules-section");
+  it("Configurações › Módulos mostra status e tarefa, e Rodar agora (confirmado) devolve o resultado", async () => {
+    await nav("#/settings/modulos");
+    const sec = page.getByTestId("modulo-lembrete");
     await sec.waitFor();
-    expect(await sec.innerText()).toMatch(/Lembretes[\s\S]*lembrete[\s\S]*ativo/);
+    expect(await sec.innerText()).toMatch(/Lembretes[\s\S]*lembrete[\s\S]*ativo/i);
     expect(await sec.innerText()).toContain("diario");
     let pergunta = ""; // o `expect` dentro do handler não chegaria ao teste: guarda a mensagem, aceita e confere depois
     page.once("dialog", (d) => { pergunta = d.message(); void d.accept(); });
