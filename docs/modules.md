@@ -180,12 +180,13 @@ O SDK traz dois arquivos estáticos opcionais, servidos pelo second-brain:
 import { conectar } from "/modules/_sdk/brain-module-client.js";
 
 const sb = await conectar();                              // handshake com o second-brain
-const { itens } = await sb.api("/api/modules/lembrete/itens");
-await sb.api(`/api/modules/lembrete/itens/${id}/feito`, { method: "POST" });
+const { itens } = await sb.api("/itens");
+await sb.api(`/itens/${id}/feito`, { method: "POST" });
 ```
 
 `conectar()` devolve `resto` (o trecho da URL depois de `#/m/<id>/`, como o `link` de um aviso), `api(caminho, init)`,
-`navegar(resto)`, `abrirNota(id)` e `aoMudarTema(fn)`. A renovação do token é automática.
+`navegar(resto)`, `abrirNota(id)` e `aoMudarTema(fn)`. O `caminho` de `api` é relativo às rotas do próprio módulo (o client
+acrescenta `/api/modules/<id>`): `sb.api("/itens")` chama `GET /api/modules/lembrete/itens`. A renovação do token é automática.
 
 **Chame `conectar()` uma vez por página.** Chamadas repetidas reutilizam a conexão (devolvem a mesma promessa), então vale
 guardar o resultado num módulo próprio e importá-lo onde precisar.

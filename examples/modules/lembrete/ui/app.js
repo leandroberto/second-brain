@@ -29,7 +29,7 @@ function linha(item) {
     botao.addEventListener("click", async () => {
       botao.disabled = true;
       try {
-        await sb.api(`/api/modules/lembrete/itens/${encodeURIComponent(item.id)}/feito`, { method: "POST" });
+        await sb.api(`/itens/${encodeURIComponent(item.id)}/feito`, { method: "POST" });
         await carregar();
       } catch (e) {
         botao.disabled = false;
@@ -44,7 +44,7 @@ function linha(item) {
 async function carregar() {
   erro.hidden = true;
   try {
-    const { itens } = await sb.api("/api/modules/lembrete/itens");
+    const { itens } = await sb.api("/itens");
     const abertos = itens.filter((i) => !i.feito).length;
     resumo.textContent = itens.length ? `${abertos} pendente(s) de ${itens.length}` : "Nenhum lembrete ainda.";
     lista.replaceChildren(...itens.map(linha));

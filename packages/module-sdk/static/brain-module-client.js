@@ -4,7 +4,7 @@
 //
 //   import { conectar } from "/modules/_sdk/brain-module-client.js";
 //   const sb = await conectar();
-//   const itens = await sb.api("/api/modules/<id>/itens");
+//   const itens = await sb.api("/itens"); // relativo a /api/modules/<id>
 
 const DO_SB = new Set(["brain:init", "brain:token", "brain:tema"]);
 const TEMAS = new Set(["claro", "escuro"]);
