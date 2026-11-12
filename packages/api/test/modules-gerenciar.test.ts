@@ -613,12 +613,12 @@ describe("configurar, remover e reiniciar", () => {
   it("a auditoria registra a ação semântica de cada mudança", async () => {
     gravarModulos({});
     const s = await subir({ reiniciarServe: async () => {} });
-    const desde = new Date().toISOString();
+    const desde = ultimaAtividade();
     const t = (await inspecionar(s, pasta)).corpo.ticket;
     expect((await call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: {} })).status).toBe(200);
     for (const b of [{ enabled: false }, { enabled: true }, { config: { horario: "09:00" } }, { soNestaMaquina: true }]) expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, b)).status).toBe(200);
     expect((await call(s.api, s.ui, "DELETE", `${G}/lembrete`)).status).toBe(200);
-    const acoes = brain.db.activity({ action: "config_update", since: desde }).map((a) => (a.detail as { acao?: string }).acao).reverse();
+    const acoes = configUpdatesDepois(desde).map((d) => (d as { acao?: string }).acao).reverse();
     expect(acoes).toEqual(["adicionar", "desligar", "ligar", "configurar", "restringir_host", "remover"]);
   });
 
