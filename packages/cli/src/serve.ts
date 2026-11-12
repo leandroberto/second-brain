@@ -1,8 +1,9 @@
 import { hostname } from "node:os";
 import { AvisosStore, Scheduler, clearServeInfo, createModuleIa, loadConfig, loadModules, modulesConfigHash, modulesStateRoot, serveEstado, acquireServeLock, stopModules, writeServeInfo, type Assistant, type AssistantEngine, type Brain, type ModuleRegistry, type SessionStoreOptions } from "@brain/core";
-import { startApi } from "@brain/api";
+import { startApi, type Conferir } from "@brain/api";
 import { BrainError } from "@brain/shared";
 import { esperarServeAnterior } from "./reinicio.js";
+import { conferirEmProcessoFilho } from "./modules.js";
 
 export interface ServeOptions {
   port: number;
@@ -20,6 +21,8 @@ export interface ServeOptions {
   agendador?: boolean;
   /** reinicia este processo (`reiniciarProcesso`, montado pelo `bin.ts`); repassado à API de módulos */
   reiniciarServe?: () => Promise<void>;
+  /** conferência de módulo para o gerenciamento pela UI (padrão: `conferirEmProcessoFilho` com o `bin.js` deste build) */
+  conferir?: Conferir;
 }
 
 export interface ServeHandle { url: string; token: string; registry: ModuleRegistry; close(): Promise<void> }
@@ -63,7 +66,7 @@ async function montar(b: Brain, o: ServeOptions, root: string, lock: { liberar()
 
   let api;
   try {
-    api = await startApi(b, { port: o.port, host: o.host, webRoot: o.webRoot, build: o.build, assistant: o.assistant, sessions: o.sessions, modules: { registry, scheduler, avisos, reiniciar, root, reiniciarServe: o.reiniciarServe } });
+    api = await startApi(b, { port: o.port, host: o.host, webRoot: o.webRoot, build: o.build, assistant: o.assistant, sessions: o.sessions, modules: { registry, scheduler, avisos, reiniciar, root, reiniciarServe: o.reiniciarServe, conferir: o.conferir ?? ((c, cfg) => conferirEmProcessoFilho(c, cfg)) } });
   } catch (e) {
     await scheduler.stop(); await stopModules(registry); registry.encerrarExecucoes();
     throw e;

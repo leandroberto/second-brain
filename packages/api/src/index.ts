@@ -3,13 +3,15 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, extname, join, normalize, sep } from "node:path";
-import { Brain, type Vault, principal, sessionScopeByHash, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
+import { Brain, type Vault, listarPastas, principal, sessionScopeByHash, vaultFingerprint, humanFromSession, renewDesktopSession, authorize, isHumanReviewer, type Assistant, type SessionStoreOptions, assertImportablePath, coreDoctor, integrationChecks, integrationStatus, importPath, importText, processCandidates, reconcileCandidates, rowSummary, watchVault, type Candidate, type FreshnessSummary } from "@brain/core";
 import { BrainError, NOTE_TYPES, RELATION_TYPES, STATUSES, type Principal } from "@brain/shared";
 export { issueHumanSession, isHumanSession, revokeHumanSessions, hasReviewerPassphrase, setReviewerPassphrase, checkReviewerPassphrase, defaultSessionsFile, type SessionStoreOptions } from "@brain/core";
 import { homedir } from "node:os";
 import { credencialDoPrincipal, negarAntesDoRoteamento, tratarModulos, type Credencial, type ModulesApiOptions, type TipoCredencial } from "./modules.js";
+import { GerenciarModulos } from "./modules-gerenciar.js";
 import { CORS_OPACO, CSP_DA_ABA, PREFLIGHT_OPACO, TokensDePagina, aceitaOrigemOpaca, arquivoDaAba, pastaEstaticaDoSdk, temSegmentoDePonto } from "./modules-aba.js";
 export { podeChamar, credencialDeModulo, type ModulesApiOptions } from "./modules.js";
+export type { Conferir, ResultadoConferencia } from "./modules-gerenciar.js";
 
 export interface ApiOptions { port?: number; host?: string; webRoot?: string; userName?: string; sessions?: SessionStoreOptions; build?: { commit?: string; id?: string }; assistant?: Assistant; modules?: ModulesApiOptions }
 export interface ApiHandle { url: string; token: string; port: number; close(): Promise<void> }
@@ -65,6 +67,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   const paginas = new TokensDePagina((h) => sessionScopeByHash(brain.vault.root, h, opts.sessions) === "full");
   const pastaSdk = pastaEstaticaDoSdk();
   const pararAvisos = opts.modules?.avisos.aoMudar((ev, data) => emit(ev, data));
+  // tickets de conferência e tentativas de frase-senha: em memória deste processo
+  const gerenciar = opts.modules ? new GerenciarModulos(brain, opts.modules, opts.sessions) : undefined;
 
   const routes: Array<[string, RegExp, Handler]> = [];
   const r = (m: string, p: string, h: Handler) => routes.push([m, new RegExp(`^${p.replace(/:[a-z]+/g, "([^/]+)")}$`), h]);
@@ -216,7 +220,18 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   r("GET", "/api/notes/:id/local", ({ brain, params, url }) => brain.localGraph(decodeURIComponent(params[0]!), Number(q(url, "depth") ?? 1)));
   r("GET", "/api/notes/:id/suggestions", ({ brain, params }) => brain.relationSuggestions(decodeURIComponent(params[0]!)));
   r("GET", "/api/settings", ({ brain }) => ({ config: brain.config, vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
-  r("PUT", "/api/settings", async ({ brain, body, actor }) => ({ config: await brain.updateConfig(body, actor) }));
+  r("PUT", "/api/settings", async ({ brain, body, actor }) => {
+    // atalhos fechados: os módulos só pelo gerenciamento (frase-senha, conferência) e a frase-senha só no terminal
+    const tem = (k: string) => !!body && typeof body === "object" && Object.hasOwn(body, k);
+    if (tem("modules")) throw new BrainError("forbidden", "use Configurações › Módulos");
+    if (tem("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
+    return { config: await brain.updateConfig(body, actor) };
+  });
+  // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana)
+  r("GET", "/api/fs/pastas", ({ url, actor }) => {
+    if (actor.kind !== "human" || actor.channel !== "ui") throw new BrainError("forbidden", "navegar pelas pastas é só para a sessão humana");
+    return listarPastas(q(url, "caminho") || undefined);
+  });
   r("POST", "/api/reindex", async ({ brain, emit }) => { const x = await brain.reindex(true); emit("notes"); return { added: x.added.length, changed: x.changed.length, removed: x.removed.length, embedded: x.embedded }; });
   r("POST", "/api/git/commit", async ({ brain, body, actor }) => brain.commitPending(body?.message, actor));
   r("GET", "/api/git/dirty", async ({ brain }) => brain.git.dirty("knowledge"));
@@ -307,7 +322,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
       }
     }
     // rotas de módulo e avisos: depois das do core
-    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res, token: hdr })) return;
+    if (await tratarModulos(opts.modules, { metodo: method, url, body, cred, paginas, res, token: hdr, who, gerenciar })) return;
     json(res, 404, { error: "not_found", message: `rota ${method} ${url.pathname}` });
   }
 

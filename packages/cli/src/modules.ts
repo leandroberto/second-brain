@@ -1,7 +1,10 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { EventEmitter } from "node:events";
+import type { ResultadoConferencia } from "@brain/api";
 import { Brain, MODULE_ID_RE, ModuleRegistry, Scheduler, bloqueioIaNoDia, gastoIaDoDia, compilarRota, importModuleDef, issueHumanSession, resumirModulo, validarConfigDoModulo, type ResumoDoModulo, type ResultadoConfig, loadModules, modulesStateRoot, parseCron, revokeHumanSession, serveEstado, serveFallbackUrl, type BloqueioIa, type Check, type ModuleError, type StatusTarefa } from "@brain/core";
 import { problemaDaFerramenta } from "@brain/mcp";
 import { realIO, requireHuman } from "./admin.js";
@@ -305,6 +308,74 @@ async function checarJson(pasta: string, configArg: string | undefined): Promise
   } finally { Object.assign(console, orig); }
   process.stdout.write(`${saida}\n`);
   return ok ? 0 : 1;
+}
+
+/** Limite padrão da conferência por processo filho (spec de gerenciar módulos §7.2). */
+export const CONFERENCIA_TIMEOUT_MS = 30_000;
+/** Teto do stdout guardado do filho: o módulo pode imprimir no import; só a última linha (a do `check --json`) importa. */
+const MAX_STDOUT = 1024 * 1024;
+/** O filho não herda credenciais do serve (api-token, sessões) nem a ligação com o systemd ou com um reinício em curso. */
+const FORA_DO_FILHO = new Set(["BRAIN_API_TOKEN", "BRAIN_SESSIONS_FILE", "BRAIN_SERVE_ESPERAR_PID", "INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"]);
+
+export interface OpcoesConferencia {
+  /** `bin.js` da CLI (padrão: o do build em uso, ao lado deste arquivo) */
+  bin?: string;
+  timeoutMs?: number;
+  /** ambiente base (padrão: `process.env`), filtrado por `FORA_DO_FILHO` */
+  env?: NodeJS.ProcessEnv;
+}
+
+const falhou = (causa: string, comConfig: boolean): ResultadoConferencia =>
+  ({ ok: false, causas: [causa], ...(comConfig ? { config: { ok: false as const, erros: [{ campo: "", mensagem: "módulo não conferido" }] } } : {}) });
+
+/** Última linha não vazia do stdout como o resultado do `check --json`; `undefined` se não tiver a forma esperada. */
+function lerResultado(stdout: string): ResultadoConferencia | undefined {
+  const linha = stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop();
+  if (!linha) return undefined;
+  try {
+    const j = JSON.parse(linha) as Partial<ResultadoConferencia> | null;
+    if (!j || typeof j.ok !== "boolean" || !Array.isArray(j.causas) || !j.causas.every((c) => typeof c === "string")) return undefined;
+    if (j.config !== undefined && (typeof j.config !== "object" || j.config === null || typeof j.config.ok !== "boolean")) return undefined;
+    return j as ResultadoConferencia;
+  } catch { return undefined; }
+}
+
+/**
+ * Conferência de um módulo num processo filho descartável (spec de gerenciar módulos §6, §7.2): roda o `brain modules check
+ * <pasta> --json [--config -]` da CLI em uso, com a config pelo stdin, estado num diretório temporário (apagado no fim), sem o
+ * api-token nem as sessões do serve, e com teto de tempo (estourou, o grupo do filho morre). Nunca lança: falha vira `ok: false`
+ * com a causa. O serve em execução não carrega nada da pasta.
+ */
+export async function conferirEmProcessoFilho(caminho: string, config?: unknown, o: OpcoesConferencia = {}): Promise<ResultadoConferencia> {
+  const comConfig = config !== undefined;
+  const timeoutMs = o.timeoutMs ?? CONFERENCIA_TIMEOUT_MS;
+  const bin = o.bin ?? fileURLToPath(new URL("./bin.js", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "brain-conferir-"));
+  const env: NodeJS.ProcessEnv = {
+    ...Object.fromEntries(Object.entries(o.env ?? process.env).filter(([k]) => !FORA_DO_FILHO.has(k))),
+    BRAIN_STATE_DIR: join(tmp, "estado"),
+    BRAIN_SESSIONS_FILE: join(tmp, "sem-sessoes.json"),
+  };
+  try {
+    return await new Promise<ResultadoConferencia>((ok) => {
+      const args = [bin, "modules", "check", caminho, "--json", ...(comConfig ? ["--config", "-"] : [])];
+      // grupo próprio: no estouro morrem também os processos que o módulo tenha criado no import
+      const filho = spawn(process.execPath, args, { env, cwd: tmp, detached: true, stdio: ["pipe", "pipe", "ignore"] });
+      let stdout = ""; let estourou = false;
+      const matar = () => { try { process.kill(-filho.pid!, "SIGKILL"); } catch { filho.kill("SIGKILL"); } };
+      const timer = setTimeout(() => { estourou = true; matar(); }, timeoutMs);
+      filho.stdout.setEncoding("utf8");
+      filho.stdout.on("data", (d: string) => { stdout = (stdout + d).slice(-MAX_STDOUT); });
+      filho.stdin.on("error", () => { /* o filho saiu antes de ler a config: o resultado (ou a falta dele) diz o porquê */ });
+      filho.stdin.end(comConfig ? JSON.stringify(config) : undefined);
+      filho.once("error", (e) => { clearTimeout(timer); ok(falhou(`não foi possível rodar a conferência: ${e.message}`, comConfig)); });
+      filho.once("close", (codigo) => {
+        clearTimeout(timer);
+        if (estourou) return ok(falhou(`a conferência do módulo passou de ${Math.max(1, Math.ceil(timeoutMs / 1000))} s`, comConfig));
+        ok(lerResultado(stdout) ?? falhou(`a conferência do módulo terminou sem resultado (código ${String(codigo)})`, comConfig));
+      });
+    });
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 
 const USO = "uso: brain modules list | run <id> <tarefa> [--ocorrencia AAAA-MM-DD] | check <pasta> [--json] [--config <arquivo|->]";

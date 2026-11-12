@@ -3,6 +3,7 @@ import { MODULE_ID_RE, bloqueioIaNoDia, compilarRota, gastoIaDoDia, validar, typ
 import type { Chamador, Rota } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 import type { TokensDePagina } from "./modules-aba.js";
+import type { Conferir, GerenciarModulos } from "./modules-gerenciar.js";
 
 /** Peças de módulos que o `serve` entrega à API (spec de módulos §7.6, §7.8, §7.9). */
 export interface ModulesApiOptions {
@@ -13,6 +14,10 @@ export interface ModulesApiOptions {
   reiniciar?: () => boolean;
   /** reinicia o `brain serve` (cópia destacada ou systemd); usado pelas rotas de gerenciamento depois de mudar o bloco `modules` */
   reiniciarServe?: () => Promise<void>;
+  /** confere uma pasta de módulo num processo filho descartável (`conferirEmProcessoFilho`, montada pelo `serve`) */
+  conferir?: Conferir;
+  /** relógio dos tickets de conferência e do limite de tentativas da frase-senha (só teste o troca) */
+  relogio?: () => number;
 }
 
 /** Tipo de credencial de uma requisição. A decisão fica concentrada em `negarAntesDoRoteamento`/`credencialDeModulo`. */
@@ -29,6 +34,11 @@ export function credencialDoPrincipal(p: Principal): Credencial | undefined {
 }
 
 const PREFIXO = "/api/modules/";
+/** Gerenciamento de módulos (spec de gerenciar módulos §7.2): `_gerenciar` não casa `MODULE_ID_RE`, nunca é um módulo. */
+const GERENCIAR = "/api/modules/_gerenciar";
+const ehGerenciar = (caminho: string) => caminho === GERENCIAR || caminho.startsWith(`${GERENCIAR}/`);
+/** Navegador de pastas da máquina (rota do core): mesma regra do gerenciamento. */
+const ehFs = (caminho: string) => caminho === "/api/fs" || caminho.startsWith("/api/fs/");
 const MCP_RE = /^\/api\/modules\/[^/]+\/_mcp\/[^/]+$/;
 const ehMcp = (caminho: string) => MCP_RE.test(caminho);
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
@@ -82,6 +92,8 @@ export function negarAntesDoRoteamento(cred: Credencial | undefined, metodo: str
     case "desktop": return ehDesktopPermitido(metodo, caminho) ? undefined : DESKTOP_MSG;
     case "pagina": return credencialDeModulo(cred, metodo, caminho) ? undefined : PAGINA_MSG;
     case "sessao": case "api-token": {
+      // antes de qualquer regra de módulo: o `_mcp` do api-token casaria `/api/modules/_gerenciar/_mcp/<x>`
+      if (ehGerenciar(caminho) || ehFs(caminho)) return cred.tipo === "sessao" ? undefined : "gerenciar módulos e navegar pelas pastas é só para a sessão humana";
       if (caminho.startsWith("/api/notifications")) return cred.tipo === "sessao" ? undefined : "avisos só para a sessão humana e o desktop";
       if (caminho === "/api/modules") return cred.tipo === "sessao" || metodo === "GET" ? undefined : "o api-token só lê a lista de módulos";
       if (caminho.startsWith("/api/modules")) {
@@ -134,8 +146,12 @@ const serializar = (v: unknown): string | undefined => (v === undefined ? undefi
 
 export interface ReqModulo {
   metodo: string; url: URL; body: unknown; cred: Credencial; paginas: TokensDePagina; res: ServerResponse;
-  /** credencial apresentada (o `ui-token` guarda o hash da sessão emissora) */
+  /** credencial apresentada (o `ui-token` guarda o hash da sessão emissora; o ticket de conferência também) */
   token: string;
+  /** quem chama, quando a credencial é um `Principal` (a página não é) */
+  who?: Principal;
+  /** rotas `_gerenciar` (existe quando a API tem módulos) */
+  gerenciar?: GerenciarModulos;
 }
 
 /**
@@ -161,6 +177,13 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
     return responder(res, 200, { modulos: o.registry.list().map((m) => resumo(o, m, badges[m.id] ?? 0)), reiniciar: o.reiniciar?.() ?? false });
   }
   if (!caminho.startsWith(PREFIXO)) return false;
+
+  // antes do lookup por id: `_gerenciar` não é um módulo. A matriz já recusou tudo que não é a sessão humana; aqui de novo
+  if (ehGerenciar(caminho)) {
+    if (r.cred.tipo !== "sessao" || !r.who) throw new BrainError("forbidden", "gerenciar módulos é só para a sessão humana");
+    if (!r.gerenciar) throw new BrainError("state_unavailable", "gerenciar módulos só no brain serve");
+    return r.gerenciar.tratar({ metodo, body, res, sub: caminho.slice(GERENCIAR.length), who: r.who, token: r.token });
+  }
 
   const resto = caminho.slice(PREFIXO.length);
   const barra = resto.indexOf("/");
