@@ -339,3 +339,30 @@ describe("Scheduler: leitura não mexe no estado; erros só no fluxo do serve", 
     expect(reg.errors("mod").filter((e) => e.mensagem === "next quebrou")).toHaveLength(1);
   });
 });
+
+describe("Scheduler: rodar agora antes do start nunca grava por cima de estado não preservado", () => {
+  it("_scheduler.json ilegível: runNow antes do start preserva, registra o erro e só então grava", async () => {
+    let n = 0;
+    const { s, reg, root } = montar({ rodar: async () => { n++; } }, L(2026, 11, 11, 9));
+    writeFileSync(join(root, "_scheduler.json"), "{ trunc");
+    s.status("mod"); // a leitura antes não muda nada
+    expect((await s.runNow("mod", "t")).resultado).toBe("ok");
+    expect(n).toBe(1);
+    const preservado = readdirSync(root).filter((f) => f.startsWith("_scheduler.json.corrompido-"));
+    expect(preservado).toHaveLength(1);
+    expect(readFileSync(join(root, preservado[0]!), "utf8")).toBe("{ trunc");
+    expect(reg.errors("mod").map((e) => e.mensagem)).toEqual(["estado do agendador inválido para t; reiniciado"]);
+    expect(JSON.parse(readFileSync(join(root, "_scheduler.json"), "utf8"))["mod/t"].ultimaOcorrencia).toBe(L(2026, 11, 11, 8).toISOString());
+  });
+
+  it("entrada inválida: runNow antes do start registra o erro (e não perde as entradas válidas)", async () => {
+    const { s, reg, root } = montar({ rodar: async () => undefined }, L(2026, 11, 11, 9), {
+      "mod/t": { ultimaOcorrencia: "lixo", suspensa: false, errosSeguidos: 0 },
+      "outro/x": { ultimaOcorrencia: L(2026, 11, 10, 8).toISOString(), suspensa: false, errosSeguidos: 0 },
+    });
+    s.status("mod");
+    await s.runNow("mod", "t");
+    expect(reg.errors("mod").filter((e) => e.onde === "agendador")).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(root, "_scheduler.json"), "utf8"))["outro/x"].ultimaOcorrencia).toBe(L(2026, 11, 10, 8).toISOString());
+  });
+});

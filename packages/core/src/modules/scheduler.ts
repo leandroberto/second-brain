@@ -62,6 +62,8 @@ export class Scheduler {
   private readonly crons = new Map<string, { expr: string; cron: Cron }>();
   private readonly invalidas = new Set<string>();
   private readonly somenteLeitura: boolean;
+  /** o estado em memória veio de `carregar(true)` (preservação e erros já tratados): pode ser gravado */
+  private carregadoParaGravar = false;
   /** `_scheduler.json` ilegível que não pôde ser preservado: nada é gravado por cima (e, sem marcador, nada roda) */
   private gravacaoBloqueada?: string;
 
@@ -121,7 +123,8 @@ export class Scheduler {
    */
   async runNow(id: string, tarefa: string, ocorrencia?: Date): Promise<ResultadoTarefa> {
     if (this.somenteLeitura) throw new BrainError("invalid", "agendador aberto só para leitura");
-    this.carregarSeVazio();
+    // rodar agora grava o marcador: antes do start, carrega pelo caminho do serve (preserva o ilegível e registra o inválido)
+    if (!this.timer && !this.carregadoParaGravar) this.carregar(true);
     const m = this.reg.get(id);
     const t = m?.def?.tarefas?.find((x) => x.id === tarefa);
     if (!m || m.status !== "ativo" || !m.ctx || !t) throw new BrainError("not_found", `tarefa "${id}/${tarefa}" não encontrada ou módulo inativo`);
@@ -275,7 +278,7 @@ export class Scheduler {
     }
   }
 
-  /** Leitura para o status/runNow antes do `start`: só carrega na memória (nunca preserva arquivo nem registra erro). */
+  /** Leitura para o status antes do `start`: só carrega na memória (nunca preserva arquivo nem registra erro). */
   private carregarSeVazio(): void { if (!this.timer && Object.keys(this.estado).length === 0) this.carregar(false); }
 
   /**
@@ -283,9 +286,10 @@ export class Scheduler {
    * ocorrência mais recente conta como atendida, nada roda). Arquivo ilegível (JSON inválido ou que não é objeto) vale o mesmo
    * para todas as tarefas. Só no `start` do serve (`doServe`): o ilegível é preservado como `_scheduler.json.corrompido-<ts>` e
    * o erro "estado do agendador inválido" é registrado, uma vez por tarefa. Se a preservação falhar, o agendador não grava por
-   * cima (o stderr e cada tarefa recebem o erro).
+   * cima (o stderr e cada tarefa recebem o erro). `runNow` antes do `start` também usa o caminho do serve, porque grava.
    */
   private carregar(doServe: boolean): void {
+    if (doServe) this.carregadoParaGravar = true;
     if (!existsSync(this.arq)) return;
     let v: unknown;
     let corrompido = false;
