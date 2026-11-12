@@ -1,5 +1,5 @@
 import type { Aviso, ModuleBrain, ModuleContext, ModuleIa } from "@brain/module-sdk";
-import type { Brain, ProposeInput } from "../brain.js";
+import type { Brain } from "../brain.js";
 import type { SearchFilters } from "../search.js";
 import { modulePrincipal } from "./identity.js";
 import { createModuleState, modulesStateRoot } from "./state.js";
@@ -13,12 +13,11 @@ export interface AvisosSink {
 export const AVISOS_NOOP: AvisosSink = { avisar: async () => undefined, badge: () => undefined };
 export const IA_INDISPONIVEL: ModuleIa = { completar: async () => ({ ok: false, tipo: "erro", mensagem: "IA indisponível" }) };
 
-type Patch = Parameters<Brain["editProposal"]>[1];
-
 /**
  * Fachada de conhecimento do módulo: só leitura + propose/amend da própria proposta, sempre como `module/<id>`.
- * Sem write/decide/assist. O SDK é mais largo que o core (`Record<string, unknown>`); o `Brain` valida a entrada de verdade,
- * então a conversão para `ProposeInput`/`SearchFilters`/patch é explícita aqui.
+ * Sem write/decide/assist. `propose`/`amend` passam os tipos do SDK (`NovaProposta`, `CorrecaoProposta`) direto ao `Brain`,
+ * SEM conversão: é a garantia de tipos de que o SDK continua atribuível a `ProposeInput` e ao patch de `editProposal` (o
+ * typecheck quebra aqui se o core estreitar um campo). O `Brain` valida a entrada de verdade em tempo de execução.
  */
 export function moduleBrain(brain: Brain, id: string): ModuleBrain {
   const quem = modulePrincipal(id);
@@ -27,8 +26,8 @@ export function moduleBrain(brain: Brain, id: string): ModuleBrain {
     context: (input) => brain.context(input, quem),
     get: (nid) => brain.get(nid, quem),
     similar: (draft) => brain.similar(draft as Parameters<Brain["similar"]>[0], quem),
-    propose: (input) => brain.propose(input as unknown as ProposeInput, quem),
-    amend: (pid, patch) => brain.editProposal(pid, patch as unknown as Patch, quem),
+    propose: (input) => brain.propose(input, quem),
+    amend: (pid, patch) => brain.editProposal(pid, patch, quem),
   };
   return b;
 }

@@ -97,7 +97,7 @@ O `ModuleContext` (`ctx`) tem só isto:
 | Campo | Para quê |
 |---|---|
 | `id`, `config` | id do módulo e o bloco `config` já validado |
-| `brain` | fachada de conhecimento: `search`, `context`, `get`, `similar`, `propose`, `amend` |
+| `brain` | fachada de conhecimento: `search`, `context`, `get`, `similar`, `propose` (`NovaProposta`), `amend` (`CorrecaoProposta`) |
 | `estado` | pasta própria e helpers de JSON (ver Estado) |
 | `ia` | `ia.completar(...)` (ver IA) |
 | `avisar(a)`, `badge(n)` | avisos e contador (ver Avisos e contador) |

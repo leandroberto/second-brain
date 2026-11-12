@@ -79,19 +79,62 @@ export interface Aviso {
   chave?: string;
 }
 
+/** Tipos de nota aceitos pelo Second Brain. */
+export type TipoNota = "decision" | "learning" | "fact" | "preference" | "pattern" | "reference" | "project" | "concept" | "open-question";
+
+/** Referência de origem de uma nota (`source`): o meio (`type`) e, opcionalmente, a semântica da origem (`kind`). */
+export interface FonteNota {
+  type: "git" | "pr" | "issue" | "doc" | "conversation" | "manual" | "other";
+  repository?: string;
+  /** branch, commit, PR, URL ou caminho:linha */
+  ref?: string;
+  url?: string;
+  kind?: "adr" | "spec" | "plan" | "docs" | "readme" | "agents" | "changelog" | "issue" | "commit" | "code" | "test" | "conversation" | "other";
+}
+
+/** Conhecimento temporal: verdade numa data (`as_of`, AAAA-MM-DD), a revalidar quando um evento acontecer. */
+export interface TemporalNota { as_of: string; revalidate_when?: string }
+
+/** Entrada de `brain.propose` (os campos de `ProposeInput` do core que um módulo pode usar). */
+export interface NovaProposta {
+  title: string;
+  type: TipoNota;
+  body: string;
+  project?: string;
+  tags?: string[];
+  confidence?: "low" | "medium" | "high";
+  source?: FonteNota;
+  temporal?: TemporalNota;
+  reason?: string;
+  intent?: "new" | "complement" | "update" | "replace";
+  target_id?: string;
+}
+
+/** Correção de `brain.amend` (o patch de `Brain.editProposal`). `clear_temporal: true` remove o `temporal`. */
+export interface CorrecaoProposta {
+  title?: string;
+  body?: string;
+  tags?: string[];
+  type?: TipoNota;
+  project?: string;
+  temporal?: TemporalNota;
+  clear_temporal?: boolean;
+}
+
 /**
  * Fachada de conhecimento do módulo: as operações de `Brain` (search, context, get, similar, propose, editProposal) SEM o parâmetro
- * de ator, que o core fixa em `module/<id>`. O SDK não pode importar o core, então os tipos aqui são estruturais e mínimos
- * (`Record<string, unknown>`/`unknown`); o core garante a compatibilidade com a assinatura real de `Brain`.
+ * de ator, que o core fixa em `module/<id>`. O SDK não pode importar o core, então os tipos aqui são estruturais, espelhando os
+ * do core; o core passa estes tipos direto ao `Brain` (sem conversão), e o typecheck dele quebra se deixarem de ser compatíveis.
+ * O `Brain` também valida a entrada em tempo de execução (um módulo em JS puro pode mandar qualquer coisa).
  */
 export interface ModuleBrain {
   search(query: string, filters?: Record<string, unknown>, limit?: number): Promise<unknown[]>;
   context(input: { project?: string; topic?: string; task?: string; max_items?: number; budget_chars?: number }): Promise<unknown>;
   get(id: string): Promise<unknown>;
   similar(draft: { title: string; body: string; project?: string; type?: string }): Promise<unknown>;
-  propose(input: Record<string, unknown>): Promise<unknown>;
+  propose(input: NovaProposta): Promise<unknown>;
   /** corrige a PRÓPRIA proposta pendente (`Brain.editProposal`) */
-  amend(id: string, patch: Record<string, unknown>): Promise<unknown>;
+  amend(id: string, patch: CorrecaoProposta): Promise<unknown>;
 }
 
 export interface ModuleState {
