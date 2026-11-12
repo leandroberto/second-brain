@@ -35,33 +35,44 @@ const ILEGIVEL = "_ilegivel";
 
 const objeto = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** Leitura tolerante, só para exibição (doctor, Saúde): arquivo ausente ou ilegível dá `{}`, sem efeito colateral. */
-function ler(arquivo: string): Gastos {
+/**
+ * Leitura só para exibição (doctor, Saúde), sem efeito colateral: `ilegivel` quando o arquivo existe mas não é um objeto JSON
+ * (a próxima chamada de IA o preserva e bloqueia o dia); ausente ou com outro erro de leitura dá `{}`.
+ */
+function ler(arquivo: string): { v: Record<string, unknown>; ilegivel: boolean } {
+  let bruto: string;
+  try { bruto = readFileSync(arquivo, "utf8"); } catch { return { v: {}, ilegivel: false }; }
   try {
-    const v = JSON.parse(readFileSync(arquivo, "utf8")) as unknown;
-    return objeto(v) ? (v as Gastos) : {};
-  } catch { return {}; }
+    const v = JSON.parse(bruto) as unknown;
+    return objeto(v) ? { v, ilegivel: false } : { v: {}, ilegivel: true };
+  } catch { return { v: {}, ilegivel: true }; }
 }
 
 /**
  * Leitura para cobrar: arquivo ausente é `{}`; ilegível (JSON inválido ou que não é objeto) é preservado como
  * `_ia.json.corrompido-<timestamp>`, avisado no stderr e substituído por um registro novo só com o bloqueio de hoje (os dias
- * anteriores se perdem). Devolve os gastos e se a IA está bloqueada hoje.
+ * anteriores se perdem). Se a preservação falhar (por motivo que não seja o arquivo já ter sumido), nada é gravado por cima:
+ * a IA fica bloqueada (`gravavel: false`) e o stderr avisa. Devolve os gastos e se a IA está bloqueada hoje.
  */
-function lerParaCobrar(arquivo: string, dia: string): { gastos: Gastos; bloqueada: boolean } {
+function lerParaCobrar(arquivo: string, dia: string): { gastos: Gastos; bloqueada: boolean; gravavel: boolean } {
   let bruto: string;
   try { bruto = readFileSync(arquivo, "utf8"); }
-  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return { gastos: {}, bloqueada: false }; throw e; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return { gastos: {}, bloqueada: false, gravavel: true }; throw e; }
   let v: unknown;
   try { v = JSON.parse(bruto); } catch { v = undefined; }
   if (!objeto(v)) {
-    const destino = preservarCorrompido(arquivo);
+    let destino: string | undefined;
+    try { destino = preservarCorrompido(arquivo); }
+    catch (e) {
+      console.error(`[brain] registro de gasto de IA ilegível (${arquivo}) e não foi possível preservá-lo (${(e as Error)?.message || "erro"}): a IA dos módulos fica bloqueada`);
+      return { gastos: {}, bloqueada: true, gravavel: false };
+    }
     writeFileAtomic(arquivo, JSON.stringify({ [ILEGIVEL]: dia }));
     console.error(`[brain] registro de gasto de IA ilegível (${arquivo})${destino ? `, preservado em ${destino}` : ""}: a IA dos módulos fica bloqueada até amanhã`);
-    return { gastos: {}, bloqueada: true };
+    return { gastos: {}, bloqueada: true, gravavel: true };
   }
   const { [ILEGIVEL]: marca, ...gastos } = v;
-  return { gastos: gastos as Gastos, bloqueada: marca === dia };
+  return { gastos: gastos as Gastos, bloqueada: marca === dia, gravavel: true };
 }
 
 function gravar(arquivo: string, g: Gastos, bloqueadaHoje: string | undefined): void {
@@ -70,8 +81,18 @@ function gravar(arquivo: string, g: Gastos, bloqueadaHoje: string | undefined): 
 
 /** Gasto de IA do módulo no dia local (de `<root>/_ia.json`), em US$. Para o doctor e a lista de módulos (sem efeito colateral). */
 export function gastoIaDoDia(root: string, id: string, dia: Date = new Date()): number {
-  const v: unknown = ler(join(root, "_ia.json"))[id]?.[diaLocal(dia)];
+  const g = ler(join(root, "_ia.json")).v[id];
+  const v: unknown = objeto(g) ? g[diaLocal(dia)] : undefined;
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * A IA de todos os módulos está bloqueada no dia por registro de gasto ilegível: a marca do dia já gravada, ou um `_ia.json`
+ * ilegível que a próxima chamada vai preservar e marcar. Para o doctor e Saúde; sem efeito colateral.
+ */
+export function iaBloqueadaNoDia(root: string, dia: Date = new Date()): boolean {
+  const { v, ilegivel } = ler(join(root, "_ia.json"));
+  return ilegivel || v[ILEGIVEL] === diaLocal(dia);
 }
 
 const valido = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
@@ -95,7 +116,8 @@ export function createModuleIa(engine: AssistantEngine, cfg: BrainConfig, root: 
       const dia = diaLocal();
 
       const somar = (usd: number) => serializado(arquivo, () => {
-        const { gastos: g, bloqueada } = lerParaCobrar(arquivo, dia);
+        const { gastos: g, bloqueada, gravavel } = lerParaCobrar(arquivo, dia);
+        if (!gravavel) throw new Error("registro de gasto de IA ilegível e não preservado");
         const meu = { ...(g[id] ?? {}) };
         meu[dia] = (meu[dia] ?? 0) + usd;
         g[id] = Object.fromEntries(Object.keys(meu).sort().slice(-DIAS_GUARDADOS).map((d) => [d, meu[d]!]));

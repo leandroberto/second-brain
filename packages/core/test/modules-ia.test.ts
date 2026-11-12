@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, gastoIaDoDia, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
+import { Brain, ConfigSchema, createClaudeEngine, createModuleIa, gastoIaDoDia, iaBloqueadaNoDia, type ExecutorClaude, type SaidaProcesso } from "../src/index.js";
 
 const MCP = { command: "/usr/bin/node-ficticio", args: ["/opt/brain-ficticio/bin.js", "mcp"] };
 const saida = (extra: Record<string, unknown> = {}, estruturado: unknown = { x: 1 }): SaidaProcesso => ({
@@ -183,5 +183,24 @@ describe("gastoIaDoDia", () => {
     expect(gastoIaDoDia(root, "z")).toBe(0);
     writeFileSync(join(root, "_ia.json"), JSON.stringify({ z: "texto" }));
     expect(gastoIaDoDia(root, "z")).toBe(0);
+  });
+});
+
+describe("iaBloqueadaNoDia", () => {
+  it("reconhece a marca do dia e o arquivo ilegível, sem efeito colateral", () => {
+    const root = mkdtempSync(join(dir, "bloq-"));
+    const arq = join(root, "_ia.json");
+    expect(iaBloqueadaNoDia(root)).toBe(false); // sem arquivo
+    writeFileSync(arq, JSON.stringify({ z: { [hoje()]: 0.1 } }));
+    expect(iaBloqueadaNoDia(root)).toBe(false);
+    writeFileSync(arq, JSON.stringify({ _ilegivel: hoje(), z: { [hoje()]: 0.1 } }));
+    expect(iaBloqueadaNoDia(root)).toBe(true);
+    expect(gastoIaDoDia(root, "z")).toBe(0.1);
+    writeFileSync(arq, JSON.stringify({ _ilegivel: "2000-01-01" }));
+    expect(iaBloqueadaNoDia(root)).toBe(false); // marca de outro dia
+    writeFileSync(arq, "{ trunc");
+    expect(iaBloqueadaNoDia(root)).toBe(true); // a próxima chamada vai bloquear
+    expect(readFileSync(arq, "utf8")).toBe("{ trunc"); // nada foi preservado nem gravado
+    expect(readdirSync(root)).toEqual(["_ia.json"]);
   });
 });

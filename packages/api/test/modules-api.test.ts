@@ -178,8 +178,19 @@ describe("rotas de módulo", () => {
         expect(por.lanca).toMatchObject({ pasta: join(FIX, "lanca"), iaHojeUsd: 0 });
         expect(por.sumido).toMatchObject({ pasta: join(FIX, "nao-existe"), iaHojeUsd: 0 });
         expect(por.sumido.sdk).toBeUndefined();
+        expect(por.ok.iaBloqueada).toBe(false);
       }
     } finally { rmSync(join(modulesStateRoot(brain), "_ia.json"), { force: true }); }
+  });
+
+  it("GET /api/modules marca iaBloqueada quando o registro de gasto de IA está ilegível (sem mexer no arquivo)", async () => {
+    const arq = join(modulesStateRoot(brain), "_ia.json");
+    writeFileSync(arq, "{ trunc");
+    try {
+      const b = await (await call(api.token, "GET", "/api/modules")).json() as any;
+      for (const m of b.modulos) expect(m, m.id).toMatchObject({ iaBloqueada: true, iaHojeUsd: 0 });
+      expect(readFileSync(arq, "utf8")).toBe("{ trunc");
+    } finally { rmSync(arq, { force: true }); }
   });
 
   it("GET /api/modules traz os 10 erros mais recentes, truncados e sem possível segredo", async () => {

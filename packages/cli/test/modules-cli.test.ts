@@ -397,6 +397,18 @@ describe("doctor: erros recentes dos módulos", () => {
     expect(checks.find((c) => c.id === "modules")!.status).toBe("warn");
   });
 
+  it("IA bloqueada por registro de gasto ilegível aparece no doctor (warn) e não mexe no arquivo", async () => {
+    const arq = join(root, "_ia.json");
+    writeFileSync(arq, "{ trunc");
+    try {
+      const ok = (await modulesChecks(brain, 1)).find((c) => c.id === "module-ok")!;
+      expect(ok.detail).toContain("IA bloqueada hoje: registro de gasto ilegível");
+      expect(ok.detail).not.toContain("IA hoje US$");
+      expect(ok.status).toBe("warn");
+      expect(readFileSync(arq, "utf8")).toBe("{ trunc");
+    } finally { rmSync(arq, { force: true }); }
+  });
+
   it("via serve usa os erros de GET /api/modules", async () => {
     const s = await startServe(brain, { port: 0, sessions: sessions() });
     try {
