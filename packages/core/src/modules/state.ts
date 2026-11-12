@@ -46,8 +46,12 @@ export function createModuleState(root: string, id: string): ModuleState {
   return {
     dir,
     lerJson<T>(nome: string): T | undefined {
-      try { return JSON.parse(readFileSync(join(dir, `${nomeSeguro(nome)}.json`), "utf8")) as T; }
-      catch (e) { if (e instanceof BrainError) throw e; return undefined; }
+      let bruto: string;
+      try { bruto = readFileSync(join(dir, `${nomeSeguro(nome)}.json`), "utf8"); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw e; }
+      // corrompido nunca vira "vazio": o módulo gravaria por cima e perderia o estado. O arquivo fica como está
+      try { return JSON.parse(bruto) as T; }
+      catch { throw new BrainError("invalid", `estado ${nome} do módulo ${id} está corrompido`); }
     },
     gravarJson(nome: string, v: unknown): void {
       writeFileAtomic(join(dir, `${nomeSeguro(nome)}.json`), JSON.stringify(v));

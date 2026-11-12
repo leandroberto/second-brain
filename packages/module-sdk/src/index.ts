@@ -96,7 +96,12 @@ export interface ModuleBrain {
 
 export interface ModuleState {
   dir: string;
+  /**
+   * Lê `<dir>/<nome>.json`. `undefined` só quando o arquivo não existe; JSON corrompido lança (erro `invalid`) e o arquivo
+   * fica intacto, para o módulo não gravar por cima sem saber.
+   */
   lerJson<T>(nome: string): T | undefined;
+  /** Grava `<dir>/<nome>.json` de forma atômica (tmp + rename). */
   gravarJson(nome: string, v: unknown): void;
   lock<T>(nome: string, fn: () => Promise<T>): Promise<T>;
 }

@@ -253,7 +253,9 @@ estado de outro vault, externo). O estado nunca viaja pelo sync do vault e nunca
 guarda o dono em `vault-path`, e outro vault apontando para ela é recusado. Mover a pasta do vault muda a impressão (o
 estado dos módulos recomeça vazio; copie a pasta antiga se precisar). O second-brain não interpreta o conteúdo.
 
-- `lerJson(nome)` e `gravarJson(nome, valor)` (escrita atômica);
+- `lerJson(nome)` e `gravarJson(nome, valor)` (escrita atômica). `lerJson` devolve `undefined` **só** quando o arquivo não
+  existe; JSON corrompido lança um erro `invalid` ("estado <nome> do módulo <id> está corrompido") e o arquivo fica intacto.
+  Não trate esse erro como "vazio" e grave por cima: o estado anterior se perderia;
 - `lock(nome, fn)`: exclusão mútua em volta de leitura + gravação. Use sempre que ler e depois gravar, porque rota e tarefa
   podem rodar ao mesmo tempo.
 
