@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { MODULE_ID_RE, bloqueioIaNoDia, gastoIaDoDia, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type Scheduler } from "@brain/core";
+import { MODULE_ID_RE, bloqueioIaNoDia, compilarRota, gastoIaDoDia, safeResolve, validar, type AvisosStore, type LoadedModule, type ModuleRegistry, type RotaCompilada, type Scheduler } from "@brain/core";
 import type { Chamador, Rota } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 
@@ -104,17 +104,16 @@ const decodificar = (s: string): string => {
   try { return decodeURIComponent(s); } catch { throw new BrainError("invalid", "caminho com codificação inválida"); }
 };
 
-/** `caminho` declarado (com `:param`) → regex; partes literais escapadas. */
-function casar(declarado: string, caminho: string): Record<string, string> | undefined {
-  const nomes: string[] = [];
-  const fonte = declarado.split(/(:[A-Za-z_][A-Za-z0-9_]*)/).map((parte) => {
-    if (parte.startsWith(":")) { nomes.push(parte.slice(1)); return "([^/]+)"; }
-    return parte.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }).join("");
-  const mt = new RegExp(`^${fonte}$`).exec(caminho);
-  if (!mt) return undefined;
+/** Rotas compiladas uma vez por objeto de rota (o `def` do módulo é imutável depois da carga). `null` = não compila. */
+const compiladas = new WeakMap<object, RotaCompilada | null>();
+
+function casar(rota: Rota, caminho: string): Record<string, string> | undefined {
+  let c = compiladas.get(rota);
+  if (c === undefined) { c = compilarRota(rota.caminho) ?? null; compiladas.set(rota, c); }
+  const cruos = c?.casar(caminho);
+  if (!cruos) return undefined;
   const params: Record<string, string> = {};
-  nomes.forEach((n, i) => { params[n] = decodificar(mt[i + 1]!); });
+  for (const [n, v] of Object.entries(cruos)) params[n] = decodificar(v);
   return params;
 }
 
@@ -215,7 +214,7 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
   const rotas = Array.isArray(m.def.rotas) ? m.def.rotas : [];
   for (const rota of rotas) {
     if (rota?.metodo !== metodo || typeof rota.caminho !== "string") continue;
-    const params = casar(rota.caminho, sub);
+    const params = casar(rota, sub);
     if (!params) continue;
     if (!podeChamar(rota, chamador)) throw new BrainError("forbidden", "esta rota exige um humano");
     let texto: string | undefined;

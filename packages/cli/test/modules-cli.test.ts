@@ -515,6 +515,12 @@ describe("brain modules (processo real)", () => {
     expect(r.stdout).toContain("sdk");
   });
 
+  it("modules check aponta rota com :param colado", async () => {
+    const r = await brainCli(["modules", "check", join(CORE_FIX, "rota-colada")]).catch((e) => e as { code: number; stdout: string });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toContain("rota inválida: GET /:a:b");
+  });
+
   it("modules check aceita um módulo válido", async () => {
     const r = await brainCli(["modules", "check", join(API_FIX, "ok")]);
     expect(r.stdout).toMatch(/ok/);

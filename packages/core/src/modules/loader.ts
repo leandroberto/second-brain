@@ -10,6 +10,7 @@ import { scanSecrets } from "../secrets.js";
 import { AVISOS_NOOP, IA_INDISPONIVEL, createModuleContext, type AvisosSink } from "./context.js";
 import { MODULE_ID_RE } from "./identity.js";
 import { ModuleRegistry, mensagemSegura, type LoadedModule, type ModuleStatus } from "./registry.js";
+import { compilarRota } from "./rotas.js";
 import { validar } from "./schema.js";
 import { serveEstado } from "./serve-info.js";
 import { modulesStateRoot } from "./state.js";
@@ -135,6 +136,10 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
       if (!r.ok) { falhar(`configuração inválida: ${r.mensagem}`); continue; }
       config = r.value;
     }
+
+    // caminho de rota que não compila (`/:a:b`, `/x:id`): o módulo não sobe (mesma função da API)
+    const rotaInvalida = (Array.isArray(def.rotas) ? def.rotas : []).find((r) => typeof r?.caminho === "string" && !compilarRota(r.caminho));
+    if (rotaInvalida) { falhar(mensagemSegura(`rota inválida: ${String(rotaInvalida.metodo)} ${rotaInvalida.caminho}`)); continue; }
 
     if (def.aba) {
       // a aba é servida de dentro desta pasta (mesmo `safeResolve` da API): raiz do módulo, absoluta ou fora dele não serve
