@@ -138,8 +138,11 @@ export class Brain {
     if (!(this._embedder instanceof OpenAICompatibleEmbedder) || !process.env[e.api_key_env]) return undefined;
     const c = chaveDeEmbeddings(e.base_url, e.api_key_hosts);
     if (c.envia) return undefined;
-    return c.motivo === "sem_https" ? `a chave de embeddings não é enviada para ${c.host}: use https em embeddings.base_url`
-      : `a chave de embeddings não é enviada para ${c.host}: adicione-o em embeddings.api_key_hosts no .brain/config.yaml`;
+    // URL inválida: texto fixo, nunca a `base_url` (gravável pela UI, pode levar caracteres de controle ao terminal do doctor)
+    if (c.motivo === "url_invalida") return "a chave de embeddings não é enviada: embeddings.base_url inválida";
+    const motivo = { credenciais_na_url: "embeddings.base_url não pode ter usuário/senha", protocolo: "embeddings.base_url precisa ser https",
+      sem_https: "use https em embeddings.base_url", fora_da_lista: "adicione-o em embeddings.api_key_hosts no .brain/config.yaml" }[c.motivo];
+    return `a chave de embeddings não é enviada${c.host ? ` para ${c.host}` : ""}: ${motivo}`; // `file:`, `mailto:`... não têm host
   }
   get embedder(): EmbeddingProvider { return this._embedder; }
 

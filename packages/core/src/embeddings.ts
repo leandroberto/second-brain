@@ -52,8 +52,12 @@ export function isLocalUrl(u: string): boolean {
   } catch { return false; }
 }
 
-/** Se a chave de embeddings pode ir para `baseUrl` e, quando não, o host e o motivo (para o aviso do doctor). */
-export type ChaveDeEmbeddings = { envia: true } | { envia: false; host: string; motivo: "fora_da_lista" | "sem_https" };
+/**
+ * Se a chave de embeddings pode ir para `baseUrl` e, quando não, o motivo e o host (para o aviso do doctor). URL inválida não
+ * traz host: o texto dela nunca vai para o aviso (pode ter caracteres de controle, e a `base_url` se grava pela UI).
+ */
+export type ChaveDeEmbeddings = { envia: true } | { envia: false; motivo: "url_invalida" }
+  | { envia: false; host: string; motivo: "credenciais_na_url" | "protocolo" | "fora_da_lista" | "sem_https" };
 
 /**
  * A chave só vai para um host de `hosts` (`embeddings.api_key_hosts`, editável só no config.yaml): hostname exato, em minúsculas,
@@ -62,12 +66,14 @@ export type ChaveDeEmbeddings = { envia: true } | { envia: false; host: string; 
  */
 export function chaveDeEmbeddings(baseUrl: string, hosts: readonly string[]): ChaveDeEmbeddings {
   let x: URL;
-  try { x = new URL(baseUrl); } catch { return { envia: false, host: baseUrl, motivo: "fora_da_lista" }; }
+  try { x = new URL(baseUrl); } catch { return { envia: false, motivo: "url_invalida" }; }
   const host = x.hostname.toLowerCase();
+  if (x.username || x.password) return { envia: false, host, motivo: "credenciais_na_url" };
+  if (x.protocol !== "https:" && x.protocol !== "http:") return { envia: false, host, motivo: "protocolo" };
   const autorizados = new Set(hosts.map((h) => h.trim().toLowerCase()));
   // o IPv6 vem entre colchetes no `hostname`: "::1" na lista vale para "[::1]"
   const naLista = autorizados.has(host) || (host.startsWith("[") && autorizados.has(host.slice(1, -1)));
-  if (!naLista || x.username || x.password || (x.protocol !== "https:" && x.protocol !== "http:")) return { envia: false, host, motivo: "fora_da_lista" };
+  if (!naLista) return { envia: false, host, motivo: "fora_da_lista" };
   if (x.protocol === "http:" && !LOOPBACK.includes(host)) return { envia: false, host, motivo: "sem_https" };
   return { envia: true };
 }
@@ -77,19 +83,22 @@ export class OpenAICompatibleEmbedder implements EmbeddingProvider {
   readonly id: string;
   readonly external: boolean;
   private readonly o: { baseUrl: string; model: string; dim: number };
-  /** a credencial só fica guardada se `apiKeyHosts` autoriza o host de `baseUrl` (ver `chaveDeEmbeddings`) */
-  private readonly apiKey: string | undefined;
+  /**
+   * a credencial só fica guardada se `apiKeyHosts` autoriza o host de `baseUrl` (ver `chaveDeEmbeddings`). Campo privado de
+   * verdade (`#`): `JSON.stringify` e `util.inspect` do embedder (ou da Brain) não o mostram.
+   */
+  readonly #apiKey: string | undefined;
   constructor({ apiKey, apiKeyHosts, ...o }: { baseUrl: string; model: string; apiKey?: string; apiKeyHosts: readonly string[]; dim: number }) {
     this.o = o;
     this.id = `oa:${o.model}`;
     this.external = !isLocalUrl(o.baseUrl);
-    this.apiKey = chaveDeEmbeddings(o.baseUrl, apiKeyHosts).envia ? apiKey : undefined;
+    this.#apiKey = chaveDeEmbeddings(o.baseUrl, apiKeyHosts).envia ? apiKey : undefined;
   }
   get dim() { return this.o.dim; }
   async embed(texts: string[]): Promise<Float32Array[]> {
     const res = await fetch(`${this.o.baseUrl.replace(/\/$/, "")}/embeddings`, {
       method: "POST",
-      headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
+      headers: { "content-type": "application/json", ...(this.#apiKey ? { authorization: `Bearer ${this.#apiKey}` } : {}) },
       body: JSON.stringify({ model: this.o.model, input: texts.map((t) => t.slice(0, 8000)) }),
       signal: AbortSignal.timeout(30_000), redirect: "error",
     });

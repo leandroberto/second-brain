@@ -1,5 +1,6 @@
+import { inspect } from "node:util";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chaveDeEmbeddings, coreDoctor, type Brain } from "../src/index.js";
+import { OpenAICompatibleEmbedder, chaveDeEmbeddings, coreDoctor, type Brain } from "../src/index.js";
 import { cleanup, human, tempBrain } from "./helpers.js";
 
 // valor fictício, só deste teste: nunca pode aparecer em aviso, log ou resposta
@@ -92,6 +93,42 @@ describe("chave de embeddings só para os hosts de embeddings.api_key_hosts", ()
     expect((await b.health()).embeddings.aviso).toBe("a chave de embeddings não é enviada para coletor.example: use https em embeddings.base_url");
     const tudo = JSON.stringify([await b.health(), await coreDoctor(b), b.db.activity({ limit: 50 })]);
     expect(tudo).not.toContain(VALOR);
+    b.close();
+  });
+
+  it("motivo de cada recusa: URL inválida, usuário/senha na URL, protocolo que não é http(s), fora da lista, http fora do loopback", () => {
+    const hosts = ["api.openai.com"];
+    expect(chaveDeEmbeddings("lixo", hosts)).toEqual({ envia: false, motivo: "url_invalida" });
+    expect(chaveDeEmbeddings("https://user:pw@api.openai.com/v1", hosts)).toEqual({ envia: false, host: "api.openai.com", motivo: "credenciais_na_url" });
+    expect(chaveDeEmbeddings("https://user@coletor.example/v1", hosts)).toEqual({ envia: false, host: "coletor.example", motivo: "credenciais_na_url" });
+    expect(chaveDeEmbeddings("ftp://api.openai.com/v1", hosts)).toEqual({ envia: false, host: "api.openai.com", motivo: "protocolo" });
+    expect(chaveDeEmbeddings("https://coletor.example/v1", hosts)).toEqual({ envia: false, host: "coletor.example", motivo: "fora_da_lista" });
+    expect(chaveDeEmbeddings("http://api.openai.com/v1", hosts)).toEqual({ envia: false, host: "api.openai.com", motivo: "sem_https" });
+  });
+
+  it("o aviso diz o motivo certo e nunca ecoa uma base_url inválida (caracteres de controle iriam ao terminal do doctor)", async () => {
+    const b = await brainCom({ base_url: "https://user:pw@api.openai.com/v1" });
+    expect((await b.health()).embeddings.aviso).toBe("a chave de embeddings não é enviada para api.openai.com: embeddings.base_url não pode ter usuário/senha");
+    await b.updateConfig({ embeddings: { base_url: "ftp://api.openai.com/v1" } }, human);
+    expect((await b.health()).embeddings.aviso).toBe("a chave de embeddings não é enviada para api.openai.com: embeddings.base_url precisa ser https");
+    await b.updateConfig({ embeddings: { base_url: "file:///tmp/embeddings" } }, human); // sem host
+    expect((await b.health()).embeddings.aviso).toBe("a chave de embeddings não é enviada: embeddings.base_url precisa ser https");
+    await b.updateConfig({ embeddings: { base_url: "https://colet\x1b[31mor.example/v1" } }, human);
+    const aviso = (await b.health()).embeddings.aviso;
+    expect(aviso).toBe("a chave de embeddings não é enviada: embeddings.base_url inválida");
+    expect(aviso).not.toContain("\x1b");
+    expect((await coreDoctor(b)).find((c) => c.id === "embeddings-chave")?.detail).toBe(aviso);
+    b.close();
+  });
+
+  it("o embedder não expõe a chave em JSON.stringify nem em util.inspect", async () => {
+    const e = new OpenAICompatibleEmbedder({ baseUrl: "https://api.openai.com/v1", model: "m", dim: 8, apiKey: VALOR, apiKeyHosts: ["api.openai.com"] });
+    expect(JSON.stringify(e)).not.toContain(VALOR);
+    expect(inspect(e, { showHidden: true, depth: 10 })).not.toContain(VALOR);
+    const b = await brainCom({ base_url: "https://api.openai.com/v1" });
+    expect(await credencial(b)).toBe(`Bearer ${VALOR}`); // a chave continua indo para o host autorizado
+    expect(JSON.stringify(b.embedder)).not.toContain(VALOR);
+    expect(inspect(b.embedder, { showHidden: true, depth: 10 })).not.toContain(VALOR);
     b.close();
   });
 

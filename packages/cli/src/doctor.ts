@@ -65,11 +65,17 @@ export async function runDoctor(vault: string, repoRoot: string, port: number): 
   return checks;
 }
 
+/**
+ * Sem caracteres de controle C0/C1 (ESC inclusive): detalhes trazem valores do config.yaml (o `model` em `oa:<model>`, por
+ * exemplo), gravável pela sessão do navegador, e um ESC ali viraria sequência de terminal.
+ */
+const semControle = (s: string): string => s.replace(/\p{Cc}/gu, ""); // Cc = U+0000–U+001F e U+007F–U+009F
+
 export function printChecks(checks: Check[]): void {
   const icon = { ok: "✔", warn: "▲", fail: "✘" } as const;
   for (const k of checks) {
-    console.log(`${icon[k.status]} ${k.name.padEnd(26)} ${k.detail}`);
-    if (k.status !== "ok" && k.fix) console.log(`  ↳ correção: ${k.fix}`);
+    console.log(`${icon[k.status]} ${semControle(k.name).padEnd(26)} ${semControle(k.detail)}`);
+    if (k.status !== "ok" && k.fix) console.log(`  ↳ correção: ${semControle(k.fix)}`);
   }
   const f = checks.filter((k) => k.status === "fail").length; const w = checks.filter((k) => k.status === "warn").length;
   console.log(`\n${f ? "COM FALHAS" : w ? "OK com avisos" : "TUDO OK"} — ${checks.length - f - w} ok, ${w} aviso(s), ${f} falha(s)`);
