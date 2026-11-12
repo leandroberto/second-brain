@@ -7,17 +7,23 @@ interface Conexao { api(c: string): Promise<unknown>; resto: string }
 
 let pai: { postMessage: ReturnType<typeof vi.fn> };
 let ouvintes: Ouvinte[];
+let janela: { parent: unknown; location: { hash: string }; history: { replaceState: ReturnType<typeof vi.fn> }; addEventListener: (t: string, f: Ouvinte) => void };
 const enviar = (data: unknown, source: unknown = pai) => ouvintes.forEach((f) => f({ source, data }));
 const enviados = () => pai.postMessage.mock.calls.map((c) => c[0] as { type: string; nonce?: string });
+const preparar = (hash: string) => { janela.location.hash = hash; };
 const carregar = async () => { vi.resetModules(); return await import(/* @vite-ignore */ CLIENTE) as { conectar(): Promise<Conexao> }; };
 const iso = (ms: number) => new Date(Date.now() + ms).toISOString();
-const init = (over: Record<string, unknown> = {}) => ({ type: "brain:init", token: "t1", expira: iso(12 * 3600_000), nonce: "n1", apiBase: "/api/modules/x", tema: "escuro", resto: "a/b", ...over });
+const init = (over: Record<string, unknown> = {}) => ({ type: "brain:init", token: "t1", expira: iso(12 * 3600_000), apiBase: "/api/modules/x", tema: "escuro", resto: "a/b", ...over });
 
 beforeEach(() => {
   vi.useFakeTimers();
   pai = { postMessage: vi.fn() };
   ouvintes = [];
-  vi.stubGlobal("window", { parent: pai, addEventListener: (_t: string, f: Ouvinte) => ouvintes.push(f) });
+  janela = {
+    parent: pai, location: { hash: "#n=n1&r=a%2Fb" }, addEventListener: (_t: string, f: Ouvinte) => ouvintes.push(f),
+    history: { replaceState: vi.fn((_s: unknown, _t: string, url: string) => { janela.location.hash = url; }) },
+  };
+  vi.stubGlobal("window", janela);
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -31,6 +37,26 @@ describe("brain-module-client", () => {
     enviar(init());
     expect((await a).resto).toBe("a/b");
     expect(await conectar()).toBe(await a);
+  });
+
+  it("lê o nonce do fragmento, manda no brain:pronto e tira o nonce do hash", async () => {
+    preparar("#n=abc123&r=a%2Fb%20c");
+    const { conectar } = await carregar();
+    const c = conectar();
+    expect(enviados().find((m) => m.type === "brain:pronto")).toEqual({ type: "brain:pronto", nonce: "abc123" });
+    expect(janela.location.hash).toBe("#a/b c"); // só o resto; o nonce não fica visível para o módulo
+    enviar(init({ expira: iso(10_000) }));
+    await c;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(enviados().find((m) => m.type === "brain:renovar")).toEqual({ type: "brain:renovar", nonce: "abc123" });
+  });
+
+  it("sem o fragmento (outro documento, recarga) o nonce vai vazio e o hash não muda", async () => {
+    preparar("#so-o-resto");
+    const { conectar } = await carregar();
+    void conectar();
+    expect(enviados().find((m) => m.type === "brain:pronto")).toEqual({ type: "brain:pronto", nonce: "" });
+    expect(janela.history.replaceState).not.toHaveBeenCalled();
   });
 
   it("pede a renovação com o nonce 1 h antes de expirar e só aceita token como resposta", async () => {
@@ -71,13 +97,12 @@ describe("brain-module-client", () => {
     expect(enviados().filter((m) => m.type === "brain:renovar")).toHaveLength(3);
   });
 
-  it("ignora mensagens de outra janela, init sem nonce e init repetido", async () => {
+  it("ignora mensagens de outra janela e init repetido", async () => {
     const { conectar } = await carregar();
     const c = conectar();
-    enviar(init(), {}); // outra janela
-    enviar(init({ nonce: undefined })); // sem nonce
-    enviar(init({ nonce: "n1", resto: "primeiro" }));
-    enviar(init({ nonce: "n2", resto: "segundo" })); // não troca o nonce
+    enviar(init({ resto: "da-outra-janela" }), {}); // outra janela
+    enviar(init({ resto: "primeiro" }));
+    enviar(init({ token: "t9", resto: "segundo" })); // init repetido não troca nada
     expect((await c).resto).toBe("primeiro");
     await vi.advanceTimersByTimeAsync(12 * 3600_000);
     expect(enviados().filter((m) => m.type === "brain:renovar").every((m) => m.nonce === "n1")).toBe(true);

@@ -12,12 +12,28 @@ const ANTECEDENCIA_MS = 3600_000; // pede um token novo 1 h antes de `expira`
 const MIN_ESPERA_MS = 30_000; // nunca pede com menos de 30 s de intervalo
 const SEM_EXPIRA_MS = 11 * 3600_000; // `expira` ausente ou ilegível: o token de página dura 12 h
 
+/**
+ * O SB monta o iframe com `#n=<nonce>&r=<resto codificado>`. O nonce é lido UMA vez, ao carregar este arquivo, e o hash volta
+ * a `#<resto>` (o nonce não fica em `location.hash` para o resto da página). Sem o fragmento (outro documento, recarga) o
+ * nonce é vazio e o SB recusa o `brain:pronto`.
+ */
+const NONCE = (() => {
+  try {
+    const m = /^#n=([A-Za-z0-9_-]+)&r=(.*)$/.exec(window.location.hash);
+    if (!m) return "";
+    let resto = m[2];
+    try { resto = decodeURIComponent(resto); } catch { /* mantém cru */ }
+    window.history.replaceState(null, "", "#" + resto);
+    return m[1];
+  } catch { return ""; }
+})();
+
 let conexao;
 
 /**
  * Faz o handshake com o SB (`brain:pronto` → `brain:init`) e devolve o cliente. Chame uma vez por página: chamadas repetidas
- * devolvem a mesma conexão (a mesma promessa). A renovação do token é por pedido: o `brain:init` traz `nonce` e `expira`, o
- * cliente pede `brain:renovar` (com o nonce) 1 h antes de expirar e só aceita um `brain:token` enquanto espera a resposta; o
+ * devolvem a mesma conexão (a mesma promessa). O `brain:pronto` leva o nonce do fragmento. A renovação do token é por pedido:
+ * o `brain:init` traz `expira`, o cliente pede `brain:renovar` (com o nonce) 1 h antes de expirar e só aceita um `brain:token` enquanto espera a resposta; o
  * SB nunca empurra token sem pedido. `brain:tema` troca o tema. Só aceita mensagens da janela pai, com `type` conhecido.
  * @returns {Promise<{ api(caminho: string, init?: RequestInit): Promise<unknown>; navegar(resto: string): void; abrirNota(id: string): void; aoMudarTema(fn: (t: "claro" | "escuro") => void): void; resto: string }>}
  */
@@ -30,7 +46,6 @@ function abrirConexao() {
   const pai = window.parent;
   let token = "";
   let apiBase = "";
-  let nonce = "";
   let tema = "escuro";
   let aguardando = false; // há um `brain:renovar` sem resposta
   let temporizador;
@@ -49,7 +64,7 @@ function abrirConexao() {
   };
   function pedirRenovacao() {
     aguardando = true;
-    avisar("brain:renovar", { nonce });
+    avisar("brain:renovar", { nonce: NONCE });
     // sem resposta (SB ocupado ou ponte cortada): pergunta de novo, sem acumular temporizadores
     clearTimeout(temporizador);
     temporizador = setTimeout(pedirRenovacao, MIN_ESPERA_MS);
@@ -67,12 +82,11 @@ function abrirConexao() {
         return;
       }
       if (d.type === "brain:tema") { if (TEMAS.has(d.tema)) aplicarTema(d.tema); return; }
-      // brain:init: uma vez por documento (o nonce desta montagem não é trocado por um init repetido)
+      // brain:init: uma vez por documento
       if (conectado) return;
-      if (typeof d.token !== "string" || !d.token || typeof d.apiBase !== "string" || typeof d.nonce !== "string" || !d.nonce) return;
+      if (typeof d.token !== "string" || !d.token || typeof d.apiBase !== "string") return;
       conectado = true;
       token = d.token;
-      nonce = d.nonce;
       if (TEMAS.has(d.tema)) aplicarTema(d.tema);
       agendar(d.expira);
       apiBase = d.apiBase.replace(/\/+$/, "");
@@ -97,6 +111,6 @@ function abrirConexao() {
         aoMudarTema(fn) { ouvintesTema.add(fn); try { fn(tema); } catch (e) { console.error(e); } },
       });
     });
-    avisar("brain:pronto", {});
+    avisar("brain:pronto", { nonce: NONCE });
   });
 }

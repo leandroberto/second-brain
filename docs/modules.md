@@ -114,7 +114,9 @@ JSON Schema (entrada de ferramenta MCP), o módulo o fornece, com `z.toJSONSchem
 
 ## Rotas e quem pode chamá-las
 
-Rotas ficam em `/api/modules/<id>/<caminho>`. O handler recebe `{ metodo, params, query, body, chamador }` e o `ctx`, e
+Rotas ficam em `/api/modules/<id>/<caminho>`. Caminho válido: um `:param` ocupa o segmento inteiro (`/itens/:id` vale; `/:a:b`
+e `/x:id` não) e o nome de um parâmetro não se repete (`/:a/:a` não). Caminho inválido deixa o módulo `falho` ("rota
+inválida: ...") e o `brain modules check` aponta o mesmo erro. O handler recebe `{ metodo, params, query, body, chamador }` e o `ctx`, e
 devolve o JSON da resposta. Erro lançado vira `500 {"error":"module_error"}` e vai para Saúde; módulo falho responde
 `503 {"error":"module_unavailable"}`. O handler não escolhe o status HTTP: o que não for sucesso volta no corpo (o `lembrete`
 devolve `{ ok: false, erro }` para um item inexistente).
@@ -193,15 +195,19 @@ aceita mensagens apenas do iframe que ele montou, com `origin === "null"`, e a p
 
 | Direção | Mensagem | Quando |
 |---|---|---|
-| página → SB | `{ type: "brain:pronto" }` | ao carregar; o SB aceita **uma vez** por montagem do iframe |
-| SB → página | `{ type: "brain:init", token, expira, nonce, apiBase, tema, resto }` | resposta ao `brain:pronto`; `nonce` é aleatório e vale só para esta montagem |
+| página → SB | `{ type: "brain:pronto", nonce }` | ao carregar; o SB só aceita com o nonce da montagem e **uma vez** |
+| SB → página | `{ type: "brain:init", token, expira, apiBase, tema, resto }` | resposta ao `brain:pronto` com o nonce certo |
 | página → SB | `{ type: "brain:renovar", nonce }` | o client pede 1 h antes de `expira` (e de novo a cada 30 s sem resposta) |
 | SB → página | `{ type: "brain:token", token, expira }` | **só** como resposta a um `brain:renovar` com o nonce certo |
 | SB → página | `{ type: "brain:tema", tema }` | o tema da UI mudou |
 | página → SB | `brain:navegar`, `brain:abrirNota`, `brain:badge` | ver acima |
 
-O second-brain nunca envia um token novo sem pedido: um documento que carregue no mesmo iframe depois (link externo,
-formulário) não tem o nonce, e a ponte é cortada no segundo `load`.
+O `nonce` é aleatório, nasce com a montagem do iframe (antes de ele existir) e vai **só no fragmento do `src`**:
+`/modules/<id>/index.html#n=<nonce>&r=<resto codificado>`. O client lê o fragmento ao carregar e reescreve o hash para
+`#<resto>`; quem não usa o client faz o mesmo. Um documento para onde o iframe navegue não tem o fragmento original, então não
+consegue o `brain:init` nem renovar. O second-brain nunca envia um token novo sem pedido, atende um `brain:renovar` por vez e
+no máximo um a cada 30 s, e mantém no máximo 20 tokens de página vivos por módulo (os mais antigos caem). A ponte também é
+cortada no segundo `load` do iframe.
 
 ## Tarefas agendadas
 

@@ -2,7 +2,7 @@
 // Funções puras: sem React, sem DOM.
 
 export type MsgModulo =
-  | { type: "brain:pronto" }
+  | { type: "brain:pronto"; nonce: string }
   | { type: "brain:navegar"; resto: string }
   | { type: "brain:abrirNota"; id: string }
   | { type: "brain:badge"; n: number }
@@ -19,6 +19,11 @@ const idNotaValido = (id: string): boolean => /^[a-z0-9][a-z0-9-]{1,118}[a-z0-9]
 export const restoValido = (s: unknown): s is string =>
   typeof s === "string" && s.length <= 500 && !s.includes("..") && !s.includes(":") && !s.includes("\\") && !s.startsWith("/");
 
+const nonceValido = (n: unknown): n is string => typeof n === "string" && n.length > 0 && n.length <= 128;
+
+/** Fragmento do `src` do iframe: `#n=<nonce>&r=<resto codificado>`. O client lê o nonce e reescreve o hash como `#<resto>`. */
+export const fragmentoDaAba = (nonce: string, resto: string): string => `#n=${nonce}&r=${encodeURIComponent(resto)}`;
+
 /**
  * Valida uma mensagem vinda do iframe. Só vale `origin === "null"` (origem opaca do sandbox) vinda exatamente da
  * janela do iframe que o SB montou; qualquer outra coisa é ignorada.
@@ -30,17 +35,17 @@ export function parseMensagemDoModulo(ev: { origin: string; source: unknown; dat
   if (typeof d !== "object" || d === null) return undefined;
   const m = d as Record<string, unknown>;
   switch (m.type) {
-    case "brain:pronto": return { type: "brain:pronto" };
+    case "brain:pronto": return nonceValido(m.nonce) ? { type: "brain:pronto", nonce: m.nonce } : undefined;
     case "brain:navegar": return restoValido(m.resto) ? { type: "brain:navegar", resto: m.resto } : undefined;
     case "brain:abrirNota": return typeof m.id === "string" && idNotaValido(m.id) ? { type: "brain:abrirNota", id: m.id } : undefined;
-    case "brain:renovar": return typeof m.nonce === "string" && m.nonce.length > 0 && m.nonce.length <= 128 ? { type: "brain:renovar", nonce: m.nonce } : undefined;
+    case "brain:renovar": return nonceValido(m.nonce) ? { type: "brain:renovar", nonce: m.nonce } : undefined;
     case "brain:badge": return typeof m.n === "number" && Number.isInteger(m.n) && m.n >= 0 ? { type: "brain:badge", n: m.n } : undefined;
     default: return undefined;
   }
 }
 
-/** `expira` (ISO) é de `token`; `nonce` vale só para esta montagem e autoriza os pedidos `brain:renovar` dela. */
-export const mensagemInit = (token: string, expira: string, nonce: string, tema: Tema, resto: string, apiBase: string) => ({ type: "brain:init" as const, token, expira, nonce, apiBase, tema, resto });
+/** `expira` (ISO) é de `token`. O nonce não vai aqui: o client já o tem, do fragmento do `src`. */
+export const mensagemInit = (token: string, expira: string, tema: Tema, resto: string, apiBase: string) => ({ type: "brain:init" as const, token, expira, apiBase, tema, resto });
 /** Resposta a um `brain:renovar` válido: o SB nunca envia token sem esse pedido. */
 export const mensagemToken = (token: string, expira: string) => ({ type: "brain:token" as const, token, expira });
 export const mensagemTema = (tema: Tema) => ({ type: "brain:tema" as const, tema });
@@ -77,24 +82,37 @@ export function criarControleRemontagem(restoInicial: string) {
 
 const nonceAleatorio = (): string => Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
 
+/** Intervalo mínimo entre duas emissões de token por `brain:renovar` (o client pede 1 h antes de expirar). */
+export const MIN_ENTRE_RENOVACOES_MS = 30_000;
+
 /**
- * Controle da ponte de UM iframe montado (defesa em profundidade). O token só vai para o documento da aba que o SB carregou,
- * e a renovação é por pedido (pull) com nonce:
- * - `brain:pronto` é aceito uma única vez por montagem (outro documento no mesmo iframe pediria o token de novo) e gera o
- *   nonce, que só vai no `brain:init` desse documento;
- * - `brain:renovar` só é atendido com esse nonce e enquanto a ponte não foi cortada: o SB nunca empurra token sem pedido;
+ * Controle da ponte de UM iframe montado (defesa em profundidade). O nonce nasce com a montagem, ANTES do iframe, e vai só no
+ * fragmento do `src` congelado: um documento para onde o iframe navegue não o tem.
+ * - `brain:pronto` só é aceito com esse nonce e uma única vez por montagem; só então o token vai (`brain:init`);
+ * - `brain:renovar` só é atendido com o mesmo nonce, depois do pronto, com a ponte viva, um pedido por vez e a pelo menos
+ *   `MIN_ENTRE_RENOVACOES_MS` da última emissão: o SB nunca empurra token sem pedido;
  * - o primeiro `load` é o da aba; um segundo `load` significa que o iframe navegou para outro documento (link externo, form,
  *   `location = ...`), e a partir daí nada mais é enviado (nem renovação de token). O SB então remonta ou mostra erro.
  */
 export function criarControlePonte(gerarNonce: () => string = nonceAleatorio) {
-  let cargas = 0; let nonce: string | undefined; let cortada = false;
+  const nonce = gerarNonce();
+  let cargas = 0; let prontoAceito = false; let cortada = false;
+  let emAndamento = false; let ultimaEmissao = -Infinity;
   return {
+    nonce,
     /** Evento `load` do iframe: `false` quando é uma navegação para outro documento (a credencial foi cortada). */
     aoCarregar(): boolean { cargas++; if (cargas > 1) cortada = true; return !cortada; },
-    /** `brain:pronto`: o nonce só na primeira vez e enquanto a ponte não foi cortada (então envie `brain:init` com ele). */
-    aoPronto(): string | undefined { if (cortada || nonce !== undefined) return undefined; nonce = gerarNonce(); return nonce; },
-    /** `brain:renovar`: `true` só com o nonce desta montagem e a ponte viva (reconfira depois de qualquer espera). */
-    aoRenovar(n: string): boolean { return !cortada && nonce !== undefined && n === nonce; },
+    /** `brain:pronto` com o nonce: `true` só na primeira vez, com o nonce certo e a ponte não cortada (então envie `brain:init`). */
+    aoPronto(n: string): boolean { if (cortada || prontoAceito || n !== nonce) return false; prontoAceito = true; return true; },
+    /** `brain:renovar`: `true` só com o nonce desta montagem, depois do pronto e a ponte viva (reconfira depois de qualquer espera). */
+    aoRenovar(n: string): boolean { return !cortada && prontoAceito && n === nonce; },
+    /** Início de uma renovação: além de `aoRenovar`, um pedido por vez e a `MIN_ENTRE_RENOVACOES_MS` da última emissão. */
+    iniciarRenovacao(n: string, agora: number = Date.now()): boolean {
+      if (!this.aoRenovar(n) || emAndamento || agora - ultimaEmissao < MIN_ENTRE_RENOVACOES_MS) return false;
+      emAndamento = true; return true;
+    },
+    /** Fim da renovação iniciada; `emitiu` marca o instante da emissão. */
+    concluirRenovacao(emitiu: boolean, agora: number = Date.now()): void { emAndamento = false; if (emitiu) ultimaEmissao = agora; },
     /** Ainda pode mandar mensagens (token, tema) para o iframe. */
     podeEnviar(): boolean { return !cortada; },
   };

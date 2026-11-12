@@ -73,11 +73,14 @@ A CSP completa do estático da aba é:
 `form-action 'self'` impede que um formulário da aba envie dados para fora. Como defesa em profundidade, a UI aceita
 `brain:pronto` uma única vez por montagem do iframe e, se o iframe carregar um segundo documento (link externo, formulário,
 `location = ...`), para de enviar o token, tira o iframe da tela e oferece recarregar a aba. A renovação do token é por
-pedido (pull) com nonce: o `brain:init` traz um `nonce` aleatório por montagem e a data de `expira`; a página pede
-`{ type: "brain:renovar", nonce }` (o client, 1 h antes de expirar) e o second-brain só responde com `brain:token` se o nonce
-bater e a ponte ainda estiver viva. O second-brain nunca empurra token sem pedido (as mensagens vão com `"*"` por causa da
-origem opaca, então só quem tem o nonce recebe um token novo). O iframe segue com `sandbox="allow-scripts allow-forms"` e o
-second-brain só aceita mensagens com `origin === "null"` vindas de `iframe.contentWindow`.
+pedido (pull) com nonce: o SB gera um nonce aleatório ao montar o iframe, antes de ele existir, e o põe só no fragmento do
+`src` (`#n=<nonce>&r=<resto>`); o client o lê ao carregar, reescreve o hash para `#<resto>` e o envia no `brain:pronto`,
+que o SB só aceita com esse nonce. O `brain:init` traz `token` e `expira`; a página renova com `{ type: "brain:renovar", nonce }`
+(o client, 1 h antes de expirar) e o second-brain só responde com `brain:token` se o nonce bater e a ponte ainda estiver
+viva, um pedido por vez e no máximo um a cada 30 s. Um documento que entre no iframe antes do legítimo (ou depois de uma
+navegação) não tem o nonce e não recebe token. O second-brain nunca empurra token sem pedido, e mantém no máximo 20 tokens de
+página vivos por módulo. O iframe segue com `sandbox="allow-scripts allow-forms"` e o second-brain só aceita mensagens com
+`origin === "null"` vindas de `iframe.contentWindow`.
 
 ### Tarefas agendadas
 
