@@ -58,10 +58,11 @@ export interface ReqGerenciar {
 }
 
 /**
- * Rotas `/api/modules/_gerenciar/*` (spec de gerenciar módulos §7.2, §7.3): adicionar, configurar, ligar/desligar, remover e
- * reiniciar. Tickets e o contador de conferências ficam em memória deste processo (reiniciar invalida os tickets); os erros de
- * frase-senha ficam num arquivo do estado (o limite sobrevive ao reinício). Toda gravação passa por `Brain.setModuleEntry` com
- * um atualizador (lido dentro do lock, auditoria `config_update`); nada aqui toca a pasta ou o estado do módulo.
+ * Rotas `/api/modules/_gerenciar/*` (spec de gerenciar módulos §7.2, §7.3): adicionar, configurar, ligar/desligar, remover,
+ * reiniciar e o estado que a tela precisa (se o vault tem frase-senha). Tickets e o contador de conferências ficam em memória
+ * deste processo (reiniciar invalida os tickets); os erros de frase-senha ficam num arquivo do estado (o limite sobrevive ao
+ * reinício). Toda gravação passa por `Brain.setModuleEntry` com um atualizador (lido dentro do lock) e a ação semântica para a
+ * auditoria `config_update`; nada aqui toca a pasta ou o estado do módulo.
  */
 export class GerenciarModulos {
   private readonly tickets = new Map<string, Ticket>();
@@ -81,6 +82,8 @@ export class GerenciarModulos {
 
   private async rotear(r: ReqGerenciar): Promise<true> {
     const { metodo, sub } = r;
+    // a tela avisa, ao configurar um desligado, que a config não será validada pelo schema (com frase, só o detector de segredos)
+    if (sub === "/estado" && metodo === "GET") return responder(r.res, 200, { fraseSenha: this.modoFrase() !== "nao" });
     if (sub === "/inspecionar" && metodo === "POST") return this.inspecionar(r);
     if (sub === "/adicionar" && metodo === "POST") return this.adicionar(r);
     if (sub === "/reiniciar" && metodo === "POST") {

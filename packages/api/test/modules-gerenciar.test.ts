@@ -94,7 +94,7 @@ afterAll(async () => {
 });
 
 describe("matriz", () => {
-  it("api-token, desktop e token de página → 403 nas 6 rotas; sessão full → não 403", async () => {
+  it("api-token, desktop e token de página → 403 nas 7 rotas; sessão full → não 403", async () => {
     gravarModulos({});
     const s = await subir({ reiniciarServe: async () => {} });
     const rotas: Array<[string, string, unknown?]> = [
@@ -104,6 +104,7 @@ describe("matriz", () => {
       ["PUT", `${G}/fantasma`, { enabled: false }],
       ["DELETE", `${G}/fantasma`],
       ["POST", `${G}/reiniciar`, {}],
+      ["GET", `${G}/estado`],
     ];
     for (const [m, p, b] of rotas) {
       for (const t of [s.api.token, s.desk, s.pagina]) expect([m, p, (await call(s.api, t, m, p, b)).status]).toEqual([m, p, 403]);
@@ -183,6 +184,13 @@ describe("inspecionar e frase-senha", () => {
     expect(modulosEmDisco().lembrete?.config).toEqual({ horario: "09:00" });
     expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: false })).status).toBe(200);
     expect(modulosEmDisco().lembrete?.enabled).toBe(false);
+  });
+
+  it("estado: diz à tela se o vault tem (ou exige) a frase-senha", async () => {
+    const sem = await subir();
+    expect(await (await call(sem.api, sem.ui, "GET", `${G}/estado`)).json()).toEqual({ fraseSenha: false });
+    const com = await subir({ frase: FRASE });
+    expect(await (await call(com.api, com.ui, "GET", `${G}/estado`)).json()).toEqual({ fraseSenha: true });
   });
 
   it("limite de tentativas da frase-senha: 5 erradas → a 6ª (mesmo certa) → 429 até a janela passar", async () => {
