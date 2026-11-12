@@ -726,6 +726,27 @@ describe("rotas do core", () => {
     expect(brain.config.embeddings.api_key_hosts).toEqual(["api.openai.com"]);
   });
 
+  it("settings: valor de tipo errado ou corpo que não é objeto → 400 com o campo, sem ecoar o valor e sem gravar nada", async () => {
+    const s = await subir();
+    const cru = (corpo: string) => fetch(s.api.url + "/api/settings", { method: "PUT", headers: { authorization: `Bearer ${s.ui}`, "content-type": "application/json" }, body: corpo });
+    const antes = readFileSync(brain.vault.configPath, "utf8");
+    for (const [corpo, campo] of [
+      ['{"git":{"auto_commit":"valor-eco-1"}}', "git.auto_commit"],
+      ['{"governance":{"stale_days":"valor-eco-2"}}', "governance.stale_days"],
+      ['{"embeddings":{"provider":"valor-eco-3"}}', "embeddings.provider"],
+      ['{"agents":{"commit_policy":"valor-eco-4"}}', "agents.commit_policy"],
+      ['{"vault_name":["valor-eco-5"]}', "vault_name"],
+      ["null", undefined], ["[]", undefined], ['"valor-eco-6"', undefined], ["7", undefined],
+    ] as const) {
+      const r = await cru(corpo);
+      const j = await r.json() as { error: string; message: string };
+      expect([corpo, r.status, j.error]).toEqual([corpo, 400, "invalid"]);
+      if (campo) expect([corpo, j.message]).toEqual([corpo, expect.stringContaining(campo)]);
+      expect([corpo, j.message]).toEqual([corpo, expect.not.stringContaining("valor-eco")]);
+      expect([corpo, readFileSync(brain.vault.configPath, "utf8")]).toEqual([corpo, antes]);
+    }
+  });
+
   it("settings: toda gravação atual da tela de Configurações continua 200", async () => {
     const s = await subir();
     const c = brain.config;

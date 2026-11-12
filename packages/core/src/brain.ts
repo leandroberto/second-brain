@@ -841,8 +841,12 @@ export class Brain {
   async updateConfig(patch: Record<string, unknown>, who: Principal): Promise<BrainConfig> {
     const actor = authorize(who, "admin", { config: this.config });
     return this.write(async () => {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new BrainError("invalid", "a configuração deve ser um objeto");
       const merged = deepMerge(this.config as unknown as Record<string, unknown>, patch);
-      const next = ConfigSchema.parse(merged);
+      const r = ConfigSchema.safeParse(merged);
+      // o campo e o tipo esperado, nunca o valor recebido (a mensagem volta para a UI)
+      if (!r.success) throw new BrainError("invalid", `configuração inválida: ${r.error.issues.slice(0, 3).map((i) => `${i.path.join(".") || "(raiz)"}: ${i.message}`).join("; ")}`);
+      const next = r.data;
       writeFileSync(this.vault.configPath, dumpConfig(next), "utf8");
       const providerChanged = JSON.stringify(next.embeddings) !== JSON.stringify(this.config.embeddings);
       this.config = next;

@@ -223,10 +223,11 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   r("PUT", "/api/settings", async ({ brain, body, actor }) => {
     // só as chaves (e subchaves) que a tela de Configurações grava. Os módulos vão pelo gerenciamento (frase-senha, conferência), a frase-senha
     // só no terminal, e o resto (`embeddings.api_key_env`, `assistant.claude_path`, `state.external`, `limits`...) não se altera pela sessão do navegador
-    const chaves = body && typeof body === "object" ? Object.keys(body) : [];
+    if (!objetoSimples(body)) throw new BrainError("invalid", "o corpo deve ser um objeto JSON");
+    const chaves = Object.keys(body);
     if (chaves.includes("modules")) throw new BrainError("forbidden", "use Configurações › Módulos");
     if (chaves.includes("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
-    conferirSettingsDaUi(body ?? {});
+    conferirSettingsDaUi(body);
     return { config: await brain.updateConfig(body, actor) };
   });
   // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana). A

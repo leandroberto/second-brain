@@ -446,6 +446,8 @@ novo."
   Configurações › Módulos", `review` 403 apontando para `brain admin passphrase`, e qualquer outra chave ou subchave
   (`embeddings.api_key_env`, `embeddings.api_key_hosts`, `embeddings.dimensions`, `assistant.claude_path`, `state.external`, `limits`...) 403 "esta
   configuração não se altera pela UI; use o config.yaml", sem gravar nada. Nada disso pode ser contornado pela sessão do navegador.
+  Valor de tipo errado (`git.auto_commit: "sim"`) ou corpo que não é objeto responde 400 `invalid` com o campo e o tipo
+  esperado (sem ecoar o valor), também sem gravar nada.
 - Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
   `restringir_host` ou `remover`. Numa atualização que muda mais de uma coisa (ligar com config nova, restringir ao host
   junto com a config), o `detail` guarda também `config: true` quando a config mudou e `host: "definido"` ou `"removido"`
