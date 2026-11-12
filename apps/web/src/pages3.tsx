@@ -7,7 +7,7 @@ interface Settings {
   vault: string; embedder: { id: string; external: boolean };
 }
 interface Check { id: string; name: string; status: "ok" | "warn" | "fail"; detail: string; fix?: string }
-interface Health { vault: string; git: { repo: boolean; head?: string; dirty_files: number; auto_commit: boolean }; index: { notes: number }; embeddings: { provider: string; external: boolean; covered: number; total: number }; problems: { notes_with_issues: number; dangling_links: number; duplicate_ids: number; sync_conflict_copies?: number }; pending_proposals: number; ok: boolean }
+interface Health { vault: string; git: { repo: boolean; head?: string; dirty_files: number; auto_commit: boolean }; index: { notes: number }; embeddings: { provider: string; external: boolean; covered: number; total: number; aviso?: string }; problems: { notes_with_issues: number; dangling_links: number; duplicate_ids: number; sync_conflict_copies?: number }; pending_proposals: number; ok: boolean }
 
 export function SettingsPage() {
   const { data: s, error, reload } = useData<Settings>("/api/settings");
@@ -28,7 +28,7 @@ export function SettingsPage() {
         <div className="grid">
           <section className="card"><h2>Saúde</h2>
             {h && <dl className="kv"><dt>Git</dt><dd>{h.git.repo ? <span className="badge ok">ok · {h.git.head}</span> : <span className="badge danger">sem repositório</span>} {h.git.dirty_files > 0 && <span className="badge warn">{h.git.dirty_files} arquivo(s) não commitado(s)</span>}</dd>
-              <dt>Índice</dt><dd>{h.index.notes} notas (SQLite, reconstruível)</dd><dt>Embeddings</dt><dd>{h.embeddings.provider} · {h.embeddings.covered}/{h.embeddings.total} {h.embeddings.external ? <span className="badge warn">externo</span> : <span className="badge ok">local</span>}</dd>
+              <dt>Índice</dt><dd>{h.index.notes} notas (SQLite, reconstruível)</dd><dt>Embeddings</dt><dd>{h.embeddings.provider} · {h.embeddings.covered}/{h.embeddings.total} {h.embeddings.external ? <span className="badge warn">externo</span> : <span className="badge ok">local</span>}{h.embeddings.aviso && <div className="small" role="status"><span className="badge warn">aviso</span> {h.embeddings.aviso}</div>}</dd>
               <dt>Problemas</dt><dd>{h.problems.notes_with_issues + h.problems.dangling_links + h.problems.duplicate_ids + (h.problems.sync_conflict_copies ?? 0) === 0 ? "nenhum" : `${h.problems.notes_with_issues} notas · ${h.problems.dangling_links} links quebrados · ${h.problems.duplicate_ids} ids duplicados${h.problems.sync_conflict_copies ? ` · ${h.problems.sync_conflict_copies} cópia(s) de conflito do OneDrive` : ""}`}</dd></dl>}
             <div className="actions"><button className="btn" disabled={!!busy} onClick={() => run("Reindexar", "/api/reindex")}>Reindexar tudo</button>
               <button className="btn" disabled={!!busy || !dirty?.length} onClick={() => run("Commit", "/api/git/commit", {})}>Commitar edições manuais{dirty?.length ? ` (${dirty.length})` : ""}</button></div>
@@ -43,7 +43,7 @@ export function SettingsPage() {
             {c.embeddings.provider === "openai-compatible" && <>
               <div className="field"><label htmlFor="bu">Base URL</label><input id="bu" defaultValue={c.embeddings.base_url} onBlur={(e) => e.target.value !== c.embeddings.base_url && patch({ embeddings: { base_url: e.target.value } })} /></div>
               <div className="field"><label htmlFor="md">Modelo</label><input id="md" defaultValue={c.embeddings.model} onBlur={(e) => e.target.value !== c.embeddings.model && patch({ embeddings: { model: e.target.value } })} /></div>
-              <div className="switch"><div><b>Permitir envio a servidor externo</b><div className="muted small">Envia título+corpo das notas (nunca segredos) para {c.embeddings.base_url}. Chave lida da variável {c.embeddings.api_key_env}. Localhost dispensa opt-in.</div></div><input type="checkbox" checked={c.embeddings.external_opt_in} onChange={(e) => patch({ embeddings: { external_opt_in: e.target.checked } })} aria-label="Opt-in embeddings externos" /></div></>}
+              <div className="switch"><div><b>Permitir envio a servidor externo</b><div className="muted small">Envia título+corpo das notas (nunca segredos) para {c.embeddings.base_url}. Chave lida da variável {c.embeddings.api_key_env}. Localhost dispensa opt-in.</div><div className="muted small">A chave só é enviada para servidores listados em embeddings.api_key_hosts no config.yaml.</div></div><input type="checkbox" checked={c.embeddings.external_opt_in} onChange={(e) => patch({ embeddings: { external_opt_in: e.target.checked } })} aria-label="Opt-in embeddings externos" /></div></>}
             <p className="small muted">Sem embeddings a busca continua funcionando por texto completo (FTS5). Provider atual: <code>{s.embedder.id}</code>.</p></section>
         </div>
         <div className="grid">

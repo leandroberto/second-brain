@@ -40,29 +40,56 @@ export class HashEmbedder implements EmbeddingProvider {
   }
 }
 
+const LOOPBACK = ["localhost", "127.0.0.1", "[::1]", "::1"];
+
 /** true somente para loopback EXATO (sem credenciais na URL). "localhost.evil.com" NÃO é local. */
 export function isLocalUrl(u: string): boolean {
   try {
     const x = new URL(u);
     if (x.username || x.password) return false;
     if (x.protocol !== "http:" && x.protocol !== "https:") return false;
-    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(x.hostname);
+    return LOOPBACK.includes(x.hostname);
   } catch { return false; }
+}
+
+/** Se a chave de embeddings pode ir para `baseUrl` e, quando não, o host e o motivo (para o aviso do doctor). */
+export type ChaveDeEmbeddings = { envia: true } | { envia: false; host: string; motivo: "fora_da_lista" | "sem_https" };
+
+/**
+ * A chave só vai para um host de `hosts` (`embeddings.api_key_hosts`, editável só no config.yaml): hostname exato, em minúsculas,
+ * sem curinga (a porta não entra na comparação) e com https, exceto no loopback. URL inválida, com credencial embutida ou de
+ * outro protocolo nunca recebe a chave. Sem isso, quem troca `base_url` pela UI levaria a chave a um servidor qualquer.
+ */
+export function chaveDeEmbeddings(baseUrl: string, hosts: readonly string[]): ChaveDeEmbeddings {
+  let x: URL;
+  try { x = new URL(baseUrl); } catch { return { envia: false, host: baseUrl, motivo: "fora_da_lista" }; }
+  const host = x.hostname.toLowerCase();
+  const autorizados = new Set(hosts.map((h) => h.trim().toLowerCase()));
+  // o IPv6 vem entre colchetes no `hostname`: "::1" na lista vale para "[::1]"
+  const naLista = autorizados.has(host) || (host.startsWith("[") && autorizados.has(host.slice(1, -1)));
+  if (!naLista || x.username || x.password || (x.protocol !== "https:" && x.protocol !== "http:")) return { envia: false, host, motivo: "fora_da_lista" };
+  if (x.protocol === "http:" && !LOOPBACK.includes(host)) return { envia: false, host, motivo: "sem_https" };
+  return { envia: true };
 }
 
 /** Endpoint compatível com OpenAI /v1/embeddings (OpenAI, Ollama, LM Studio, vLLM...). Opt-in. */
 export class OpenAICompatibleEmbedder implements EmbeddingProvider {
   readonly id: string;
   readonly external: boolean;
-  constructor(private o: { baseUrl: string; model: string; apiKey?: string; dim: number }) {
+  private readonly o: { baseUrl: string; model: string; dim: number };
+  /** a credencial só fica guardada se `apiKeyHosts` autoriza o host de `baseUrl` (ver `chaveDeEmbeddings`) */
+  private readonly apiKey: string | undefined;
+  constructor({ apiKey, apiKeyHosts, ...o }: { baseUrl: string; model: string; apiKey?: string; apiKeyHosts: readonly string[]; dim: number }) {
+    this.o = o;
     this.id = `oa:${o.model}`;
     this.external = !isLocalUrl(o.baseUrl);
+    this.apiKey = chaveDeEmbeddings(o.baseUrl, apiKeyHosts).envia ? apiKey : undefined;
   }
   get dim() { return this.o.dim; }
   async embed(texts: string[]): Promise<Float32Array[]> {
     const res = await fetch(`${this.o.baseUrl.replace(/\/$/, "")}/embeddings`, {
       method: "POST",
-      headers: { "content-type": "application/json", ...(this.o.apiKey ? { authorization: `Bearer ${this.o.apiKey}` } : {}) },
+      headers: { "content-type": "application/json", ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
       body: JSON.stringify({ model: this.o.model, input: texts.map((t) => t.slice(0, 8000)) }),
       signal: AbortSignal.timeout(30_000), redirect: "error",
     });

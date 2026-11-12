@@ -373,7 +373,8 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
 /**
  * O que `PUT /api/settings` aceita: as chaves e, nas seções, as subchaves que a tela de Configurações grava (lista de permitidas,
  * não de proibidas; `null` = valor simples). Sem a lista por subchave, `embeddings.api_key_env` + `base_url` fariam o embedder
- * mandar qualquer variável de ambiente como credencial a um servidor escolhido pela sessão do navegador.
+ * mandar qualquer variável de ambiente como credencial a um servidor escolhido pela sessão do navegador. `embeddings.api_key_hosts`
+ * (os hosts que recebem a chave) fica fora pelo mesmo motivo: com ele, `base_url` + `external_opt_in` levariam a chave a qualquer host.
  */
 const SETTINGS_DA_UI = new Map<string, ReadonlySet<string> | null>([
   ["vault_name", null],

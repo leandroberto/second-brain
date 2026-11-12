@@ -12,7 +12,9 @@ export const ConfigSchema = z.object({
     model: z.string().default("text-embedding-3-small"),
     dimensions: z.number().int().positive().default(1536),
     api_key_env: z.string().default("OPENAI_API_KEY"),
-  }).default({ provider: "hash", external_opt_in: false, base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", dimensions: 1536, api_key_env: "OPENAI_API_KEY" }),
+    /** hosts (hostname exato) que recebem a chave de `api_key_env`; só se altera no config.yaml, nunca pela UI */
+    api_key_hosts: z.array(z.string()).default(["api.openai.com"]),
+  }).default({ provider: "hash", external_opt_in: false, base_url: "https://api.openai.com/v1", model: "text-embedding-3-small", dimensions: 1536, api_key_env: "OPENAI_API_KEY", api_key_hosts: ["api.openai.com"] }),
   governance: z.object({
     duplicate_threshold: z.number().default(0.78),
     candidate_threshold: z.number().default(0.42),

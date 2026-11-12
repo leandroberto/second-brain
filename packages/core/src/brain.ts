@@ -13,7 +13,7 @@ import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
 import { ConfigSchema, dumpConfig, loadConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
 import { MODULE_ID_RE } from "./modules/identity.js";
 import { IndexDb } from "./db.js";
-import { HashEmbedder, OpenAICompatibleEmbedder, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
+import { HashEmbedder, OpenAICompatibleEmbedder, chaveDeEmbeddings, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
 import { VaultGit } from "./git.js";
 import { CAPTURE_ID, CaptureLog } from "./assistant/captures.js";
 import { classify, mergeUpdate } from "./governance.js";
@@ -126,9 +126,20 @@ export class Brain {
         console.error("[brain] embeddings externos sem external_opt_in=true; usando provider local 'hash'");
         return new HashEmbedder();
       }
-      return new OpenAICompatibleEmbedder({ baseUrl: e.base_url, model: e.model, dim: e.dimensions, apiKey: process.env[e.api_key_env] });
+      // a chave só sai para os hosts de `api_key_hosts` (o embedder confere): fora deles roda sem credencial
+      return new OpenAICompatibleEmbedder({ baseUrl: e.base_url, model: e.model, dim: e.dimensions, apiKey: process.env[e.api_key_env], apiKeyHosts: e.api_key_hosts });
     }
     return new HashEmbedder();
+  }
+
+  /** Aviso (sem o valor) quando há chave definida em `api_key_env` e o embedder em uso não a envia ao host de `base_url`. */
+  private avisoDaChaveDeEmbeddings(): string | undefined {
+    const e = this.config.embeddings;
+    if (!(this._embedder instanceof OpenAICompatibleEmbedder) || !process.env[e.api_key_env]) return undefined;
+    const c = chaveDeEmbeddings(e.base_url, e.api_key_hosts);
+    if (c.envia) return undefined;
+    return c.motivo === "sem_https" ? `a chave de embeddings não é enviada para ${c.host}: use https em embeddings.base_url`
+      : `a chave de embeddings não é enviada para ${c.host}: adicione-o em embeddings.api_key_hosts no .brain/config.yaml`;
   }
   get embedder(): EmbeddingProvider { return this._embedder; }
 
@@ -994,10 +1005,11 @@ export class Brain {
     const repo = await this.git.isRepo();
     const dirty = repo ? await this.git.dirty("knowledge") : [];
     const conflictCopies = this.syncConflictCopies();
+    const avisoDaChave = this.avisoDaChaveDeEmbeddings();
     return {
       vault: this.vault.root, git: { repo, head: repo ? await this.git.head() : undefined, dirty_files: dirty.length, auto_commit: this.config.git.auto_commit },
       index: { notes: total, db: this.vault.dbPath, schema: this.db.getMeta("schema_version") },
-      embeddings: { provider: this._embedder.id, external: this._embedder.external, covered: withEmb, total, ok: withEmb >= total },
+      embeddings: { provider: this._embedder.id, external: this._embedder.external, covered: withEmb, total, ok: withEmb >= total, ...(avisoDaChave ? { aviso: avisoDaChave } : {}) },
       search: { fts5: true, semantic: withEmb > 0 },
       problems: { notes_with_issues: issues.length, dangling_links: dangling.length, duplicate_ids: dupes.length, sync_conflict_copies: conflictCopies.length },
       details: { issues: issues.slice(0, 50), dangling: dangling.slice(0, 50), duplicate_ids: dupes, sync_conflict_copies: conflictCopies.slice(0, 50) },

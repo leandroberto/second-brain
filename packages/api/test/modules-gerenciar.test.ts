@@ -690,7 +690,7 @@ describe("rotas do core", () => {
     }
   });
 
-  it("settings: a lista de permitidas vale por subchave (api_key_env, dimensions, __proto__... → 403 sem gravar nada)", async () => {
+  it("settings: a lista de permitidas vale por subchave (api_key_env, api_key_hosts, dimensions, __proto__... → 403 sem gravar nada)", async () => {
     const s = await subir();
     // corpo cru: `__proto__` num literal de objeto não vira chave própria, num JSON recebido vira
     const cru = (corpo: string) => fetch(s.api.url + "/api/settings", { method: "PUT", headers: { authorization: `Bearer ${s.ui}`, "content-type": "application/json" }, body: corpo });
@@ -698,6 +698,9 @@ describe("rotas do core", () => {
     for (const corpo of [
       '{"embeddings":{"api_key_env":"QUALQUER_VAR"}}',
       '{"embeddings":{"provider":"openai-compatible","base_url":"https://externo.example","external_opt_in":true,"api_key_env":"QUALQUER_VAR"}}',
+      // a lista de hosts que recebem a chave só se altera no config.yaml
+      '{"embeddings":{"api_key_hosts":["externo.example"]}}',
+      '{"embeddings":{"provider":"openai-compatible","base_url":"https://externo.example","external_opt_in":true,"api_key_hosts":["externo.example"]}}',
       '{"embeddings":{"dimensions":3}}',
       '{"embeddings":{"__proto__":{"api_key_env":"QUALQUER_VAR"}}}',
       '{"embeddings":{"constructor":{"prototype":{"x":1}}}}',
@@ -720,6 +723,7 @@ describe("rotas do core", () => {
     expect(ruim.status).toBe(400);
     expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
     expect(brain.config.embeddings.api_key_env).toBe("OPENAI_API_KEY");
+    expect(brain.config.embeddings.api_key_hosts).toEqual(["api.openai.com"]);
   });
 
   it("settings: toda gravação atual da tela de Configurações continua 200", async () => {

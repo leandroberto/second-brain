@@ -444,7 +444,7 @@ novo."
   `agents.{commit_policy, per_type, can_link}` (`per_type` só com tipos conhecidos e `review` ou `auto`),
   `governance.{duplicate_threshold, candidate_threshold, stale_days}` e `retention.activity_days`. `modules` recebe 403 "use
   Configurações › Módulos", `review` 403 apontando para `brain admin passphrase`, e qualquer outra chave ou subchave
-  (`embeddings.api_key_env`, `embeddings.dimensions`, `assistant.claude_path`, `state.external`, `limits`...) 403 "esta
+  (`embeddings.api_key_env`, `embeddings.api_key_hosts`, `embeddings.dimensions`, `assistant.claude_path`, `state.external`, `limits`...) 403 "esta
   configuração não se altera pela UI; use o config.yaml", sem gravar nada. Nada disso pode ser contornado pela sessão do navegador.
 - Cada mudança fica na auditoria (`config_update`) com o módulo e a ação: `adicionar`, `ligar`, `desligar`, `configurar`,
   `restringir_host` ou `remover`. Numa atualização que muda mais de uma coisa (ligar com config nova, restringir ao host
