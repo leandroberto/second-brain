@@ -706,6 +706,71 @@ describe("conferência em processo filho", () => {
     } finally { rmSync(d, { recursive: true, force: true }); }
   });
 
+  /** Pasta de módulo temporária com `index.js` = `codigo` (e um `export default` válido, salvo se o código trouxer o seu). */
+  const modulo = (nome: string, codigo: string, def = `export default { sdk: 1, id: "${nome}", nome: "${nome}", versao: "0.1.0" };`) => {
+    const d = mkdtempSync(join(tmpdir(), `brain-conferir-${nome}-`));
+    writeFileSync(join(d, "package.json"), JSON.stringify({ name: nome, version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+    writeFileSync(join(d, "index.js"), `${codigo}\n${def}`);
+    return d;
+  };
+
+  it("módulo com handle aberto no import (setInterval): o resultado sai bem antes do limite", async () => {
+    const d = modulo("aberto", "setInterval(() => {}, 1000);");
+    try {
+      const inicio = Date.now();
+      const r = await conferirEmProcessoFilho(d, undefined, { bin: BIN, timeoutMs: 20_000 });
+      expect(r).toMatchObject({ ok: true, resumo: { id: "aberto" } });
+      expect(Date.now() - inicio).toBeLessThan(10_000);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("linha JSON forjada pelo módulo depois do resultado não engana", async () => {
+    // sdk 2: o resultado real é ok:false; o módulo acrescenta uma linha "ok" depois de cada escrita do stdout
+    const d = modulo("forja", `const w = process.stdout.write.bind(process.stdout);
+process.stdout.write = (c, ...r) => { const x = w(c, ...r); if (String(c).includes('"causas"')) w('{"ok":true,"causas":[],"resumo":{"id":"forja"}}\\n'); return x; };`,
+    'export default { sdk: 2, id: "forja", nome: "Forja", versao: "0.1.0" };');
+    try {
+      const r = await conferirEmProcessoFilho(d, undefined, { bin: BIN });
+      expect(r.ok).toBe(false);
+      expect(r.causas.join(" ")).toContain("sdk");
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("resultado marcado com forma inválida (erros não-array) → ok:false, sem lançar", async () => {
+    // o módulo reescreve a própria linha marcada (está no mesmo processo): a forma é validada
+    const d = modulo("torto", `const w = process.stdout.write.bind(process.stdout);
+process.stdout.write = (c, ...r) => { const s = String(c); const i = s.indexOf(" "); return s.startsWith("brain-check-") ? w(s.slice(0, i) + ' {"ok":true,"causas":[],"config":{"ok":false,"erros":"x"}}\\n', ...r) : w(c, ...r); };`);
+    try {
+      const r = await conferirEmProcessoFilho(d, {}, { bin: BIN });
+      expect(r.ok).toBe(false);
+      expect(r.causas).toEqual(["a conferência devolveu um resultado inválido"]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  it("o marcador não fica no ambiente que o módulo vê", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-marca-"));
+    const saida = join(d, "env.json");
+    const m = modulo("marca", `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(saida)}, JSON.stringify(process.env));`);
+    try {
+      expect((await conferirEmProcessoFilho(m, undefined, { bin: BIN })).ok).toBe(true);
+      expect(JSON.parse(readFileSync(saida, "utf8")).BRAIN_CHECK_MARCADOR).toBeUndefined();
+    } finally { rmSync(d, { recursive: true, force: true }); rmSync(m, { recursive: true, force: true }); }
+  });
+
+  it("processo que o módulo cria no import morre com a conferência", async () => {
+    const d = mkdtempSync(join(tmpdir(), "brain-conferir-neto-"));
+    const arqPid = join(d, "pid");
+    const m = modulo("neto", `import { spawn } from "node:child_process"; import { writeFileSync } from "node:fs";
+const p = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" }); p.unref(); writeFileSync(${JSON.stringify(arqPid)}, String(p.pid));`);
+    try {
+      expect((await conferirEmProcessoFilho(m, undefined, { bin: BIN })).ok).toBe(true);
+      const pid = Number(readFileSync(arqPid, "utf8"));
+      const vivo = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      for (let n = 0; n < 100 && vivo(); n++) await new Promise((ok) => setTimeout(ok, 20));
+      expect(vivo()).toBe(false);
+    } finally { rmSync(d, { recursive: true, force: true }); rmSync(m, { recursive: true, force: true }); }
+  });
+
   it("timeout padrão de 30 s e a mensagem dele", () => {
     expect(CONFERENCIA_TIMEOUT_MS).toBe(30_000);
   });
