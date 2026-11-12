@@ -54,6 +54,7 @@ export function criarVigiaAvisos(o: OpcoesVigiaAvisos): { iniciar(): void; parar
   let cursor: string | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let consultando: Promise<void> | null = null;
+  let parado = false;
   const jaNotificados = new Set<string>();
 
   function aoClicar(aviso: AvisoModulo): void {
@@ -67,7 +68,14 @@ export function criarVigiaAvisos(o: OpcoesVigiaAvisos): { iniciar(): void; parar
     void Promise.resolve()
       .then(() => o.cliente.marcarVisto(aviso.id))
       .catch(() => undefined)
-      .then(() => agora());
+      .then(() => reconsultar());
+  }
+
+  /** Uma consulta NOVA depois do visto: espera a que já corria (pode ter começado antes) e nada roda depois de `parar()`. */
+  async function reconsultar(): Promise<void> {
+    if (consultando) await consultando.catch(() => undefined);
+    if (parado) return;
+    await agora();
   }
 
   function lembrar(id: string): void {
@@ -110,11 +118,13 @@ export function criarVigiaAvisos(o: OpcoesVigiaAvisos): { iniciar(): void; parar
 
   return {
     iniciar() {
+      parado = false;
       if (timer !== undefined) return;
       void agora();
       timer = setInterval(() => void agora(), o.intervaloMs ?? INTERVALO_AVISOS_MS);
     },
     parar() {
+      parado = true;
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
     },

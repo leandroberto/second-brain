@@ -137,8 +137,41 @@ describe("vigia de avisos de módulo", () => {
     expect(t.marcados).toEqual(["a1"]);
   });
 
+  test("depois do visto a reconsulta é NOVA (espera a que já corria) e nada roda depois de parar()", async () => {
+    const liberar: Array<() => void> = [];
+    const chamadas: Array<string | undefined> = [];
+    const resp = { avisos: [aviso(1)], cursor: "c1", total: 1 };
+    const notificacoes: Array<{ aoClicar: () => void }> = [];
+    const montarLento = () => criarVigiaAvisos({
+      cliente: {
+        avisos: async (d?: string) => { chamadas.push(d); await new Promise<void>((ok) => liberar.push(ok)); return resp; },
+        marcarVisto: async () => undefined,
+      } as unknown as ClienteApi,
+      notificar: (n) => void notificacoes.push(n), abrir: () => undefined, base: "http://localhost:3737", aoTotal: () => undefined,
+    });
+    const v = montarLento();
+    const p1 = v.agora();
+    await vi.waitFor(() => expect(chamadas).toHaveLength(1));
+    liberar[0]!(); await p1;
+    // consulta 2 em andamento (começou antes do visto) quando o clique marca visto
+    const p2 = v.agora();
+    await vi.waitFor(() => expect(chamadas).toHaveLength(2));
+    notificacoes[0]!.aoClicar();
+    await new Promise((ok) => setTimeout(ok, 20));
+    expect(chamadas).toHaveLength(2); // não reaproveita a 2 como se fosse posterior ao visto
+    liberar[1]!(); await p2;
+    await vi.waitFor(() => expect(chamadas).toHaveLength(3)); // consulta nova, depois da que corria
+    // com a consulta 3 em andamento, outro clique e parar(): nada novo depois
+    notificacoes[0]!.aoClicar();
+    v.parar();
+    liberar[2]!();
+    await new Promise((ok) => setTimeout(ok, 20));
+    expect(chamadas).toHaveLength(3);
+  });
+
   test("a lista de já notificados é podada: só os 500 mais recentes ficam", async () => {
-    const lote = (de: number, ate: number) => Array.from({ length: ate - de + 1 }, (_, i) => aviso(de + i, { criado: `2026-11-11T10:00:${String(de + i).padStart(6, "0")}Z` }));
+    const base = Date.UTC(2026, 10, 11, 10, 0, 0);
+    const lote = (de: number, ate: number) => Array.from({ length: ate - de + 1 }, (_, i) => aviso(de + i, { criado: new Date(base + (de + i) * 1000).toISOString() }));
     // 5 por ciclo: o resto de cada resposta só entra na lista de notificados
     const t = montar([
       { avisos: lote(1, 600), cursor: "c1", total: 600 },
