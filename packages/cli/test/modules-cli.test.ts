@@ -469,6 +469,20 @@ describe("brain modules run: a sessão curta é sempre revogada", () => {
     expect(t.revogadas).toEqual(["hs_sessao", "hs_sessao"]);
   });
 
+  it("Ctrl+C fecha o vault (aoInterromper) entre revogar e sair; erro ao fechar não impede o 130", async () => {
+    for (const falha of [false, true]) {
+      const t = base(); const ordem: string[] = [];
+      t.o.revogar = () => { ordem.push("revogar"); };
+      t.o.sair = (c: number) => { ordem.push(`sair ${c}`); };
+      const aoInterromper = () => { ordem.push("fechar"); if (falha) throw new Error("já fechado"); };
+      const pendente = (() => new Promise(() => { /* nunca responde */ })) as unknown as typeof fetch;
+      void dispararTarefa({ ...t.o, fetch: pendente, aoInterromper });
+      await new Promise((ok) => setImmediate(ok));
+      t.o.sinais.emit("SIGINT");
+      expect(ordem).toEqual(["revogar", "fechar", "sair 130"]);
+    }
+  });
+
   it("Ctrl+C durante a execução revoga e sai com 130; handlers removidos no fim", async () => {
     const t = base();
     let liberar!: () => void;

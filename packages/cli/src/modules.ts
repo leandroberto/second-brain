@@ -139,6 +139,8 @@ export interface DisparoTarefa {
   /** de onde vêm SIGINT/SIGTERM (padrão: `process`) e como sair depois de revogar (padrão: `process.exit`) */
   sinais?: Pick<EventEmitter, "once" | "off">;
   sair?: (codigo: number) => void;
+  /** chamado no Ctrl+C/SIGTERM depois de revogar e antes de sair (fecha o vault); um erro aqui não impede a saída */
+  aoInterromper?: () => void;
 }
 
 /**
@@ -150,7 +152,7 @@ export async function dispararTarefa(o: DisparoTarefa): Promise<{ codigo: number
   const sessao = o.emitir();
   let revogada = false;
   const revogar = () => { if (revogada) return; revogada = true; try { o.revogar(sessao); } catch { /* a sessão expira em 5 min de qualquer jeito */ } };
-  const interromper = () => { revogar(); (o.sair ?? ((c: number) => process.exit(c)))(130); };
+  const interromper = () => { revogar(); try { o.aoInterromper?.(); } catch { /* sair com 130 de qualquer jeito */ } (o.sair ?? ((c: number) => process.exit(c)))(130); };
   sinais.once("SIGINT", interromper); sinais.once("SIGTERM", interromper);
   try {
     let r: Response;
@@ -194,6 +196,7 @@ async function rodarTarefa(b: Brain, id: string, tarefa: string, o: { ocorrencia
     url: vivo.url, id, tarefa, ocorrencia,
     emitir: () => issueHumanSession(b.vault.root, who, { ttlMinutes: 5, label: "brain modules run" }),
     revogar: (t) => revokeHumanSession(b.vault.root, t),
+    aoInterromper: () => b.close(), // `process.exit(130)` não passa pelo `finally` do chamador
   });
   if (r.saida) console.log(r.saida);
   if (r.erro) console.error(r.erro);
