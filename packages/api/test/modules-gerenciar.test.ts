@@ -206,7 +206,7 @@ describe("inspecionar e frase-senha", () => {
     expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(200);
   });
 
-  it("o limite sobrevive ao reinício, e com erro de frase na janela nada reinicia", async () => {
+  it("o limite sobrevive ao reinício, e com erro de frase na janela nada que amplie ou reinicie passa", async () => {
     gravarModulos({ lembrete: { path: pasta } });
     let agora = Date.now();
     let reinicios = 0;
@@ -230,7 +230,7 @@ describe("inspecionar e frase-senha", () => {
     expect((await call(depois.api, depois.ui, "POST", `${G}/reiniciar`, {})).status).toBe(200);
   });
 
-  it("com erro de frase na janela, o que só restringe passa: desligar, restringir ao host e remover → 200; ligar, configurar e reiniciar → 429", async () => {
+  it("com erro de frase na janela, o que só restringe passa: desligar, restringir ao host e remover → 200; configurar e reiniciar → 429; ligar segue pedindo a frase", async () => {
     gravarModulos({ lembrete: { path: pasta, enabled: true }, outro: { path: pasta, enabled: true }, terceiro: { path: pasta, enabled: false } });
     let reinicios = 0;
     const s = await subir({ frase: FRASE, reiniciarServe: async () => { reinicios++; } });
