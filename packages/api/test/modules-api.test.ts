@@ -260,4 +260,13 @@ describe("rotas de módulo", () => {
     expect((await call(uiToken, "GET", "/api/modules/ok/eco", undefined, base)).status).toBe(404);
     expect((await call(uiToken, "POST", "/api/modules/ok/_tarefas/diaria/rodar", {}, base)).status).toBe(404);
   });
+
+  it("sem módulos, marcar aviso como visto responde 404 not_found (nada foi marcado)", async () => {
+    const base = () => semModulos.url;
+    for (const t of [uiToken, deskToken]) {
+      const r = await call(t, "POST", "/api/notifications/qualquer/visto", undefined, base);
+      expect(r.status).toBe(404);
+      expect(await r.json()).toEqual({ error: "not_found" });
+    }
+  });
 });

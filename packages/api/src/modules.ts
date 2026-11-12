@@ -152,7 +152,8 @@ export async function tratarModulos(o: ModulesApiOptions | undefined, r: ReqModu
   }
   const visto = /^\/api\/notifications\/([^/]+)\/visto$/.exec(caminho);
   if (visto && metodo === "POST") {
-    o?.avisos.marcarVisto(decodificar(visto[1]!));
+    if (!o) return responder(res, 404, { error: "not_found" }); // sem módulos não há avisos: nada foi marcado
+    o.avisos.marcarVisto(decodificar(visto[1]!));
     return responder(res, 204);
   }
   if (caminho === "/api/modules" && metodo === "GET") {
