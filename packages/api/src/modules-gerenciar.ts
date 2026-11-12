@@ -105,13 +105,17 @@ export class GerenciarModulos {
     return exigida ? "ausente" : "nao";
   }
 
-  /** Erros de frase-senha dentro da janela (arquivo ausente ou ilegível = nenhum). */
-  private errosNaJanela(): number[] {
+  /**
+   * Erros de frase-senha dentro da janela. Arquivo ausente = nenhum; ilegível (diretório no lugar, sem permissão, conteúdo que não
+   * é a lista) = `"ilegivel"`: o limite falha fechado, senão as tentativas deixariam de contar.
+   */
+  private errosNaJanela(): number[] | "ilegivel" {
     const agora = this.agora();
-    try {
-      const v = JSON.parse(readFileSync(this.arquivoErros, "utf8")) as unknown;
-      return Array.isArray(v) ? v.filter((t): t is number => typeof t === "number" && agora - t < JANELA_FRASE_MS && t <= agora) : [];
-    } catch { return []; }
+    let v: unknown;
+    try { v = JSON.parse(readFileSync(this.arquivoErros, "utf8")); }
+    catch (e) { return (e as NodeJS.ErrnoException).code === "ENOENT" ? [] : "ilegivel"; }
+    if (!Array.isArray(v)) return "ilegivel";
+    return v.filter((t): t is number => typeof t === "number" && agora - t < JANELA_FRASE_MS && t <= agora);
   }
 
   private gravarErros(erros: number[]): void { writeFileAtomic(this.arquivoErros, JSON.stringify(erros), 0o600); }
@@ -125,16 +129,25 @@ export class GerenciarModulos {
     if (modo === "nao") return;
     if (modo === "ausente") throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
     const erros = this.errosNaJanela();
+    if (erros === "ilegivel") throw registroIlegivel(this.arquivoErros);
     if (erros.length >= MAX_ERROS_FRASE) throw new Recusa(429, { error: "tentativas", message: "muitas tentativas de frase-senha; espere um minuto e tente de novo" });
     if (typeof frase !== "string" || !frase) throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
-    if (checkReviewerPassphrase(frase, this.sessions)) { if (erros.length) this.gravarErros([]); return; }
-    this.gravarErros([...erros, this.agora()]);
+    if (checkReviewerPassphrase(frase, this.sessions)) {
+      // falhar ao zerar não bloqueia o dono: os erros antigos só saem da janela sozinhos
+      if (erros.length) { try { this.gravarErros([]); } catch { /* segue */ } }
+      return;
+    }
+    // tentativa errada que não pôde ser registrada não conta como tentativa livre: recusa como limite (falha fechado)
+    try { this.gravarErros([...erros, this.agora()]); }
+    catch { throw new Recusa(429, { error: "tentativas", message: "não foi possível registrar a tentativa; tente mais tarde" }); }
     throw new Recusa(403, { error: "frase_senha", message: "frase-senha incorreta" });
   }
 
   /** Com frase-senha errada na janela, nada reinicia o serve (um reinício não serve para escapar do limite). */
   private recusarReinicioComErrosDeFrase(): void {
-    if (this.errosNaJanela().length) throw new Recusa(429, { error: "tentativas", message: "houve frase-senha errada há pouco; espere um minuto antes de mudar os módulos ou reiniciar o brain serve" });
+    const erros = this.errosNaJanela();
+    if (erros === "ilegivel") { if (this.modoFrase() === "tem") throw registroIlegivel(this.arquivoErros); return; }
+    if (erros.length) throw new Recusa(429, { error: "tentativas", message: "houve frase-senha errada há pouco; espere um minuto antes de mudar os módulos ou reiniciar o brain serve" });
   }
 
   // ---- tickets ----
@@ -225,8 +238,7 @@ export class GerenciarModulos {
         ...(b.config !== undefined ? { config: b.config } : {}),
       } as ModuleEntry;
     };
-    // "ligar" = o módulo passa a rodar nesta máquina por causa deste PUT (enabled, ou o host que o deixava inativo aqui)
-    const liga = (antes: ModuleEntry) => carregaAqui(aplicar(antes)) && !carregaAqui(antes);
+    const liga = (antes: ModuleEntry) => ampliaOndeRoda(antes, aplicar(antes));
     const modo = this.modoFrase();
     let fraseValida = false;
     if (liga(atual)) { this.exigirFrase(b.fraseSenha); fraseValida = modo === "tem"; }
@@ -311,6 +323,20 @@ export class GerenciarModulos {
     return responder(res, 200, corpo);
   }
 }
+
+/**
+ * "Ligar" (exige a frase quando existe) = qualquer mudança que AMPLIE onde o módulo roda: desligado → ligado (em qualquer host:
+ * num vault sincronizado ele passa a rodar na máquina do `host`); passa a rodar nesta máquina; ou, ligado, perde ou troca o
+ * `host` (passa a rodar em outras máquinas do vault). Restringir (pôr o `host` desta máquina, desligar) não é ligar.
+ */
+function ampliaOndeRoda(antes: ModuleEntry, depois: ModuleEntry): boolean {
+  if (antes.enabled === false && depois.enabled !== false) return true;
+  if (carregaAqui(depois) && !carregaAqui(antes)) return true;
+  return depois.enabled !== false && antes.enabled !== false && !!antes.host && depois.host !== antes.host;
+}
+
+const registroIlegivel = (arquivo: string) =>
+  new Recusa(429, { error: "tentativas", message: `o registro de tentativas de frase-senha está ilegível (${arquivo}); apague-o para liberar` });
 
 const idExistente = (id: string, e: ModuleEntry) => new Recusa(409, { error: "id_existente", message: `o módulo "${id}" já está configurado`, caminho: e.path });
 

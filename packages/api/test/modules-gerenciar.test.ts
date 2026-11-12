@@ -257,6 +257,53 @@ describe("inspecionar e frase-senha", () => {
     expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { soNestaMaquina: true })).status).toBe(200);
   });
 
+  it("ampliar onde o módulo roda é ligar: desligado → ligado em qualquer host, tirar o host desta máquina; restringir não", async () => {
+    const s = await subir({ frase: FRASE, reiniciarServe: async () => {} });
+    const casos: Array<[Record<string, unknown>, Record<string, unknown>, number]> = [
+      // desligado com host de outra máquina → ligado: no vault sincronizado roda lá
+      [{ path: pasta, enabled: false, host: "outra-maquina" }, { enabled: true }, 403],
+      // ligado só nesta máquina → sem host: passa a rodar nas outras máquinas do vault
+      [{ path: pasta, enabled: true, host: hostname() }, { soNestaMaquina: false }, 403],
+      // ligado em toda parte → só nesta máquina: restringe
+      [{ path: pasta, enabled: true }, { soNestaMaquina: true }, 200],
+    ];
+    for (const [entrada, put, status] of casos) {
+      gravarModulos({ lembrete: entrada });
+      const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, put);
+      expect([entrada, put, r.status]).toEqual([entrada, put, status]);
+      if (status === 403) {
+        expect(modulosEmDisco().lembrete).toMatchObject(entrada);
+        expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { ...put, fraseSenha: FRASE })).status).toBe(200);
+      }
+    }
+    expect(modulosEmDisco().lembrete?.host).toBe(hostname());
+  });
+
+  it("registro de tentativas que não dá para ler nem gravar: o limite falha fechado", async () => {
+    gravarModulos({ lembrete: { path: pasta, enabled: true } });
+    const s = await subir({ frase: FRASE, reiniciarServe: async () => {} });
+    const arq = join(root, "_frase-erros.json");
+    mkdirSync(arq); // diretório no lugar do arquivo: nem lê nem grava
+    try {
+      for (const fraseSenha of ["errada", FRASE]) {
+        const r = await inspecionar(s, pasta, { fraseSenha });
+        expect([fraseSenha, r.status, r.corpo.error]).toEqual([fraseSenha, 429, "tentativas"]);
+      }
+      expect((await call(s.api, s.ui, "POST", `${G}/reiniciar`, {})).status).toBe(429);
+    } finally { rmSync(arq, { recursive: true, force: true }); }
+    // gravar falha mas ler funciona (só o registro de uma tentativa errada): 429, a tentativa não fica livre
+    writeFileSync(arq, "[]", { mode: 0o600 });
+    chmodSync(root, 0o500);
+    try {
+      if (process.getuid?.() !== 0) {
+        const errada = await inspecionar(s, pasta, { fraseSenha: "errada" });
+        expect(errada.status).toBe(429);
+        expect(errada.corpo).toEqual({ error: "tentativas", message: "não foi possível registrar a tentativa; tente mais tarde" });
+        expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(200);
+      }
+    } finally { chmodSync(root, 0o700); }
+  });
+
   it("no máximo 2 conferências ao mesmo tempo: a 3ª → 429", async () => {
     let soltar!: () => void;
     const portao = new Promise<void>((ok) => { soltar = ok; });

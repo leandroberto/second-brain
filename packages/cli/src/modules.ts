@@ -348,7 +348,7 @@ function lerResultado(stdout: string, marcador: string): ResultadoConferencia | 
   try { return lerResultadoDaConferencia(JSON.parse(linha.slice(prefixo.length))) ?? null; } catch { return null; }
 }
 
-/** Mata o grupo do filho (ele e o que o módulo tenha criado no import); grupo que já não existe (`ESRCH`) é ignorado. */
+/** Mata o grupo do filho (ele e o que o módulo tenha criado no import sem sair do grupo); grupo que já não existe (`ESRCH`) é ignorado. */
 function matarGrupo(pid: number | undefined): void {
   if (!pid) return;
   try { process.kill(-pid, "SIGKILL"); } catch { /* ESRCH: o grupo já acabou */ }
@@ -357,8 +357,9 @@ function matarGrupo(pid: number | undefined): void {
 /**
  * Conferência de um módulo num processo filho descartável (spec de gerenciar módulos §6, §7.2): roda o `brain modules check
  * <pasta> --json [--config -]` da CLI em uso, com a config pelo stdin, estado num diretório temporário (apagado no fim), sem o
- * api-token nem as sessões do serve, e com teto de tempo. O grupo do filho morre no fim (estouro ou não): nada do módulo
- * sobrevive à conferência. Nunca lança: falha vira `ok: false` com a causa. O serve em execução não carrega nada da pasta.
+ * api-token nem as sessões do serve, e com teto de tempo. O grupo de processos do filho morre no fim (estouro ou não), com o
+ * que o módulo tenha criado nele; um neto que crie sessão/grupo próprio (`setsid`, `detached`) não é alcançado. Nunca lança:
+ * falha vira `ok: false` com a causa. O serve em execução não carrega nada da pasta.
  */
 export async function conferirEmProcessoFilho(caminho: string, config?: unknown, o: OpcoesConferencia = {}): Promise<ResultadoConferencia> {
   const comConfig = config !== undefined;
