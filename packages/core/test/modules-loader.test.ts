@@ -293,6 +293,17 @@ describe("registry de erros", () => {
     expect(reg.errors("b")).toHaveLength(1);
   });
 
+  it("a mensagem passa pela higiene (truncada, sem possível segredo) ANTES de ir para o _erros.jsonl", () => {
+    const root = mkdtempSync(join(tmpdir(), "brain-erros-"));
+    const reg = new ModuleRegistry(root);
+    const segredo = `ghp_${"a1B2c3D4e5".repeat(4)}`;
+    reg.recordError("a", "rota", new Error(`falhou com ${segredo}`));
+    reg.recordError("a", "tarefa", new Error("x".repeat(400)));
+    const bruto = readFileSync(join(root, "_erros.jsonl"), "utf8");
+    expect(bruto).not.toContain(segredo);
+    expect(reg.errors("a").map((e) => e.mensagem)).toEqual(["[mensagem omitida: possível segredo]", "x".repeat(300)]);
+  });
+
   it("compactação do _erros.jsonl é atômica (arquivo trocado por rename, sem tmp)", () => {
     const root = mkdtempSync(join(tmpdir(), "brain-erros-"));
     const reg = new ModuleRegistry(root);

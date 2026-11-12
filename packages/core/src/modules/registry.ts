@@ -49,7 +49,8 @@ export class ModuleRegistry {
   get(id: string): LoadedModule | undefined { return this.modules.get(id); }
 
   recordError(id: string, onde: string, e: unknown): void {
-    const mensagem = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    // higiene já na gravação: o disco nunca guarda a mensagem crua (possível segredo); a leitura aplica de novo
+    const mensagem = mensagemSegura(e instanceof Error ? e.message : String(e));
     if (!this.root) return;
     const arq = join(this.root, "_erros.jsonl");
     const linha = JSON.stringify({ id, em: new Date().toISOString(), onde, mensagem });
