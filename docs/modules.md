@@ -293,7 +293,10 @@ estado dos módulos recomeça vazio; copie a pasta antiga se precisar). Num sist
 (`/mnt/c/Users/...` ou `/mnt/c/users/...`) dá o mesmo estado, sem recusa (um `vault-path` antigo gravado com a caixa da
 primeira abertura continua aceito). A detecção testa a pasta que contém o vault (pelo nome dele ou, se o nome não tiver
 letras, como `C:\2024`, por outra entrada da pasta) e, sem nada a testar ali, o primeiro componente acima com letras no
-mesmo sistema de arquivos. O second-brain não interpreta o conteúdo.
+mesmo sistema de arquivos. Limites da detecção: a busca por outra entrada olha só as primeiras 200 entradas da pasta (sem
+uma com letras, sobe para o componente de cima); uma pasta com sensibilidade de caixa própria no NTFS
+(`fsutil file setCaseSensitiveInfo`, ou criada pelo WSL com `case=dir`) diferente da pasta de cima não é considerada; e o
+resultado vale até o processo reiniciar. O second-brain não interpreta o conteúdo.
 
 O estado deve ficar em **disco local** (ext4, APFS, NTFS). Em FAT/exFAT e compartilhamentos de rede (sem hard link) o
 `serve` sobe, mas a trava (`serve.lock`) cai para a criação exclusiva sem hard link e a exclusão mútua entre `serve`s
@@ -301,9 +304,17 @@ concorrentes fica mais fraca: o lock existe vazio por um instante (um lock vazio
 10 min sem mudar) e, numa corrida rara durante a retomada de um lock velho, um lock novo tirado por engano não pode ser
 devolvido (a devolução usa hard link).
 
+Um lock gravado antes do último boot só é dado como velho quando também está há mais de 10 min sem renovação (no WSL2,
+depois de o host dormir, o relógio salta e o uptime não). Sobra uma janela: nos até 60 s depois de o host acordar de um sono
+de mais de 10 min, antes de o `serve` vivo renovar o lock, uma subida que não consiga confirmá-lo (sem api-token, timeout,
+5xx, 401/403) pode retomar o lock e subir um segundo `serve`. Se isso acontecer, encerre um dos dois.
+
 As retomadas de um lock velho passam por `serve.lock.retomando` (uma por vez). Se uma subida cair no meio de uma retomada,
-outra subida recusa por até 30 s com "outra subida está retomando o lock"; depois disso o mutex é considerado velho e
-removido sozinho (ou apague-o, se nenhum `brain serve` estiver subindo).
+uma subida que precise retomar um lock velho pode recusar por até 30 s com "outra subida está retomando o lock"; depois
+disso o mutex é considerado velho e removido sozinho (ou apague-o, se nenhum `brain serve` estiver subindo). Sobra uma
+janela rara: depois de uma queda no meio de uma retomada, se duas subidas acharem o mutex velho ao mesmo tempo e uma
+terceira chegar no instante em que ele está fora do lugar, duas retomadas podem correr juntas, ou pode sobrar um mutex
+órfão que recusa subidas por até 30 s.
 
 Esta subpasta de estado e o `serve.lock` existem **mesmo sem módulos configurados**: sem `state.external`, todo `brain serve`
 usa `<slug>-<impressão>/` (avisos, agendador, `serve.json` e a trava), porque o `serve` sem módulos mantém o mesmo ciclo de
