@@ -453,8 +453,10 @@ novo."
   junto com a config), o `detail` guarda também `config: true` quando a config mudou e `host: "definido"` ou `"removido"`
   quando o host mudou.
 - Um `PUT` que não muda a entrada (desligar um desligado, restringir ao host desta máquina o que já tem esse host, a mesma
-  config) responde 200 `{ "mensagem": "nada mudou" }`: nada é gravado nem auditado e o `serve` não reinicia, nem na janela
-  de frase errada.
+  config) responde 200 `{ "mensagem": "Nada mudou: o módulo já estava assim.", "reiniciar": false }`: nada é gravado nem
+  auditado e o `serve` não reinicia, nem na janela de frase errada. A tela decide pelo campo (`reiniciar === false`) e
+  recarrega a lista e a config (o cartão pode estar atrás de uma edição feita por fora). As respostas que reiniciam trazem
+  `reiniciar: true`; sem reinício automático (API fora do `brain serve`), também `reinicioManual: true`.
 
 ### Configurar: formulário ou editor JSON
 

@@ -219,7 +219,7 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
   r("GET", "/api/graph", ({ brain, url }) => brain.graph({ project: q(url, "project") }));
   r("GET", "/api/notes/:id/local", ({ brain, params, url }) => brain.localGraph(decodeURIComponent(params[0]!), Number(q(url, "depth") ?? 1)));
   r("GET", "/api/notes/:id/suggestions", ({ brain, params }) => brain.relationSuggestions(decodeURIComponent(params[0]!)));
-  r("GET", "/api/settings", ({ brain }) => ({ config: brain.config, vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
+  r("GET", "/api/settings", ({ brain }) => ({ config: brain.freshConfig(), vault: brain.vault.root, embedder: { id: brain.embedder.id, external: brain.embedder.external } }));
   r("PUT", "/api/settings", async ({ brain, body, actor }) => {
     // só as chaves (e subchaves) que a tela de Configurações grava. Os módulos vão pelo gerenciamento (frase-senha, conferência), a frase-senha
     // só no terminal, e o resto (`embeddings.api_key_env`, `assistant.claude_path`, `state.external`, `limits`...) não se altera pela sessão do navegador

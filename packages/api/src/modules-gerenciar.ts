@@ -23,7 +23,7 @@ const MAX_CONFERENCIAS = 2;
 const ARQUIVO_ERROS_FRASE = "_frase-erros.json";
 const REINICIO = "O brain serve será reiniciado para aplicar as alterações.";
 const MSG_ADICIONADO = `Módulo adicionado. ${REINICIO}`;
-const MSG_NADA_MUDOU = "nada mudou";
+const MSG_NADA_MUDOU = "Nada mudou: o módulo já estava assim.";
 const MSG_YAML = "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
@@ -250,7 +250,7 @@ export class GerenciarModulos {
     };
     // sem efeito (desligar um desligado, o host desta máquina que já está lá, a mesma config): sem gravar, sem auditar e sem
     // reiniciar. Antes da frase e da janela de erros: um PUT que não muda nada não serve para reiniciar o serve
-    if (isDeepStrictEqual(aplicar(atual), atual)) return responder(r.res, 200, { mensagem: MSG_NADA_MUDOU });
+    if (isDeepStrictEqual(aplicar(atual), atual)) return responder(r.res, 200, { mensagem: MSG_NADA_MUDOU, reiniciar: false });
     const liga = (antes: ModuleEntry) => ampliaOndeRoda(antes, aplicar(antes));
     const modo = this.modoFrase();
     let fraseValida = false;
@@ -281,7 +281,7 @@ export class GerenciarModulos {
         return proxima;
       }, r.who, (antes, depois) => acaoDoPut(antes, depois, b.config !== undefined));
     } catch (e) {
-      if (e instanceof NadaMudou) return responder(r.res, 200, { mensagem: MSG_NADA_MUDOU });
+      if (e instanceof NadaMudou) return responder(r.res, 200, { mensagem: MSG_NADA_MUDOU, reiniciar: false });
       throw e;
     }
     return this.responderEReiniciar(r.res, { mensagem: `Módulo atualizado. ${REINICIO}` });
@@ -333,17 +333,18 @@ export class GerenciarModulos {
   }
 
   /**
-   * Responde ANTES de reiniciar: o fechamento da API derruba todas as conexões. Sem `reiniciarServe` (API fora do `brain
-   * serve`), a resposta pede o reinício manual. Recusa depois da resposta (o serve ainda subindo ou encerrando) só vai ao log;
+   * Responde ANTES de reiniciar: o fechamento da API derruba todas as conexões. A resposta traz `reiniciar: true` (o "nada
+   * mudou" traz `false`). Sem `reiniciarServe` (API fora do `brain serve`), traz também `reinicioManual: true` e a tela pede o
+   * reinício manual. Recusa depois da resposta (o serve ainda subindo ou encerrando) só vai ao log;
    * a UI percebe pelo pid, que não muda.
    */
   private responderEReiniciar(res: ServerResponse, corpo: Record<string, unknown>): true {
     const reiniciar = this.o.reiniciarServe;
-    if (!reiniciar) return responder(res, 200, { ...corpo, reiniciar: true });
+    if (!reiniciar) return responder(res, 200, { ...corpo, reiniciar: true, reinicioManual: true });
     umaVezAoTerminar(res, () => {
       reiniciar().catch((e: unknown) => { console.error(`[api] reinício do brain serve recusado: ${(e as Error)?.message ?? String(e)}`); });
     });
-    return responder(res, 200, corpo);
+    return responder(res, 200, { ...corpo, reiniciar: true });
   }
 }
 

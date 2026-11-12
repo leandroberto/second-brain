@@ -18,8 +18,11 @@ describe("eventos que recarregam uma consulta", () => {
 
 describe("nadaMudou", () => {
   it("PUT sem efeito: o serve não reinicia, a tela não espera o pid mudar", () => {
-    expect(nadaMudou({ mensagem: "nada mudou" })).toBe(true);
-    expect(nadaMudou({ mensagem: "Módulo atualizado. O brain serve será reiniciado para aplicar as alterações." })).toBe(false);
+    // decide pelo campo, não pelo texto da mensagem
+    expect(nadaMudou({ mensagem: "Nada mudou: o módulo já estava assim.", reiniciar: false })).toBe(true);
+    expect(nadaMudou({ mensagem: "qualquer texto", reiniciar: false })).toBe(true);
+    expect(nadaMudou({ mensagem: "nada mudou", reiniciar: true })).toBe(false);
     expect(nadaMudou({ mensagem: "Módulo atualizado. O brain serve será reiniciado para aplicar as alterações.", reiniciar: true })).toBe(false);
+    expect(nadaMudou({ mensagem: "Módulo atualizado. O brain serve será reiniciado para aplicar as alterações.", reiniciar: true, reinicioManual: true })).toBe(false);
   });
 });

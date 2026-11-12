@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "playwright-core";
-import { Brain, issueHumanSession, setReviewerPassphrase } from "../packages/core/src/index.js";
+import { Brain, dumpConfig, issueHumanSession, loadConfig, setReviewerPassphrase } from "../packages/core/src/index.js";
 import { startServe, type ServeHandle } from "../packages/cli/src/serve.js";
 import { conferirEmProcessoFilho } from "../packages/cli/src/modules.js";
 import { terminalHuman } from "../packages/core/test/helpers.js";
@@ -217,6 +217,18 @@ describe.skipIf(!pronto)("gerenciar módulos pela UI (browser real)", () => {
     expect(pergunta).toMatch(/Desligar .*O brain serve será reiniciado/);
     expect(reinicios).toBe(2);
     await pg.getByTestId("modulo-lembrete").getByText("desligado", { exact: true }).waitFor();
+
+    // "nada mudou": o módulo foi ligado por fora (edição do config.yaml) e o cartão ainda mostra "desligado". Ligar não grava
+    // nem reinicia, e o cartão se atualiza (recarrega a lista e a config) em vez de ficar atrás do disco
+    const caminhoCfg = join(vaultDir(), ".brain", "config.yaml");
+    const ligadoPorFora = loadConfig(caminhoCfg);
+    ligadoPorFora.modules.lembrete = { ...ligadoPorFora.modules.lembrete!, enabled: true };
+    writeFileSync(caminhoCfg, dumpConfig(ligadoPorFora), "utf8");
+    pg.once("dialog", (x) => void x.accept());
+    await pg.getByTestId("modulo-lembrete").getByRole("button", { name: "Ligar" }).click();
+    await pg.getByText("Nada mudou: o módulo já estava assim.").waitFor();
+    await pg.getByTestId("modulo-lembrete").getByRole("button", { name: "Desligar" }).waitFor({ timeout: 5000 });
+    expect(reinicios).toBe(2);
 
     // remover: a lista volta vazia e a pasta do exemplo continua no disco
     pg.once("dialog", (x) => void x.accept());

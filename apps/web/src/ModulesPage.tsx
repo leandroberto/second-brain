@@ -38,8 +38,9 @@ export function ModulesPage() {
     const antes = await api<{ pid: number }>("/api/serve").then((x) => x.pid, () => undefined);
     const r = await acao();
     toast(r.mensagem);
-    if (nadaMudou(r)) { setEditando(undefined); return; } // nada gravado: o serve não reinicia, nada a esperar
-    if (r.reiniciar) { reload(); recarregarCfg(); return; } // sem reinício automático (API fora do brain serve): a mensagem pede o manual
+    // nada gravado: o serve não reinicia, nada a esperar; recarrega porque o cartão pode estar atrás do disco (edição por fora)
+    if (nadaMudou(r)) { setEditando(undefined); reload(); recarregarCfg(); return; }
+    if (r.reinicioManual) { reload(); recarregarCfg(); return; } // sem reinício automático (API fora do brain serve): a mensagem pede o manual
     setReinicio("esperando");
     if (await esperarReinicio(antes) === "ok") location.reload(); else setReinicio("tempo");
   };

@@ -271,7 +271,7 @@ describe("inspecionar e frase-senha", () => {
         const antes = readFileSync(brain.vault.configPath, "utf8");
         const desde = ultimaAtividade();
         const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, put);
-        expect([comErro, put, r.status, await r.json()]).toEqual([comErro, put, 200, { mensagem: "nada mudou" }]);
+        expect([comErro, put, r.status, await r.json()]).toEqual([comErro, put, 200, { mensagem: "Nada mudou: o módulo já estava assim.", reiniciar: false }]);
         expect(readFileSync(brain.vault.configPath, "utf8")).toBe(antes);
         expect(configUpdatesDepois(desde)).toEqual([]);
       }
@@ -401,19 +401,19 @@ describe("adicionar", () => {
     expect(chamadas[0]).toEqual([pasta, undefined]);
     const r = await call(sub.api, sub.ui, "POST", `${G}/adicionar`, { ticket: i.corpo.ticket, config: { horario: "08:30" }, soNestaMaquina: false });
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ mensagem: MENSAGEM });
+    expect(await r.json()).toEqual({ mensagem: MENSAGEM, reiniciar: true });
     expect(chamadas[1]).toEqual([pasta, { horario: "08:30" }]);
     expect(modulosEmDisco().lembrete).toMatchObject({ enabled: true, path: pasta, config: { horario: "08:30" } });
     expect(modulosEmDisco().lembrete?.host).toBeUndefined();
     for (let n = 0; n < 50 && !reinicios; n++) await new Promise((ok) => setTimeout(ok, 20));
     expect(reinicios).toBe(1);
 
-    // de novo, com "só nesta máquina" e sem reiniciarServe: `reiniciar: true` na resposta
+    // de novo, com "só nesta máquina" e sem reiniciarServe: `reinicioManual: true` na resposta (a tela pede o reinício manual)
     gravarModulos({});
     const s2 = await subir();
     const t2 = (await inspecionar(s2, pasta)).corpo.ticket;
     const r2 = await call(s2.api, s2.ui, "POST", `${G}/adicionar`, { ticket: t2, config: { horario: "08:30" }, soNestaMaquina: true });
-    expect(await r2.json()).toEqual({ mensagem: MENSAGEM, reiniciar: true });
+    expect(await r2.json()).toEqual({ mensagem: MENSAGEM, reiniciar: true, reinicioManual: true });
     expect(modulosEmDisco().lembrete).toMatchObject({ path: pasta, host: hostname() });
     // o ticket é consumido
     gravarModulos({});
@@ -574,7 +574,7 @@ describe("configurar, remover e reiniciar", () => {
     const s = await subir({ reiniciarServe: async () => { reinicios++; }, conferir: async (c, cfg) => { gravarModulos({ lembrete: { path: pasta, enabled: true, config: { horario: "11:00" } } }); return base(c, cfg); } });
     const desde = ultimaAtividade();
     const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, { config: { horario: "11:00" } });
-    expect([r.status, await r.json()]).toEqual([200, { mensagem: "nada mudou" }]);
+    expect([r.status, await r.json()]).toEqual([200, { mensagem: "Nada mudou: o módulo já estava assim.", reiniciar: false }]);
     expect(configUpdatesDepois(desde)).toEqual([]);
     await new Promise((ok) => setTimeout(ok, 100));
     expect(reinicios).toBe(0);
@@ -655,12 +655,12 @@ describe("configurar, remover e reiniciar", () => {
     let reinicios = 0;
     const s = await subir({ reiniciarServe: async () => { reinicios++; } });
     const r = await call(s.api, s.ui, "POST", `${G}/reiniciar`, {});
-    expect(r.status).toBe(200);
+    expect([r.status, await r.json()]).toEqual([200, { mensagem: "O brain serve será reiniciado.", reiniciar: true }]);
     for (let n = 0; n < 50 && !reinicios; n++) await new Promise((ok) => setTimeout(ok, 20));
     expect(reinicios).toBe(1);
     // sem reiniciarServe: a resposta pede o reinício
     const s2 = await subir();
-    expect(await (await call(s2.api, s2.ui, "POST", `${G}/reiniciar`, {})).json()).toMatchObject({ reiniciar: true });
+    expect(await (await call(s2.api, s2.ui, "POST", `${G}/reiniciar`, {})).json()).toEqual({ mensagem: "O brain serve será reiniciado.", reiniciar: true, reinicioManual: true });
   });
 });
 
@@ -745,6 +745,18 @@ describe("rotas do core", () => {
       expect([corpo, j.message]).toEqual([corpo, expect.not.stringContaining("valor-eco")]);
       expect([corpo, readFileSync(brain.vault.configPath, "utf8")]).toEqual([corpo, antes]);
     }
+  });
+
+  it("settings: o GET devolve a config do disco (o cartão do módulo se atualiza depois de um \"nada mudou\")", async () => {
+    const s = await subir();
+    gravarModulos({ lembrete: { path: pasta, enabled: false } });
+    expect((await (await call(s.api, s.ui, "GET", "/api/settings")).json()).config.modules).toEqual(modulosEmDisco());
+    expect(modulosEmDisco().lembrete?.enabled).toBe(false);
+    // ligado por fora: o PUT de ligar não muda nada, e o GET seguinte já mostra o ligado
+    gravarModulos({ lembrete: { path: pasta, enabled: true } });
+    expect(await (await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: true })).json()).toEqual({ mensagem: "Nada mudou: o módulo já estava assim.", reiniciar: false });
+    expect((await (await call(s.api, s.ui, "GET", "/api/settings")).json()).config.modules).toEqual(modulosEmDisco());
+    expect(modulosEmDisco().lembrete?.enabled).toBe(true);
   });
 
   it("settings: toda gravação atual da tela de Configurações continua 200", async () => {

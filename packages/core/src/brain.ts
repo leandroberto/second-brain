@@ -156,6 +156,12 @@ export class Brain {
    */
   withWriteLock<T>(fn: () => Promise<T>): Promise<T> { return this.write(fn); }
 
+  /**
+   * A config como está no disco agora (edição manual, outro processo), para quem só lê, como a tela de Configurações: sem isso,
+   * depois de um "nada mudou" do gerenciamento de módulos (decidido pelo disco) a tela seguiria mostrando a cópia da memória.
+   */
+  freshConfig(): BrainConfig { this.reloadConfig(); return this.config; }
+
   /** Política/config podem ter sido alteradas por outro processo (UI, outro MCP): sempre reler sob o lock. */
   private reloadConfig(): void {
     try {
