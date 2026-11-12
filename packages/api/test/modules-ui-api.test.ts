@@ -7,6 +7,7 @@ import { AvisosStore, Brain, Scheduler, loadModules, modulesStateRoot, revokeHum
 import type { Chamador, ModuleContext, Rota } from "@brain/module-sdk";
 import { issueHumanSession, startApi, type ApiHandle } from "../src/index.js";
 import { negarAntesDoRoteamento, podeChamar } from "../src/modules.js";
+import { MAX_TOKENS_POR_MODULO, TokensDePagina } from "../src/modules-aba.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 // Aba de módulo (spec de módulos §7.7): estático em /modules/<id>/, token de página, CORS só para a origem opaca `null`.
@@ -288,8 +289,23 @@ describe("estático do módulo", () => {
       rq.on("error", ko); rq.end();
     });
     expect(crua).toEqual({ status: 404, csp: CSP_MODULO });
+    // forma absoluta da URL (`GET http://host/modules/...`): mesmo critério do pathname
+    const absoluta = await new Promise<{ status?: number; csp?: string | string[] }>((ok, ko) => {
+      const rq = request({ host: u.hostname, port: u.port, path: `${api.url}/modules/fantasma/x.html`, method: "GET" }, (res) => { res.resume(); ok({ status: res.statusCode, csp: res.headers["content-security-policy"] }); });
+      rq.on("error", ko); rq.end();
+    });
+    expect(absoluta).toEqual({ status: 404, csp: CSP_MODULO });
     // fora de /modules/ a CSP da aba não vale
     expect((await call("", "GET", "/")).headers.get("content-security-policy")).not.toContain("sandbox");
+  });
+
+  it("tokens de página: teto de vivos por módulo, descartando os mais antigos", () => {
+    const t = new TokensDePagina(() => true);
+    const outro = t.emitir("outro", "s").token;
+    const emitidos = Array.from({ length: MAX_TOKENS_POR_MODULO + 5 }, () => t.emitir("ok", "s").token);
+    expect(emitidos.slice(0, 5).map((x) => t.modulo(x))).toEqual([undefined, undefined, undefined, undefined, undefined]);
+    expect(emitidos.slice(5).every((x) => t.modulo(x) === "ok")).toBe(true);
+    expect(t.modulo(outro)).toBe("outro"); // o teto é por módulo
   });
 
   it("arquivos do SDK em /modules/_sdk", async () => {

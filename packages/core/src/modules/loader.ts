@@ -139,7 +139,7 @@ export async function loadModules(brain: Brain, o: LoadOptions): Promise<ModuleR
 
     // caminho de rota que não compila (`/:a:b`, `/x:id`): o módulo não sobe (mesma função da API)
     const rotaInvalida = (Array.isArray(def.rotas) ? def.rotas : []).find((r) => typeof r?.caminho === "string" && !compilarRota(r.caminho));
-    if (rotaInvalida) { falhar(mensagemSegura(`rota inválida: ${String(rotaInvalida.metodo)} ${rotaInvalida.caminho}`)); continue; }
+    if (rotaInvalida) { falhar(mensagemSegura(`rota inválida: ${String(rotaInvalida.metodo)} ${rotaInvalida.caminho} (um :param ocupa o segmento inteiro e o nome não se repete)`)); continue; }
 
     if (def.aba) {
       // a aba é servida de dentro desta pasta (mesmo `safeResolve` da API): raiz do módulo, absoluta ou fora dele não serve

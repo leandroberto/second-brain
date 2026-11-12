@@ -33,7 +33,7 @@ describe("loader: caminho de rota inválido", () => {
     const b = await tempBrain();
     b.config.modules = { "rota-colada": { path: join(FIX, "rota-colada") }, "rota-prefixo": { path: join(FIX, "rota-prefixo") } };
     const reg = await loadModules(b, { modo: "definicoes", validarConfig: false });
-    expect(reg.get("rota-colada")).toMatchObject({ status: "falho", causa: "rota inválida: GET /:a:b" });
-    expect(reg.get("rota-prefixo")).toMatchObject({ status: "falho", causa: "rota inválida: GET /x:id" });
+    expect(reg.get("rota-colada")).toMatchObject({ status: "falho", causa: "rota inválida: GET /:a:b (um :param ocupa o segmento inteiro e o nome não se repete)" });
+    expect(reg.get("rota-prefixo")).toMatchObject({ status: "falho", causa: "rota inválida: GET /x:id (um :param ocupa o segmento inteiro e o nome não se repete)" });
   });
 });

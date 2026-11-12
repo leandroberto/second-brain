@@ -8,6 +8,8 @@ import { moduloDaRotaDePagina, type ModulesApiOptions } from "./modules.js";
 // ---- Aba do módulo (§7.7): token de página, origem opaca e estático ----
 
 const TTL_PAGINA_MS = 12 * 3600_000;
+/** Tokens de página vivos por módulo; ao passar, os mais antigos caem (cada `brain:renovar` emite um novo). */
+export const MAX_TOKENS_POR_MODULO = 20;
 const hashDoToken = (t: string) => createHash("sha256").update(t).digest("hex");
 
 /**
@@ -22,7 +24,13 @@ export class TokensDePagina {
 
   emitir(modulo: string, sessaoEmissora: string): { token: string; expira: string } {
     const agora = Date.now();
-    for (const [h, e] of this.porHash) if (e.expira <= agora) this.porHash.delete(h);
+    // uma varredura só: remove os expirados e conta os vivos do módulo (o `Map` guarda a ordem de emissão)
+    const doModulo: string[] = [];
+    for (const [h, e] of this.porHash) {
+      if (e.expira <= agora) this.porHash.delete(h);
+      else if (e.modulo === modulo) doModulo.push(h);
+    }
+    for (const h of doModulo.slice(0, Math.max(0, doModulo.length - (MAX_TOKENS_POR_MODULO - 1)))) this.porHash.delete(h);
     const token = randomBytes(32).toString("base64url");
     const expira = agora + TTL_PAGINA_MS;
     this.porHash.set(hashDoToken(token), { modulo, expira, sessao: hashDoToken(sessaoEmissora) });
