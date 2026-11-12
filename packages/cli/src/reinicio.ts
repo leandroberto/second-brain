@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, closeSync, fchmodSync, openSync, readFileSync, renameSync, statSync } from "node:fs";
+import { closeSync, fchmodSync, openSync, readFileSync, renameSync, statSync, writeSync } from "node:fs";
 import { BrainError } from "@brain/shared";
 
 /** Código de saída sob systemd: ≠ 0, então a unit (`Restart=on-failure`) sobe o serve de novo (ver scripts/second-brain.service). */
@@ -22,24 +22,35 @@ export interface ReiniciarOptions {
   sair?: (codigo: number) => never;
   /** `true` = o serve começou a encerrar (sinal): não sobe a cópia */
   cancelado?: () => boolean;
-  /** pid do processo pai e leitor de `/proc` (injetáveis nos testes): decidem se o pai é o systemd */
-  ppid?: number;
-  lerProc?: (caminho: string) => string;
+  /** pai do serve capturado na subida (padrão: `PAI_NA_SUBIDA`); decide se o pai é o systemd */
+  pai?: PaiDoServe;
   /** teto do `fechar` (padrão 20 s); estourou, sai assim mesmo e a cópia retoma o lock do dono morto */
   limiteFecharMs?: number;
   /** mensagens operacionais (padrão: stderr e `serve.log`) */
   avisar?: (mensagem: string) => void;
 }
 
+/** Pai do processo e o `comm` dele (`/proc/<ppid>/comm`; `undefined` fora do Linux ou sem leitura). */
+export interface PaiDoServe { ppid: number; comm?: string }
+
+export function paiDoServe(ppid: number = process.ppid, lerProc: (caminho: string) => string = (c) => readFileSync(c, "utf8")): PaiDoServe {
+  try { return { ppid, comm: lerProc(`/proc/${ppid}/comm`).trim() }; } catch { return { ppid }; }
+}
+
 /**
- * Sob systemd = `INVOCATION_ID` E o pai é o gerenciador (pid 1 ou `comm` = `systemd`). Só a variável não basta: ela é herdada
- * por descendentes de uma unit (tmux como serviço, `systemd-run --pty`), e um serve iniciado à mão ali sairia com 75 sem
- * ninguém para subi-lo de novo.
+ * Pai capturado na carga deste módulo, isto é, na subida do `brain serve` (o `bin.ts` o importa ao iniciar). Lido na hora do
+ * reinício, o pai podia já ser outro: se o pai original morreu, o serve é adotado pelo pid 1 ou pelo `systemd --user`, e um
+ * serve iniciado à mão com `INVOCATION_ID` herdado sairia com 75 sem ninguém para subi-lo.
  */
-function sobSystemd(env: NodeJS.ProcessEnv, ppid: number, lerProc: (caminho: string) => string): boolean {
-  if (!env.INVOCATION_ID) return false;
-  if (ppid === 1) return true;
-  try { return lerProc(`/proc/${ppid}/comm`).trim() === "systemd"; } catch { return false; }
+export const PAI_NA_SUBIDA: PaiDoServe = paiDoServe();
+
+/**
+ * Sob systemd = `INVOCATION_ID` E o pai na subida era o gerenciador (pid 1 ou `comm` = `systemd`). Só a variável não basta:
+ * ela é herdada por descendentes de uma unit (tmux como serviço, `systemd-run --pty`), e um serve iniciado à mão ali sairia
+ * com 75 sem ninguém para subi-lo de novo.
+ */
+function sobSystemd(env: NodeJS.ProcessEnv, pai: PaiDoServe): boolean {
+  return !!env.INVOCATION_ID && (pai.ppid === 1 || pai.comm === "systemd");
 }
 
 /** `fechar` com teto: estourado, avisa e resolve (quem chama segue para `sair`). Erro do `fechar` continua propagando. */
@@ -59,6 +70,17 @@ function abrirLog(logPath: string): number {
   return fd;
 }
 
+/** Aviso padrão: stderr e uma linha datada no `serve.log` (aberto por `abrirLog`: 0600 e rotação). */
+function avisoPadrao(logPath: string): (m: string) => void {
+  return (m) => {
+    console.error(m);
+    try {
+      const fd = abrirLog(logPath);
+      try { writeSync(fd, `[${new Date().toISOString()}] ${m}\n`); } finally { closeSync(fd); }
+    } catch { /* best effort */ }
+  };
+}
+
 const encerrandoErro = () => new BrainError("state_unavailable", "o brain serve está encerrando");
 
 /**
@@ -72,13 +94,10 @@ const encerrandoErro = () => new BrainError("state_unavailable", "o brain serve 
 export async function reiniciarProcesso(o: ReiniciarOptions): Promise<void> {
   const env = o.env ?? process.env;
   const sair = o.sair ?? ((codigo: number) => process.exit(codigo));
-  const avisar = o.avisar ?? ((m: string) => {
-    console.error(m);
-    try { appendFileSync(o.logPath, `[${new Date().toISOString()}] ${m}\n`); } catch { /* best effort */ }
-  });
+  const avisar = o.avisar ?? avisoPadrao(o.logPath);
   const fechar = () => fecharComTeto(o.fechar, o.limiteFecharMs ?? LIMITE_FECHAR_MS, avisar);
   if (o.cancelado?.()) throw encerrandoErro();
-  if (sobSystemd(env, o.ppid ?? process.ppid, o.lerProc ?? ((c) => readFileSync(c, "utf8")))) {
+  if (sobSystemd(env, o.pai ?? PAI_NA_SUBIDA)) {
     try { await fechar(); } finally { sair(CODIGO_REINICIO_SYSTEMD); }
     return;
   }

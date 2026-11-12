@@ -3,9 +3,9 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Brain, modulesStateRoot } from "@brain/core";
-import { controleDeReinicio, esperarServeAnterior, reiniciarProcesso } from "../src/reinicio.js";
+import { PAI_NA_SUBIDA, controleDeReinicio, esperarServeAnterior, paiDoServe, reiniciarProcesso } from "../src/reinicio.js";
 import { startServe } from "../src/serve.js";
 
 const savedState = process.env.BRAIN_STATE_DIR;
@@ -46,27 +46,64 @@ function dubles(o: { falhar?: boolean } = {}) {
 describe("reiniciarProcesso", () => {
   it("systemd fecha e sai 75", async () => {
     const d = dubles();
-    const lidos: string[] = [];
-    const lerProc = (c: string) => { lidos.push(c); return "systemd\n"; };
-    await expect(reiniciarProcesso({ fechar: d.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, ppid: 4321, lerProc, spawnFn: d.spawnFn, sair: d.sair }))
+    await expect(reiniciarProcesso({ fechar: d.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, pai: { ppid: 4321, comm: "systemd" }, spawnFn: d.spawnFn, sair: d.sair }))
       .rejects.toThrow(Saiu);
     expect(d.ordem).toEqual(["fechar", "sair(75)"]);
     expect(d.chamadas).toHaveLength(0);
-    expect(lidos).toEqual(["/proc/4321/comm"]);
     // pai pid 1 também é o gerenciador
     const d1 = dubles();
-    await expect(reiniciarProcesso({ fechar: d1.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, ppid: 1, lerProc: () => "init\n", spawnFn: d1.spawnFn, sair: d1.sair }))
+    await expect(reiniciarProcesso({ fechar: d1.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, pai: { ppid: 1, comm: "init" }, spawnFn: d1.spawnFn, sair: d1.sair }))
       .rejects.toThrow(Saiu);
     expect(d1.ordem).toEqual(["fechar", "sair(75)"]);
   });
 
   it("INVOCATION_ID herdado sem o systemd como pai sobe cópia destacada", async () => {
-    for (const lerProc of [() => "tmux: server\n", () => { throw new Error("ENOENT"); }]) {
+    for (const pai of [{ ppid: 4321, comm: "tmux: server" }, { ppid: 4321 }]) {
       const d = dubles();
-      await expect(reiniciarProcesso({ fechar: d.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, ppid: 4321, lerProc, spawnFn: d.spawnFn, sair: d.sair }))
+      await expect(reiniciarProcesso({ fechar: d.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, pai, spawnFn: d.spawnFn, sair: d.sair }))
         .rejects.toThrow(Saiu);
       expect(d.ordem).toEqual(["spawn", "unref", "fechar", "sair(0)"]);
     }
+  });
+
+  it("decide pelo pai capturado na subida, não pelo atual", async () => {
+    // pai original (um shell) morreu e o serve foi adotado pelo pid 1: o atual pareceria o gerenciador
+    const ppid = vi.spyOn(process, "ppid", "get").mockReturnValue(1);
+    try {
+      const d = dubles();
+      await expect(reiniciarProcesso({ fechar: d.fechar, logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "abc" }, pai: { ppid: 4321, comm: "bash" }, spawnFn: d.spawnFn, sair: d.sair }))
+        .rejects.toThrow(Saiu);
+      expect(d.ordem).toEqual(["spawn", "unref", "fechar", "sair(0)"]);
+    } finally { ppid.mockRestore(); }
+  });
+
+  it("paiDoServe lê o comm do pai; PAI_NA_SUBIDA é o pai da carga", () => {
+    const lidos: string[] = [];
+    expect(paiDoServe(4321, (c) => { lidos.push(c); return "systemd\n"; })).toEqual({ ppid: 4321, comm: "systemd" });
+    expect(lidos).toEqual(["/proc/4321/comm"]);
+    expect(paiDoServe(4321, () => { throw new Error("ENOENT"); })).toEqual({ ppid: 4321 });
+    expect(PAI_NA_SUBIDA.ppid).toBe(process.ppid);
+  });
+
+  it("aviso padrão grava no serve.log em 0600 e com rotação (caminho systemd)", async () => {
+    const erros = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const logPath = join(dir, "aviso.log");
+      const s = dubles();
+      await expect(reiniciarProcesso({ fechar: () => new Promise<void>(() => {}), logPath, env: { INVOCATION_ID: "x" }, pai: { ppid: 1 }, spawnFn: s.spawnFn, sair: s.sair, limiteFecharMs: 50 }))
+        .rejects.toThrow(Saiu);
+      expect(s.ordem).toEqual(["sair(75)"]);
+      expect(erros).toHaveBeenCalledWith(expect.stringContaining("saindo assim mesmo"));
+      expect(readFileSync(logPath, "utf8")).toMatch(/^\[\d{4}-\d{2}-\d{2}T[^\]]+\] fechamento passou de 0 s; saindo assim mesmo\n$/);
+      expect(statSync(logPath).mode & 0o777).toBe(0o600);
+      // log grande: gira antes de gravar o aviso
+      writeFileSync(logPath, Buffer.alloc(5 * 1024 * 1024 + 1, 120));
+      const s2 = dubles();
+      await expect(reiniciarProcesso({ fechar: () => new Promise<void>(() => {}), logPath, env: { INVOCATION_ID: "x" }, pai: { ppid: 1 }, spawnFn: s2.spawnFn, sair: s2.sair, limiteFecharMs: 50 }))
+        .rejects.toThrow(Saiu);
+      expect(statSync(`${logPath}.1`).size).toBe(5 * 1024 * 1024 + 1);
+      expect(readFileSync(logPath, "utf8")).toContain("saindo assim mesmo");
+    } finally { erros.mockRestore(); }
   });
 
   it("sem systemd sobe cópia destacada e sai 0", async () => {
@@ -105,7 +142,7 @@ describe("reiniciarProcesso", () => {
     expect(avisos).toEqual([expect.stringContaining("saindo assim mesmo")]);
     // sob systemd também
     const s = dubles(); const avisosS: string[] = [];
-    await expect(reiniciarProcesso({ fechar: () => new Promise<void>(() => {}), logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "x" }, ppid: 1, spawnFn: s.spawnFn, sair: s.sair, limiteFecharMs: 50, avisar: (m) => avisosS.push(m) }))
+    await expect(reiniciarProcesso({ fechar: () => new Promise<void>(() => {}), logPath: join(dir, "serve.log"), env: { INVOCATION_ID: "x" }, pai: { ppid: 1 }, spawnFn: s.spawnFn, sair: s.sair, limiteFecharMs: 50, avisar: (m) => avisosS.push(m) }))
       .rejects.toThrow(Saiu);
     expect(s.ordem).toEqual(["sair(75)"]);
     expect(avisosS).toHaveLength(1);

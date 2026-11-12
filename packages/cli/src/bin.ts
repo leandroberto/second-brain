@@ -143,6 +143,10 @@ async function main() {
       // módulos, agendador, API e serve.json (o motor do assistente também serve a IA dos módulos)
       const h = serve.h = await startServe(b, { port: Number(values.port ?? process.env.BRAIN_PORT ?? 3737), host: values.host, webRoot, build: buildInfo(), assistant, engine, reiniciarServe: reinicio.reiniciarServe });
       reinicio.pronto();
+      // sinais registrados já aqui: um Ctrl+C durante a frase-senha abaixo também fecha (lock e serve.json) em vez de matar.
+      // scheduler.stop(), stopModules() e clearServeInfo() ficam dentro de h.close()
+      const stop = async () => { reinicio.encerrando(); try { await fechar(); } finally { process.exit(0); } };
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
       // só um humano num terminal recebe a URL de REVISÃO; iniciado por agente/script, a API sobe sem emitir sessão humana
       const io = realIO(); let reviewUrl: string | undefined;
       if (process.stdin.isTTY && process.stdout.isTTY) { try { const who = await requireHuman(io, "brain serve", b); reviewUrl = `${h.url}/#token=${issueHumanSession(b.vault.root, who, { label: "brain serve" })}`; } catch (e) { console.error(`(sem sessão de revisão: ${(e as Error).message})`); } }
@@ -152,9 +156,6 @@ async function main() {
         (n) => { console.log(`assistente: ${n} captura(s) pendente(s) processada(s) na subida`); },
         (e) => { console.error(`assistente: falha ao reprocessar capturas pendentes: ${(e as Error).message}`); },
       );
-      // scheduler.stop(), stopModules() e clearServeInfo() ficam dentro de h.close()
-      const stop = async () => { reinicio.encerrando(); try { await fechar(); } finally { process.exit(0); } };
-      process.on("SIGINT", stop); process.on("SIGTERM", stop);
       break;
     }
     case "pair-desktop": {
