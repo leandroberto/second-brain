@@ -1,18 +1,14 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AvisosStore, Brain, ModuleRegistry, loadConfig, modulesStateRoot, setReviewerPassphrase, type ResumoDoModulo } from "@brain/core";
 import type { ModuleDef } from "@brain/module-sdk";
 import { issueHumanSession, startApi, type ApiHandle, type ModulesApiOptions } from "../src/index.js";
-import { conferirEmProcessoFilho } from "../../cli/src/modules.js";
 import { terminalHuman } from "../../core/test/helpers.js";
 
 // Gerenciamento de módulos pela UI (spec gerenciar-modulos §7.2, §7.3, §7.5): só a sessão humana `full`, frase-senha para
 // adicionar e ligar, ticket de conferência e o atalho de `PUT /api/settings` fechado.
-const LEMBRETE = resolve(import.meta.dirname, "../../../examples/modules/lembrete");
-const CLI_BIN = fileURLToPath(new URL("../../cli/dist/bin.js", import.meta.url));
 const MENSAGEM = "Módulo adicionado. O brain serve será reiniciado para aplicar as alterações.";
 const FRASE = "frase certa do revisor";
 const savedState = process.env.BRAIN_STATE_DIR;
@@ -48,8 +44,7 @@ const modulosEmDisco = () => loadConfig(brain.vault.configPath).modules;
 
 interface Subida { api: ApiHandle; ui: string; ui2: string; desk: string; pagina: string; sessions: { file: string } }
 async function subir(o: Partial<ModulesApiOptions> & { frase?: string } = {}): Promise<Subida> {
-  const sdir = mkdtempSync(join(dir, "sess-"));
-  const sessions = { file: join(sdir, "sessions.json") };
+  const sessions = { file: join(mkdtempSync(join(dir, "sess-")), "sessions.json") };
   const proof = await terminalHuman("alice", sessions);
   if (o.frase) setReviewerPassphrase(o.frase, proof, sessions);
   const { frase: _f, ...mods } = o;
@@ -87,6 +82,8 @@ beforeAll(async () => {
   // o `lembrete` carregado neste serve (o token de página e o "configurar módulo que carrega" dependem dele)
   registry.add({ id: "lembrete", dir: pasta, status: "ativo", def: { sdk: 1, id: "lembrete", nome: "Lembrete", versao: "0.1.0" } as ModuleDef, versao: "0.1.0" });
 });
+// os erros de frase-senha persistem no estado (sobrevivem ao reinício): cada teste começa sem eles
+beforeEach(() => { rmSync(join(root, "_frase-erros.json"), { force: true }); });
 afterAll(async () => {
   for (const a of abertas) await a.close();
   brain.close(); rmSync(dir, { recursive: true, force: true });
@@ -113,12 +110,38 @@ describe("matriz", () => {
     expect((await call(s.api, s.api.token, "POST", `${G}/_mcp/x`, {})).status).toBe(403);
     expect((await call(s.api, s.api.token, "GET", "/api/fs/pastas")).status).toBe(403);
   });
+
+  it("variações do caminho (`//`, `%2F`, maiúsculas, barra final) não abrem nada para api-token, desktop e página", async () => {
+    gravarModulos({});
+    let reinicios = 0;
+    const s = await subir({ reiniciarServe: async () => { reinicios++; } });
+    const fs = encodeURIComponent(dir);
+    const variacoes: Array<[string, string]> = [
+      ["POST", "/api/modules//_gerenciar/reiniciar"], ["POST", "/api/modules/_gerenciar//reiniciar"],
+      ["POST", "/api/modules/_gerenciar%2Freiniciar"], ["POST", "/api/modules/%5Fgerenciar/reiniciar"],
+      ["POST", "/api/modules/_GERENCIAR/reiniciar"], ["POST", "/api/modules/_gerenciar/reiniciar/"],
+      ["POST", "/api/modules/_gerenciar/_mcp/reiniciar"], ["POST", "/api/modules/_gerenciar%2F_mcp%2Fx"],
+      ["GET", `/api/fs/pastas/?caminho=${fs}`], ["GET", `/api/fs//pastas?caminho=${fs}`], ["GET", `/api//fs/pastas?caminho=${fs}`],
+      ["GET", `/api/fs%2Fpastas?caminho=${fs}`], ["GET", `/api/FS/pastas?caminho=${fs}`], ["GET", `/API/fs/pastas?caminho=${fs}`],
+    ];
+    for (const [m, p] of variacoes) {
+      for (const t of [s.api.token, s.desk, s.pagina]) {
+        const r = await call(s.api, t, m, p, m === "POST" ? {} : undefined);
+        const texto = await r.text();
+        // nunca a resposta da rota: nem a listagem de pastas, nem o reinício
+        expect([m, p, r.status === 200 && (texto.includes("pastas") || texto.includes("reiniciado"))]).toEqual([m, p, false]);
+        if (p.startsWith("/api/")) expect([m, p, [403, 404].includes(r.status)]).toEqual([m, p, true]);
+      }
+    }
+    await new Promise((ok) => setTimeout(ok, 50));
+    expect(reinicios).toBe(0);
+  });
 });
 
 describe("inspecionar e frase-senha", () => {
-  it("inspecionar sem frase configurada: conferência real do lembrete, com ticket", async () => {
-    const s = await subir({ conferir: (c, cfg) => conferirEmProcessoFilho(c, cfg, { bin: CLI_BIN }) });
-    const r = await inspecionar(s, LEMBRETE);
+  it("inspecionar sem frase configurada: resumo e ticket", async () => {
+    const s = await subir();
+    const r = await inspecionar(s, pasta);
     expect(r.status).toBe(200);
     expect(r.corpo.ok).toBe(true);
     expect(r.corpo.resumo?.id).toBe("lembrete");
@@ -170,6 +193,84 @@ describe("inspecionar e frase-senha", () => {
     expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(429);
     agora += 2_000;
     expect((await inspecionar(s, pasta, { fraseSenha: FRASE })).status).toBe(200);
+  });
+
+  it("o limite sobrevive ao reinício, e com erro de frase na janela nada reinicia", async () => {
+    gravarModulos({ lembrete: { path: pasta } });
+    let agora = Date.now();
+    let reinicios = 0;
+    const s = await subir({ frase: FRASE, relogio: () => agora, reiniciarServe: async () => { reinicios++; } });
+    expect((await inspecionar(s, pasta, { fraseSenha: "errada" })).status).toBe(403);
+    // um erro na janela: as rotas que reiniciam respondem 429 (reiniciar não zera o limite)
+    for (const [m, p, b] of [["POST", `${G}/reiniciar`, {}], ["DELETE", `${G}/lembrete`, undefined], ["PUT", `${G}/lembrete`, { enabled: false }], ["POST", `${G}/adicionar`, { ticket: "x" }]] as const) {
+      const r = await call(s.api, s.ui, m, p, b);
+      expect([m, p, r.status, (await r.json()).error]).toEqual([m, p, 429, "tentativas"]);
+    }
+    expect(reinicios).toBe(0);
+    expect(modulosEmDisco().lembrete).toBeDefined();
+    for (let i = 0; i < 4; i++) await inspecionar(s, pasta, { fraseSenha: `errada ${i}` });
+    // "reinício": outro processo (instância nova da API) com o mesmo estado, as mesmas sessões e a mesma frase
+    const api2 = await startApi(brain, { port: 0, sessions: s.sessions, modules: { registry, avisos, root, conferir: conferirFalso(), relogio: () => agora } });
+    abertas.push(api2);
+    const depois = { ...s, api: api2 };
+    expect((await inspecionar(depois, pasta, { fraseSenha: FRASE })).status).toBe(429);
+    agora += 61_000;
+    expect((await inspecionar(depois, pasta, { fraseSenha: FRASE })).status).toBe(200);
+    expect((await call(depois.api, depois.ui, "POST", `${G}/reiniciar`, {})).status).toBe(200);
+  });
+
+  it("a frase certa zera os erros: quem errou uma vez e acertou segue sem esperar", async () => {
+    gravarModulos({ lembrete: { path: pasta, enabled: false } });
+    const s = await subir({ frase: FRASE, reiniciarServe: async () => {} });
+    expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: true, fraseSenha: "errada" })).status).toBe(403);
+    expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: true, fraseSenha: FRASE })).status).toBe(200);
+    expect(modulosEmDisco().lembrete?.enabled).toBe(true);
+  });
+
+  it("passphrase_required sem a frase nesta máquina: falha fechada", async () => {
+    gravarModulos({ lembrete: { path: pasta, enabled: false } });
+    const cfg = brain.vault.configPath;
+    const bom = readFileSync(cfg, "utf8");
+    expect(bom).toContain("passphrase_required: false");
+    writeFileSync(cfg, bom.replace("passphrase_required: false", "passphrase_required: true"), "utf8");
+    try {
+      const s = await subir();
+      const r = await inspecionar(s, pasta, { fraseSenha: "qualquer uma" });
+      expect(r.status).toBe(403);
+      expect(r.corpo).toEqual({ error: "frase_senha", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
+      expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: true })).status).toBe(403);
+    } finally { writeFileSync(cfg, bom, "utf8"); }
+  });
+
+  it("ligar nesta máquina pelo host (soNestaMaquina) é ligar: exige a frase", async () => {
+    const s = await subir({ frase: FRASE, reiniciarServe: async () => {} });
+    for (const soNestaMaquina of [true, false]) {
+      gravarModulos({ lembrete: { path: pasta, enabled: true, host: "outra-maquina" } });
+      const r = await call(s.api, s.ui, "PUT", `${G}/lembrete`, { soNestaMaquina });
+      expect([soNestaMaquina, r.status]).toEqual([soNestaMaquina, 403]);
+      expect(modulosEmDisco().lembrete?.host).toBe("outra-maquina");
+      expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { soNestaMaquina, fraseSenha: FRASE })).status).toBe(200);
+      expect(modulosEmDisco().lembrete?.host).toBe(soNestaMaquina ? hostname() : undefined);
+    }
+    // desligado com host de outra máquina: "só nesta máquina" não liga (continua desligado), então não pede a frase
+    gravarModulos({ lembrete: { path: pasta, enabled: false, host: "outra-maquina" } });
+    expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { soNestaMaquina: true })).status).toBe(200);
+  });
+
+  it("no máximo 2 conferências ao mesmo tempo: a 3ª → 429", async () => {
+    let soltar!: () => void;
+    const portao = new Promise<void>((ok) => { soltar = ok; });
+    const base = conferirFalso();
+    let emCurso = 0;
+    const s = await subir({ conferir: async (c, cfg) => { emCurso++; await portao; return base(c, cfg); } });
+    const a = inspecionar(s, pasta); const b = inspecionar(s, pasta);
+    for (let n = 0; n < 100 && emCurso < 2; n++) await new Promise((ok) => setTimeout(ok, 10));
+    const terceira = await inspecionar(s, pasta);
+    expect(terceira.status).toBe(429);
+    expect(terceira.corpo.error).toBe("conferencias");
+    soltar();
+    expect((await a).status).toBe(200); expect((await b).status).toBe(200);
+    expect((await inspecionar(s, pasta)).status).toBe(200);
   });
 });
 
@@ -226,6 +327,20 @@ describe("adicionar", () => {
     agora += 15 * 60_000 + 1000;
     expect((await call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: {} })).status).toBe(409);
     expect(modulosEmDisco()).toEqual({});
+  });
+
+  it("o mesmo ticket em dois adicionar simultâneos: um 200, o outro 409", async () => {
+    gravarModulos({});
+    let soltar!: () => void;
+    const portao = new Promise<void>((ok) => { soltar = ok; });
+    const base = conferirFalso();
+    const s = await subir({ conferir: async (c, cfg) => { if (cfg !== undefined) await portao; return base(c, cfg); } });
+    const t = (await inspecionar(s, pasta)).corpo.ticket;
+    const a = call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: { horario: "07:00" } });
+    const b = call(s.api, s.ui, "POST", `${G}/adicionar`, { ticket: t, config: { horario: "07:00" } });
+    await new Promise((ok) => setTimeout(ok, 100));
+    soltar();
+    expect([(await a).status, (await b).status].sort()).toEqual([200, 409]);
   });
 
   it("id já configurado → 409 com o caminho; config inalterada", async () => {
@@ -287,6 +402,40 @@ describe("configurar, remover e reiniciar", () => {
     expect(modulosEmDisco().quebrado?.config).toEqual({ a: 1 });
     expect(chamadas).toEqual([]); // não carrega: nada da pasta roda
     expect((await call(s.api, s.ui, "PUT", `${G}/fantasma`, { config: {} })).status).toBe(404);
+  });
+
+  it("configurar um desligado: valida pelo schema sem frase no vault ou ligando com a frase; com frase e sem ligar, só segredos", async () => {
+    const chamadas: Array<[string, unknown]> = [];
+    // sem frase configurada: a sessão basta para rodar o código na conferência
+    gravarModulos({ lembrete: { path: pasta, enabled: false } });
+    const sem = await subir({ conferir: conferirFalso(chamadas) });
+    const r1 = await call(sem.api, sem.ui, "PUT", `${G}/lembrete`, { config: { horario: "x" } });
+    expect(r1.status).toBe(400);
+    expect((await r1.json()).error).toBe("config_invalida");
+    expect(chamadas).toEqual([[pasta, { horario: "x" }]]);
+    // com frase, só configurando o desligado: nada roda, grava (o loader valida quando ele for ligado)
+    chamadas.length = 0;
+    const com = await subir({ frase: FRASE, conferir: conferirFalso(chamadas) });
+    expect((await call(com.api, com.ui, "PUT", `${G}/lembrete`, { config: { horario: "x" } })).status).toBe(200);
+    expect(chamadas).toEqual([]);
+    expect(modulosEmDisco().lembrete).toMatchObject({ enabled: false, config: { horario: "x" } });
+    // com frase, ligando com a frase certa: valida
+    const r3 = await call(com.api, com.ui, "PUT", `${G}/lembrete`, { enabled: true, config: { horario: "x" }, fraseSenha: FRASE });
+    expect(r3.status).toBe(400);
+    expect(chamadas).toEqual([[pasta, { horario: "x" }]]);
+    expect(modulosEmDisco().lembrete?.enabled).toBe(false);
+  });
+
+  it("configurar e desligar ao mesmo tempo: o desligar não se perde (leitura dentro do lock)", async () => {
+    gravarModulos({ lembrete: { path: pasta, enabled: true, config: { horario: "10:00" } } });
+    const base = conferirFalso();
+    // a conferência da config demora: o desligar grava no meio dela
+    const s = await subir({ conferir: async (c, cfg) => { await new Promise((ok) => setTimeout(ok, 200)); return base(c, cfg); } });
+    const configurar = call(s.api, s.ui, "PUT", `${G}/lembrete`, { config: { horario: "11:00" } });
+    await new Promise((ok) => setTimeout(ok, 50));
+    expect((await call(s.api, s.ui, "PUT", `${G}/lembrete`, { enabled: false })).status).toBe(200);
+    expect((await configurar).status).toBe(200);
+    expect(modulosEmDisco().lembrete).toMatchObject({ enabled: false, config: { horario: "11:00" } });
   });
 
   it("configurar um módulo que carrega: valida no processo filho; soNestaMaquina grava e tira o host", async () => {

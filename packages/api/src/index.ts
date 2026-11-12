@@ -227,7 +227,9 @@ export async function startApi(brain: Brain, opts: ApiOptions = {}): Promise<Api
     if (tem("review")) throw new BrainError("forbidden", "a frase-senha se configura no terminal (brain admin passphrase)");
     return { config: await brain.updateConfig(body, actor) };
   });
-  // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana)
+  // navegador de pastas do assistente de módulos: só subpastas, só caminho absoluto (a matriz deixa só a sessão humana). A
+  // listagem esconde as ocultas, mas um caminho direto entra numa pasta oculta de propósito: o diretório padrão de módulos
+  // (`~/.local/share/second-brain/modules`) é oculto e precisa ser navegável; a rota só serve a sessão humana local
   r("GET", "/api/fs/pastas", ({ url, actor }) => {
     if (actor.kind !== "human" || actor.channel !== "ui") throw new BrainError("forbidden", "navegar pelas pastas é só para a sessão humana");
     return listarPastas(q(url, "caminho") || undefined);

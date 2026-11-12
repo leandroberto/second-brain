@@ -1,7 +1,9 @@
 import type { ServerResponse } from "node:http";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import { MODULE_ID_RE, caminhoRealDePasta, checkReviewerPassphrase, hasReviewerPassphrase, loadConfig, validarConfigDoModulo, type Brain, type ModuleEntry, type ResultadoConfig, type ResumoDoModulo, type SessionStoreOptions } from "@brain/core";
+import { join } from "node:path";
+import { MODULE_ID_RE, caminhoRealDePasta, checkReviewerPassphrase, hasReviewerPassphrase, loadConfig, resolveModuleDir, validarConfigDoModulo, writeFileAtomic, type Brain, type BrainConfig, type ModuleEntry, type ResultadoConfig, type ResumoDoModulo, type SessionStoreOptions } from "@brain/core";
 import type { ModuleDef } from "@brain/module-sdk";
 import { BrainError, type Principal } from "@brain/shared";
 import type { ModulesApiOptions } from "./modules.js";
@@ -15,8 +17,12 @@ const TICKET_MS = 15 * 60_000;
 const MAX_TICKETS = 50;
 const JANELA_FRASE_MS = 60_000;
 const MAX_ERROS_FRASE = 5;
+const MAX_CONFERENCIAS = 2;
+/** Horários dos erros de frase-senha, em `modulesStateRoot`: o limite sobrevive ao reinício do serve. */
+const ARQUIVO_ERROS_FRASE = "_frase-erros.json";
 const REINICIO = "O brain serve será reiniciado para aplicar as alterações.";
 const MSG_ADICIONADO = `Módulo adicionado. ${REINICIO}`;
+const MSG_YAML = "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos";
 
 const sha = (t: string) => createHash("sha256").update(t).digest("hex");
 const mesmoHash = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -27,8 +33,19 @@ function responder(res: ServerResponse, status: number, data: unknown): true {
   return true;
 }
 
+/** Recusa com status e corpo próprios (`frase_senha`, `tentativas`, `id_existente`...), respondida por `tratar`. */
+class Recusa extends Error {
+  constructor(readonly status: number, readonly corpo: Record<string, unknown>) { super(String(corpo.error)); }
+}
+
 /** Ticket de conferência: emitido por `inspecionar` para a pasta conferida e a sessão que conferiu. */
 interface Ticket { caminhoReal: string; sessaoHash: string; expira: number }
+
+/** `tem` = frase gravada; `ausente` = `review.passphrase_required` sem a frase nesta máquina (falha fechada); `nao` = sem frase. */
+type ModoFrase = "tem" | "ausente" | "nao";
+
+/** O módulo roda NESTA máquina com esta entrada (ligado e sem `host` de outra máquina). */
+const carregaAqui = (e: ModuleEntry): boolean => e.enabled !== false && (!e.host || e.host === hostname());
 
 export interface ReqGerenciar {
   metodo: string; body: unknown; res: ServerResponse;
@@ -42,23 +59,34 @@ export interface ReqGerenciar {
 
 /**
  * Rotas `/api/modules/_gerenciar/*` (spec de gerenciar módulos §7.2, §7.3): adicionar, configurar, ligar/desligar, remover e
- * reiniciar. Estado só em memória deste processo (tickets e tentativas de frase-senha): reiniciar o serve invalida os tickets.
- * Toda gravação passa por `Brain.setModuleEntry` (lock, auditoria `config_update`); nada aqui toca a pasta ou o estado do módulo.
+ * reiniciar. Tickets e o contador de conferências ficam em memória deste processo (reiniciar invalida os tickets); os erros de
+ * frase-senha ficam num arquivo do estado (o limite sobrevive ao reinício). Toda gravação passa por `Brain.setModuleEntry` com
+ * um atualizador (lido dentro do lock, auditoria `config_update`); nada aqui toca a pasta ou o estado do módulo.
  */
 export class GerenciarModulos {
   private readonly tickets = new Map<string, Ticket>();
-  private errosFrase: number[] = [];
+  private conferencias = 0;
   private readonly agora: () => number;
+  private readonly arquivoErros: string;
 
   constructor(private readonly brain: Brain, private readonly o: ModulesApiOptions, private readonly sessions: SessionStoreOptions | undefined) {
     this.agora = o.relogio ?? Date.now;
+    this.arquivoErros = join(o.root, ARQUIVO_ERROS_FRASE);
   }
 
   async tratar(r: ReqGerenciar): Promise<true> {
+    try { return await this.rotear(r); }
+    catch (e) { if (e instanceof Recusa) return responder(r.res, e.status, e.corpo); throw e; }
+  }
+
+  private async rotear(r: ReqGerenciar): Promise<true> {
     const { metodo, sub } = r;
     if (sub === "/inspecionar" && metodo === "POST") return this.inspecionar(r);
     if (sub === "/adicionar" && metodo === "POST") return this.adicionar(r);
-    if (sub === "/reiniciar" && metodo === "POST") return this.responderEReiniciar(r.res, { mensagem: "O brain serve será reiniciado." });
+    if (sub === "/reiniciar" && metodo === "POST") {
+      this.recusarReinicioComErrosDeFrase();
+      return this.responderEReiniciar(r.res, { mensagem: "O brain serve será reiniciado." });
+    }
     const m = /^\/([^/]+)$/.exec(sub);
     if (m && (metodo === "PUT" || metodo === "DELETE")) {
       const id = m[1]!;
@@ -70,19 +98,43 @@ export class GerenciarModulos {
 
   // ---- frase-senha (adicionar e ligar) ----
 
-  /**
-   * Exige a frase-senha do revisor quando ela existe. Até 5 erros por janela de 60 s neste processo; passou disso, 429 até a
-   * janela passar, mesmo com a frase certa. `true` = já respondeu (recusa).
-   */
-  private recusaFrase(res: ServerResponse, frase: unknown): boolean {
-    if (!hasReviewerPassphrase(this.sessions)) return false;
+  private modoFrase(): ModoFrase {
+    if (hasReviewerPassphrase(this.sessions)) return "tem";
+    let exigida = this.brain.config.review.passphrase_required;
+    try { exigida = loadConfig(this.brain.vault.configPath).review.passphrase_required; } catch { /* yaml com erro: vale o da memória */ }
+    return exigida ? "ausente" : "nao";
+  }
+
+  /** Erros de frase-senha dentro da janela (arquivo ausente ou ilegível = nenhum). */
+  private errosNaJanela(): number[] {
     const agora = this.agora();
-    this.errosFrase = this.errosFrase.filter((t) => agora - t < JANELA_FRASE_MS);
-    if (this.errosFrase.length >= MAX_ERROS_FRASE) return responder(res, 429, { error: "tentativas", message: "muitas tentativas de frase-senha; espere um minuto e tente de novo" });
-    if (typeof frase !== "string" || !frase) return responder(res, 403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
-    if (checkReviewerPassphrase(frase, this.sessions)) return false;
-    this.errosFrase.push(agora);
-    return responder(res, 403, { error: "frase_senha", message: "frase-senha incorreta" });
+    try {
+      const v = JSON.parse(readFileSync(this.arquivoErros, "utf8")) as unknown;
+      return Array.isArray(v) ? v.filter((t): t is number => typeof t === "number" && agora - t < JANELA_FRASE_MS && t <= agora) : [];
+    } catch { return []; }
+  }
+
+  private gravarErros(erros: number[]): void { writeFileAtomic(this.arquivoErros, JSON.stringify(erros), 0o600); }
+
+  /**
+   * Exige a frase-senha do revisor quando ela existe (ou é exigida pela config e falta: recusa sempre). Até 5 erros por janela de
+   * 60 s; passou disso, 429 até a janela passar, mesmo com a frase certa. A frase certa zera os erros (só quem a conhece zera).
+   */
+  private exigirFrase(frase: unknown): void {
+    const modo = this.modoFrase();
+    if (modo === "nao") return;
+    if (modo === "ausente") throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor, mas ela não foi encontrada nesta máquina" });
+    const erros = this.errosNaJanela();
+    if (erros.length >= MAX_ERROS_FRASE) throw new Recusa(429, { error: "tentativas", message: "muitas tentativas de frase-senha; espere um minuto e tente de novo" });
+    if (typeof frase !== "string" || !frase) throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
+    if (checkReviewerPassphrase(frase, this.sessions)) { if (erros.length) this.gravarErros([]); return; }
+    this.gravarErros([...erros, this.agora()]);
+    throw new Recusa(403, { error: "frase_senha", message: "frase-senha incorreta" });
+  }
+
+  /** Com frase-senha errada na janela, nada reinicia o serve (um reinício não serve para escapar do limite). */
+  private recusarReinicioComErrosDeFrase(): void {
+    if (this.errosNaJanela().length) throw new Recusa(429, { error: "tentativas", message: "houve frase-senha errada há pouco; espere um minuto antes de mudar os módulos ou reiniciar o brain serve" });
   }
 
   // ---- tickets ----
@@ -96,12 +148,17 @@ export class GerenciarModulos {
     return t;
   }
 
-  /** Ticket vivo emitido para esta mesma sessão; `undefined` = inexistente (outro processo), expirado ou de outra sessão. */
-  private ticketValido(ticket: unknown, token: string): Ticket | undefined {
+  /**
+   * Retira do mapa o ticket vivo emitido para esta mesma sessão (um segundo `adicionar` simultâneo com ele já não o acha);
+   * `undefined` = inexistente (outro processo), expirado ou de outra sessão (este continua no mapa, para a sessão dona).
+   */
+  private tomarTicket(ticket: unknown, token: string): Ticket | undefined {
     this.descartarExpirados();
     if (typeof ticket !== "string" || !ticket) return undefined;
     const t = this.tickets.get(ticket);
-    return t && mesmoHash(t.sessaoHash, sha(token)) ? t : undefined;
+    if (!t || !mesmoHash(t.sessaoHash, sha(token))) return undefined;
+    this.tickets.delete(ticket);
+    return t;
   }
 
   private descartarExpirados(): void {
@@ -115,73 +172,109 @@ export class GerenciarModulos {
     const b = corpo(r.body);
     if (typeof b.caminho !== "string" || !b.caminho.trim()) throw new BrainError("invalid", "informe o caminho da pasta do módulo");
     // a frase vem antes de qualquer código da pasta rodar (é aqui que a conferência carrega o módulo)
-    if (this.recusaFrase(r.res, b.fraseSenha)) return true;
+    this.exigirFrase(b.fraseSenha);
     const real = caminhoRealDePasta(b.caminho);
-    const c = await this.conferir()(real);
+    const c = await this.conferir(real);
     const ticket = c.ok ? this.emitirTicket(real, r.token) : undefined;
     return responder(r.res, 200, { ok: c.ok, causas: c.causas, resumo: c.resumo, caminho: real, ...(ticket ? { ticket } : {}) });
   }
 
   private async adicionar(r: ReqGerenciar): Promise<true> {
+    this.recusarReinicioComErrosDeFrase();
     const b = corpo(r.body);
-    const t = this.ticketValido(b.ticket, r.token);
-    if (!t) return responder(r.res, 409, { error: "ticket_invalido", message: "a conferência expirou ou é de outra sessão; confira a pasta de novo" });
     const soNestaMaquina = opcionalBool(b.soNestaMaquina, "soNestaMaquina");
     const config = b.config === undefined ? {} : b.config;
-    // o código pode ter mudado desde a conferência: confere de novo, agora com a config, e o id vem daqui
-    const c = await this.conferir()(t.caminhoReal, config);
-    if (!c.ok || !c.resumo) return responder(r.res, 400, { error: "modulo_invalido", message: "a pasta deixou de ser um módulo válido; confira de novo", causas: c.causas });
-    const id = c.resumo.id;
-    const existente = this.modulosEmDisco()[id];
-    if (existente) return responder(r.res, 409, { error: "id_existente", message: `o módulo "${id}" já está configurado`, caminho: existente.path });
-    const erros = await this.errosDaConfig(config, c.config);
-    if (erros) return responder(r.res, 400, { error: "config_invalida", erros });
-    const entrada = { enabled: true, path: t.caminhoReal, config, ...(soNestaMaquina ? { host: hostname() } : {}) } as ModuleEntry;
-    await this.brain.setModuleEntry(id, entrada, r.who);
-    this.tickets.delete(String(b.ticket));
+    const t = this.tomarTicket(b.ticket, r.token);
+    if (!t) throw new Recusa(409, { error: "ticket_invalido", message: "a conferência expirou ou é de outra sessão; confira a pasta de novo" });
+    // o ticket volta ao mapa só quando dá para tentar de novo com ele (config inválida, conferências demais)
+    let devolver = false;
+    try {
+      // o código pode ter mudado desde a conferência: confere de novo, agora com a config, e o id vem daqui
+      let c: ResultadoConferencia;
+      try { c = await this.conferir(t.caminhoReal, config); }
+      catch (e) { devolver = e instanceof Recusa && e.status === 429; throw e; }
+      if (!c.ok || !c.resumo) throw new Recusa(400, { error: "modulo_invalido", message: "a pasta deixou de ser um módulo válido; confira de novo", causas: c.causas });
+      const id = c.resumo.id;
+      const existente = this.modulosEmDisco()[id];
+      if (existente) throw idExistente(id, existente);
+      const erros = await this.errosDaConfig(config, c.config);
+      if (erros) { devolver = true; throw new Recusa(400, { error: "config_invalida", erros }); }
+      const entrada = { enabled: true, path: t.caminhoReal, config, ...(soNestaMaquina ? { host: hostname() } : {}) } as ModuleEntry;
+      await this.gravar(id, (atual) => { if (atual) throw idExistente(id, atual); return entrada; }, r.who);
+    } catch (e) {
+      if (devolver && !this.tickets.has(String(b.ticket))) this.tickets.set(String(b.ticket), t);
+      throw e;
+    }
     return this.responderEReiniciar(r.res, { mensagem: MSG_ADICIONADO });
   }
 
   private async atualizar(r: ReqGerenciar, id: string): Promise<true> {
     const b = corpo(r.body);
-    const atual = this.modulosEmDisco()[id];
-    if (!atual) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
     const enabled = opcionalBool(b.enabled, "enabled");
     const soNestaMaquina = opcionalBool(b.soNestaMaquina, "soNestaMaquina");
     if (b.config === undefined && enabled === undefined && soNestaMaquina === undefined) throw new BrainError("invalid", "nada para mudar (config, enabled ou soNestaMaquina)");
-    // ligar (inclusive junto com a config) é como adicionar: exige a frase quando existe
-    if (enabled === true && atual.enabled === false && this.recusaFrase(r.res, b.fraseSenha)) return true;
+    const atual = this.modulosEmDisco()[id];
+    if (!atual) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
+
+    const aplicar = (e: ModuleEntry): ModuleEntry => {
+      const { host: _host, ...semHost } = e;
+      return {
+        ...(soNestaMaquina === false ? semHost : e),
+        ...(soNestaMaquina ? { host: hostname() } : {}),
+        ...(enabled !== undefined ? { enabled } : {}),
+        ...(b.config !== undefined ? { config: b.config } : {}),
+      } as ModuleEntry;
+    };
+    // "ligar" = o módulo passa a rodar nesta máquina por causa deste PUT (enabled, ou o host que o deixava inativo aqui)
+    const liga = (antes: ModuleEntry) => carregaAqui(aplicar(antes)) && !carregaAqui(antes);
+    const modo = this.modoFrase();
+    let fraseValida = false;
+    if (liga(atual)) { this.exigirFrase(b.fraseSenha); fraseValida = modo === "tem"; }
+    // depois da frase: a certa zera os erros, e quem a digitou errado antes não fica preso
+    this.recusarReinicioComErrosDeFrase();
+
     if (b.config !== undefined) {
-      // só confere pelo schema o módulo cujo código já roda neste serve; falho, ausente ou desligado: só o detector de segredos
-      const m = this.o.registry.get(id);
-      const carrega = !!m?.def && !!m.dir && !!this.o.conferir;
-      const c = carrega ? await this.o.conferir!(m.dir, b.config) : undefined;
+      // rodar o código (num filho) para validar pelo schema só quando já está autorizado: sem frase no vault, ligando com a frase
+      // ou já rodando aqui. Configurar um desligado num vault com frase: só o detector de segredos (o loader valida ao ligar)
+      const autorizado = modo === "nao" || fraseValida || carregaAqui(atual);
+      const dir = autorizado ? pastaDoModulo(id, atual) : undefined;
+      const c = dir ? await this.conferir(dir, b.config) : undefined;
+      // não carrega (falho, ausente): grava sem o schema
       const erros = await this.errosDaConfig(b.config, c?.ok ? c.config : undefined);
-      if (erros) return responder(r.res, 400, { error: "config_invalida", erros });
+      if (erros) throw new Recusa(400, { error: "config_invalida", erros });
     }
-    const { host: _host, ...semHost } = atual;
-    const proxima = {
-      ...(soNestaMaquina === false ? semHost : atual),
-      ...(soNestaMaquina ? { host: hostname() } : {}),
-      ...(enabled !== undefined ? { enabled } : {}),
-      ...(b.config !== undefined ? { config: b.config } : {}),
-    } as ModuleEntry;
-    await this.brain.setModuleEntry(id, proxima, r.who);
+    await this.gravar(id, (fresca) => {
+      if (!fresca) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
+      // a entrada mudou desde a leitura e agora este PUT ligaria o módulo: só com a frase já conferida
+      if (liga(fresca) && modo !== "nao" && !fraseValida) throw new Recusa(403, { error: "frase_senha", message: "este vault exige a frase-senha do revisor" });
+      return aplicar(fresca);
+    }, r.who);
     return this.responderEReiniciar(r.res, { mensagem: `Módulo atualizado. ${REINICIO}` });
   }
 
   private async remover(r: ReqGerenciar, id: string): Promise<true> {
-    if (!this.modulosEmDisco()[id]) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
+    this.recusarReinicioComErrosDeFrase();
     // só a entrada da config: a pasta e o estado do módulo ficam (adicionar de novo recupera tudo)
-    await this.brain.setModuleEntry(id, null, r.who);
+    await this.gravar(id, (atual) => {
+      if (!atual) throw new BrainError("not_found", `módulo "${id}" não está configurado`);
+      return null;
+    }, r.who);
     return this.responderEReiniciar(r.res, { mensagem: `Módulo removido. ${REINICIO}` });
   }
 
   // ---- apoio ----
 
-  private conferir(): Conferir {
-    if (!this.o.conferir) throw new BrainError("state_unavailable", "a conferência de módulos só existe no brain serve");
-    return this.o.conferir;
+  /** No máximo 2 conferências (processos filhos) ao mesmo tempo neste processo; a 3ª → 429. */
+  private async conferir(caminho: string, config?: unknown): Promise<ResultadoConferencia> {
+    const conferir = this.o.conferir;
+    if (!conferir) throw new BrainError("state_unavailable", "a conferência de módulos só existe no brain serve");
+    if (this.conferencias >= MAX_CONFERENCIAS) throw new Recusa(429, { error: "conferencias", message: "já há conferências de módulo em andamento; tente de novo em instantes" });
+    this.conferencias++;
+    try { return await conferir(caminho, config); } finally { this.conferencias--; }
+  }
+
+  private async gravar(id: string, atualizar: (atual: ModuleEntry | undefined) => ModuleEntry | null, who: Principal): Promise<BrainConfig> {
+    return this.brain.setModuleEntry(id, atualizar, who);
   }
 
   /**
@@ -190,7 +283,7 @@ export class GerenciarModulos {
    */
   private modulosEmDisco(): Record<string, ModuleEntry> {
     try { return loadConfig(this.brain.vault.configPath).modules; }
-    catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de mudar os módulos"); }
+    catch { throw new BrainError("invalid", MSG_YAML); }
   }
 
   /**
@@ -217,6 +310,13 @@ export class GerenciarModulos {
     });
     return responder(res, 200, corpo);
   }
+}
+
+const idExistente = (id: string, e: ModuleEntry) => new Recusa(409, { error: "id_existente", message: `o módulo "${id}" já está configurado`, caminho: e.path });
+
+/** Pasta do módulo como o loader a resolve; `undefined` se não resolve ou não existe (não carrega: nada a conferir). */
+function pastaDoModulo(id: string, e: ModuleEntry): string | undefined {
+  try { const dir = resolveModuleDir(id, e); return existsSync(dir) ? dir : undefined; } catch { return undefined; }
 }
 
 /** Definição sem schema: `validarConfigDoModulo` fica só com o detector de segredos (mensagem e campo iguais aos do módulo). */
