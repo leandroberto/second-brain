@@ -26,11 +26,13 @@ const avisos = async () => json(await call(sessao, "/api/notifications"));
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "brain-mod-e2e-"));
   process.env.BRAIN_STATE_DIR = join(dir, "state");
-  brain = await Brain.init(join(dir, "vault"));
-  const atual = readFileSync(brain.vault.configPath, "utf8").replace(/^modules:.*$/m, "");
+  // o config com o módulo é escrito antes do `Brain.open` (API pública): o bloco `modules` é lido na abertura
+  const vault = join(dir, "vault");
+  (await Brain.init(vault)).close();
+  const cfg = join(vault, ".brain", "config.yaml");
   const modules = { lembrete: { enabled: true, path: LEMBRETE, config: { horario: "10:00" } } };
-  writeFileSync(brain.vault.configPath, `${atual.trimEnd()}\nmodules: ${JSON.stringify(modules)}\n`, "utf8");
-  (brain as unknown as { reloadConfig(): void }).reloadConfig();
+  writeFileSync(cfg, `${readFileSync(cfg, "utf8").replace(/^modules:.*$/m, "").trimEnd()}\nmodules: ${JSON.stringify(modules)}\n`, "utf8");
+  brain = await Brain.open(vault);
   // sem `engine`: a IA dos módulos responde "IA indisponível". Sem o agendador automático: perto das 10:00 locais o tick
   // competiria com `rodarDiario` (o teste roda a tarefa só pelo "rodar agora")
   serve = await startServe(brain, { port: 0, sessions: sessions(), agendador: false });

@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { stringify, parse } from "yaml";
-import { ModuleRegistry, loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, vaultFingerprint, type Brain } from "../src/index.js";
+import { ModuleRegistry, importModuleDef, loadModules, modulesStateRoot, resolveModuleDir, stopModules, validar, vaultFingerprint, type Brain } from "../src/index.js";
 import { stateSlug } from "../src/state.js";
 import { claude, cleanup, tempBrain } from "./helpers.js";
 
@@ -330,5 +330,114 @@ describe("resolveModuleDir e validar", () => {
     const s = { "~standard": { version: 1 as const, vendor: "t", validate: () => ({ issues: [{ message: "ruim", path: ["a", { key: "b" }] }, { message: "geral" }] }) } };
     expect(await validar(s, {})).toEqual({ ok: false, mensagem: "a.b: ruim; geral" });
     expect(await validar({ "~standard": { version: 1 as const, vendor: "t", validate: async (v) => ({ value: v }) } }, 3)).toEqual({ ok: true, value: 3 });
+  });
+});
+
+/** pacote temporário: `package.json` livre e arquivos `{nome: conteúdo}` */
+function pacote(prefixo: string, pkg: Record<string, unknown>, arquivos: Record<string, string>): string {
+  const d = mkdtempSync(join(tmpdir(), `brain-mod${prefixo}-`));
+  writeFileSync(join(d, "package.json"), JSON.stringify({ type: "module", ...pkg }));
+  for (const [nome, corpo] of Object.entries(arquivos)) { mkdirSync(join(d, nome, ".."), { recursive: true }); writeFileSync(join(d, nome), corpo); }
+  return d;
+}
+const def = (id: string) => `export default { sdk: 1, id: "${id}", nome: "N", versao: "1" };`;
+
+describe("identidade do módulo no carregamento", () => {
+  it("id da definição diferente da chave da config fica falho e a causa cita os dois", async () => {
+    const b = await comModulos({ chave: { path: pacote("div", { exports: "./index.js" }, { "index.js": def("outro") }) } });
+    const m = (await loadModules(b, { modo: "serve" })).get("chave")!;
+    expect(m.status).toBe("falho");
+    expect(m.causa).toBe('id do módulo ("outro") difere da chave na config ("chave")');
+  });
+
+  it("id fora da regex (maiúscula, início numérico, curto, longo demais) fica falho antes de comparar com a chave", async () => {
+    for (const id of ["Maiuscula", "1abc", "a", "a".repeat(32), "com_underscore"]) {
+      const b = await comModulos({ x1: { path: pacote("rx", { exports: "./index.js" }, { "index.js": def(id) }) } });
+      const m = (await loadModules(b, { modo: "serve" })).get("x1")!;
+      expect(m.status, id).toBe("falho");
+      expect(m.causa, id).toContain("id do módulo inválido");
+    }
+  });
+});
+
+describe("entrada do pacote (exports/main)", () => {
+  const carregar = async (pkg: Record<string, unknown>, arquivos: Record<string, string>) => importModuleDef(pacote("ent", pkg, arquivos));
+
+  it("exports como string", async () => {
+    expect((await carregar({ exports: "./a.js" }, { "a.js": def("a-string") })).id).toBe("a-string");
+  });
+  it("exports com \".\" como string", async () => {
+    expect((await carregar({ exports: { ".": "./a.js" } }, { "a.js": def("a-ponto") })).id).toBe("a-ponto");
+  });
+  it("exports com condições: import tem precedência sobre default", async () => {
+    const d = await carregar({ exports: { ".": { import: "./i.js", default: "./d.js" } } }, { "i.js": def("via-import"), "d.js": def("via-default") });
+    expect(d.id).toBe("via-import");
+  });
+  it("exports com só default", async () => {
+    expect((await carregar({ exports: { ".": { default: "./d.js" } } }, { "d.js": def("via-default") })).id).toBe("via-default");
+  });
+  it("exports com condições aninhadas e sem a chave \".\"", async () => {
+    expect((await carregar({ exports: { import: { default: "./n.js" } } }, { "n.js": def("aninhado") })).id).toBe("aninhado");
+  });
+  it("sem exports usa main", async () => {
+    expect((await carregar({ main: "lib/m.js" }, { "lib/m.js": def("via-main") })).id).toBe("via-main");
+  });
+  it("exports sem alvo utilizável cai para main", async () => {
+    expect((await carregar({ exports: { ".": { types: "./x.d.ts" } }, main: "m.js" }, { "m.js": def("fallback-main") })).id).toBe("fallback-main");
+  });
+  it("sem exports nem main lança", async () => {
+    await expect(carregar({}, { "index.js": def("x") })).rejects.toThrow("package.json sem exports nem main");
+  });
+  it("sem export default (ou default que não é objeto) lança com a orientação", async () => {
+    await expect(carregar({ exports: "./a.js" }, { "a.js": "export const x = 1;" })).rejects.toThrow("o módulo não tem export default (use defineModule)");
+    await expect(carregar({ exports: "./a.js" }, { "a.js": "export default 42;" })).rejects.toThrow("o módulo não tem export default");
+  });
+  it("módulo sem export default fica falho no loadModules com a causa", async () => {
+    const b = await comModulos({ semdef: { path: pacote("sd", { exports: "./a.js" }, { "a.js": "export const x = 1;" }) } });
+    const m = (await loadModules(b, { modo: "serve" })).get("semdef")!;
+    expect(m.status).toBe("falho");
+    expect(m.causa).toContain("o módulo não tem export default");
+  });
+});
+
+describe("stopModules com parar que trava", () => {
+  afterEach(() => { vi.useRealTimers(); });
+  const travado = () => pacote("trava", { exports: "./index.js" }, { "index.js": 'export default { sdk: 1, id: "trava", nome: "T", versao: "1", parar() { return new Promise(() => {}); } };' });
+
+  it("respeita o timeout informado, registra o estouro e não pendura", async () => {
+    const b = await comModulos({ trava: { path: travado() } });
+    const reg = await loadModules(b, { modo: "serve" });
+    vi.useFakeTimers();
+    const fim = stopModules(reg, 200);
+    await vi.advanceTimersByTimeAsync(199);
+    expect(reg.errors("trava")).toHaveLength(0); // ainda esperando
+    await vi.advanceTimersByTimeAsync(1);
+    await fim;
+    expect(reg.errors("trava")[0]).toMatchObject({ onde: "parar", mensagem: "tempo esgotado (200 ms)" });
+    expect(vi.getTimerCount()).toBe(0); // o timer do timeout não fica vivo
+  });
+
+  it("o padrão é 5 s", async () => {
+    const b = await comModulos({ trava: { path: travado() } });
+    const reg = await loadModules(b, { modo: "serve" });
+    vi.useFakeTimers();
+    let acabou = false;
+    const fim = stopModules(reg).then(() => { acabou = true; });
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(acabou).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await fim;
+    expect(reg.errors("trava")[0]).toMatchObject({ onde: "parar", mensagem: "tempo esgotado (5000 ms)" });
+  });
+
+  it("um parar travado não impede o parar dos outros módulos", async () => {
+    const parou = mkdtempSync(join(tmpdir(), "brain-modparou-"));
+    const ok = pacote("ok2", { exports: "./index.js" }, { "index.js": `import { writeFileSync } from "node:fs"; export default { sdk: 1, id: "boa", nome: "B", versao: "1", async parar() { writeFileSync(${JSON.stringify(join(parou, "parou"))}, "1"); } };` });
+    const b = await comModulos({ trava: { path: travado() }, boa: { path: ok } });
+    const reg = await loadModules(b, { modo: "serve" });
+    await stopModules(reg, 100);
+    expect(existsSync(join(parou, "parou"))).toBe(true);
+    expect(reg.errors("trava")).toHaveLength(1);
+    expect(reg.errors("boa")).toHaveLength(0);
   });
 });

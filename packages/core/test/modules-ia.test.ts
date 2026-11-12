@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -58,6 +58,10 @@ describe("complete / createModuleIa", () => {
     await ia.completar({ prompt: "p", comNotas: true });
     const a = chamadas[0]!.args;
     expect(a[a.indexOf("--allowedTools") + 1]).toBe("mcp__second-brain__brain_search,mcp__second-brain__brain_get,mcp__second-brain__brain_context");
+    // o que o modo não libera é negado explicitamente (negação vence pré-aprovação): propor, ligar, substituir etc. ficam de fora
+    const negadas = a[a.indexOf("--disallowedTools") + 1]!.split(",");
+    expect(negadas).toEqual(expect.arrayContaining(["mcp__second-brain__brain_propose", "mcp__second-brain__brain_commit", "mcp__second-brain__brain_link", "mcp__second-brain__brain_amend", "mcp__second-brain__brain_supersede"]));
+    expect(negadas).not.toContain("mcp__second-brain__brain_search");
     expect(chamadas[0]!.mcp!.env.BRAIN_AGENT_NAME).toBe("module/x");
     expect(chamadas[0]!.mcp!.env.BRAIN_AGENT_CHANNEL).toBe("module");
     expect(chamadas[0]!.mcp!.env.BRAIN_MCP_SEM_MODULOS).toBe("1"); // o MCP do motor não importa módulos
@@ -115,6 +119,19 @@ describe("complete / createModuleIa", () => {
     const { ia, root } = montar(() => ({ codigo: 1, estourouTempo: false, stderr: "boom", stdout: "" }));
     expect(await ia.completar({ prompt: "p" })).toMatchObject({ ok: false, tipo: "erro" });
     expect(existsSync(join(root, "_ia.json"))).toBe(false);
+  });
+
+  it("falha ao somar o gasto avisa no stderr, devolve a resposta e não derruba a chamada", async () => {
+    let raiz = "";
+    // a conferência do teto passa (arquivo ausente); durante a chamada o registro vira uma pasta e a leitura da soma falha (EISDIR)
+    const m = montar(() => { mkdirSync(join(raiz, "_ia.json"), { recursive: true }); return saida({ total_cost_usd: 0.1 }); });
+    raiz = m.root;
+    const erros: string[] = []; const spy = vi.spyOn(console, "error").mockImplementation((x: unknown) => { erros.push(String(x)); });
+    try {
+      expect(await m.ia.completar({ prompt: "p" })).toMatchObject({ ok: true });
+    } finally { spy.mockRestore(); }
+    expect(erros).toHaveLength(1);
+    expect(erros[0]).toMatch(/^\[brain\] módulo x: não foi possível gravar o gasto de IA \(.+\); o teto diário não vale para esta chamada$/);
   });
 
   it("orcamento e timeout contam o orçamento da chamada; erro com total_cost_usd conta o custo", async () => {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
-import { authorize, loadConfig } from "../src/index.js";
+import { ConfigSchema, authorize, loadConfig } from "../src/index.js";
 import { modulePrincipal } from "../src/modules/identity.js";
 import { cleanup, human, tempBrain } from "./helpers.js";
 
@@ -40,7 +40,7 @@ describe("config modules e identidade module/<id>", () => {
   });
 
   it("módulo não escreve nem decide", () => {
-    const cfg = loadConfig(join(tmpdir(), "inexistente-config.yaml"));
+    const cfg = ConfigSchema.parse({});
     const m = modulePrincipal("x1");
     for (const op of ["write", "assist", "decide", "admin"] as const) expect(() => authorize(m, op, { config: cfg })).toThrow();
     expect(authorize(m, "propose", { config: cfg })).toBe(m);

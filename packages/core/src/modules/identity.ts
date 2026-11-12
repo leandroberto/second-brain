@@ -11,7 +11,7 @@ export const MODULE_ID_RE = /^[a-z][a-z0-9-]{1,30}$/;
  */
 export const MODULE_TOOL_RE = /^[a-z][a-z0-9_]{0,40}$/;
 
-/** Identidade de um módulo no Core: agente no canal "module". Nunca humano; só pode `read`/`propose`/`amend` da própria proposta. */
+/** Identidade de um módulo no Core: agente no canal "module". Nunca humano; só pode `read`/`propose`/`amend` da própria proposta (o `amend` está coberto em modules-loader.test.ts, "ctx.brain.amend corrige a própria proposta"). */
 export function modulePrincipal(id: string): Principal {
   if (!MODULE_ID_RE.test(id)) throw new BrainError("invalid", `id de módulo inválido: "${id}" (use ${MODULE_ID_RE.source})`);
   return principal("agent", `module/${id}`, "module");
