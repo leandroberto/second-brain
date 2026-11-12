@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -10,7 +10,7 @@ import { ADDITIVE_RESOLUTION, INTERNAL_READER, authorize, isHumanReviewer, isPri
 const WATCHER = principal("system", "watcher", "internal");
 import { wantsHistory } from "./freshness/index.js";
 import { NOTE_TYPES, RELATION_TYPES, STATUSES } from "@brain/shared";
-import { ConfigSchema, dumpConfig, loadConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
+import { ConfigSchema, dumpConfig, loadConfig, parseConfig, type AcaoDeModulo, type BrainConfig, type ModuleEntry } from "./config.js";
 import { MODULE_ID_RE } from "./modules/identity.js";
 import { IndexDb } from "./db.js";
 import { HashEmbedder, OpenAICompatibleEmbedder, chaveDeEmbeddings, isLocalUrl, type EmbeddingProvider } from "./embeddings.js";
@@ -163,12 +163,20 @@ export class Brain {
    * A config como está no disco agora (edição manual, outro processo), para quem só lê, como a tela de Configurações: sem isso,
    * depois de um "nada mudou" do gerenciamento de módulos (decidido pelo disco) a tela seguiria mostrando a cópia da memória.
    */
-  freshConfig(): BrainConfig { this.reloadConfig(); return this.config; }
+  freshConfig(): BrainConfig {
+    // lido sem o lock: vazio ou ilegível pode ser outro processo no meio da gravação (o writeFileSync trunca antes de escrever),
+    // e aplicar isso traria os padrões para a memória. Nesse caso fica a config que já está em memória.
+    let texto: string;
+    try { texto = readFileSync(this.vault.configPath, "utf8"); } catch { return this.config; }
+    if (!texto.trim()) return this.config;
+    this.reloadConfig(() => parseConfig(texto));
+    return this.config;
+  }
 
   /** Política/config podem ter sido alteradas por outro processo (UI, outro MCP): sempre reler sob o lock. */
-  private reloadConfig(): void {
+  private reloadConfig(ler: () => BrainConfig = () => loadConfig(this.vault.configPath)): void {
     try {
-      const next = loadConfig(this.vault.configPath);
+      const next = ler();
       const changed = JSON.stringify(next.embeddings) !== JSON.stringify(this.config.embeddings);
       this.config = next; // atribui ANTES: makeEmbedder lê this.config (revogar o opt-in externo precisa valer já)
       if (changed) this._embedder = this.makeEmbedder();
@@ -851,6 +859,10 @@ export class Brain {
     const actor = authorize(who, "admin", { config: this.config });
     return this.write(async () => {
       if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new BrainError("invalid", "a configuração deve ser um objeto");
+      // como no setModuleEntry: o reload do `write` engole config inválido e mantém a antiga, e regravar a partir dela apagaria
+      // a edição manual do config.yaml
+      try { loadConfig(this.vault.configPath); }
+      catch { throw new BrainError("invalid", "o .brain/config.yaml tem um erro de edição; corrija-o antes de salvar as configurações"); }
       const merged = deepMerge(this.config as unknown as Record<string, unknown>, patch);
       const r = ConfigSchema.safeParse(merged);
       // o campo e o tipo esperado, nunca o valor recebido (a mensagem volta para a UI)

@@ -70,7 +70,10 @@ export type ModuleEntry = BrainConfig["modules"][string];
 export type AcaoDeModulo = "adicionar" | "ligar" | "desligar" | "configurar" | "restringir_host" | "remover";
 
 export function loadConfig(path: string): BrainConfig {
-  const raw = existsSync(path) ? parse(readFileSync(path, "utf8")) ?? {} : {};
-  return ConfigSchema.parse(raw);
+  return parseConfig(existsSync(path) ? readFileSync(path, "utf8") : "");
+}
+/** O texto de um config.yaml validado (vazio vira os padrões). */
+export function parseConfig(texto: string): BrainConfig {
+  return ConfigSchema.parse(parse(texto) ?? {});
 }
 export const dumpConfig = (c: BrainConfig): string => stringify(c, { lineWidth: 0 });

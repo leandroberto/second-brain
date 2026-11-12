@@ -747,6 +747,20 @@ describe("rotas do core", () => {
     }
   });
 
+  it("settings: config.yaml com erro de edição → 400 com a mensagem do Brain e o arquivo intacto", async () => {
+    const s = await subir();
+    const cfg = brain.vault.configPath;
+    const bom = readFileSync(cfg, "utf8");
+    const quebrado = `${bom}\nisto: [nao fecha\n`;
+    writeFileSync(cfg, quebrado, "utf8");
+    try {
+      const r = await call(s.api, s.ui, "PUT", "/api/settings", { vault_name: "Outro nome" });
+      expect(r.status).toBe(400);
+      expect(await r.json()).toMatchObject({ error: "invalid", message: "o .brain/config.yaml tem um erro de edição; corrija-o antes de salvar as configurações" });
+      expect(readFileSync(cfg, "utf8")).toBe(quebrado);
+    } finally { writeFileSync(cfg, bom, "utf8"); }
+  });
+
   it("settings: o GET devolve a config do disco (o cartão do módulo se atualiza depois de um \"nada mudou\")", async () => {
     const s = await subir();
     gravarModulos({ lembrete: { path: pasta, enabled: false } });

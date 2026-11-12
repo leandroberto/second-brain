@@ -1,9 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
-import { ConfigSchema, authorize, loadConfig } from "../src/index.js";
+import { ConfigSchema, authorize, dumpConfig, loadConfig } from "../src/index.js";
 import { modulePrincipal } from "../src/modules/identity.js";
 import { claude, cleanup, human, tempBrain } from "./helpers.js";
 
@@ -130,5 +130,28 @@ describe("config modules e identidade module/<id>", () => {
     writeFileSync(b.vault.configPath, quebrado, "utf8");
     await expect(b.setModuleEntry("lembrete", { enabled: true, ia_max_usd_dia: 2 }, human)).rejects.toMatchObject({ code: "invalid" });
     expect(readFileSync(b.vault.configPath, "utf8")).toBe(quebrado);
+  });
+
+  it("updateConfig não regrava um config.yaml inválido (a edição manual não se perde)", async () => {
+    const b = await tempBrain();
+    const quebrado = "vault_name: [quebrado\n  modules: : :\n";
+    writeFileSync(b.vault.configPath, quebrado, "utf8");
+    await expect(b.updateConfig({ vault_name: "X" }, human)).rejects.toMatchObject({ code: "invalid", message: "o .brain/config.yaml tem um erro de edição; corrija-o antes de salvar as configurações" });
+    expect(readFileSync(b.vault.configPath, "utf8")).toBe(quebrado);
+  });
+
+  it("freshConfig com o config.yaml vazio ou ilegível mantém a config em memória (outro processo pode estar no meio da gravação)", async () => {
+    const b = await tempBrain();
+    await b.updateConfig({ vault_name: "Meu vault", governance: { stale_days: 7 } }, human);
+    writeFileSync(b.vault.configPath, "", "utf8");
+    expect(b.freshConfig()).toMatchObject({ vault_name: "Meu vault", governance: { stale_days: 7 } });
+    writeFileSync(b.vault.configPath, "  \n", "utf8");
+    expect(b.freshConfig()).toMatchObject({ vault_name: "Meu vault", governance: { stale_days: 7 } });
+    rmSync(b.vault.configPath);
+    expect(b.freshConfig()).toMatchObject({ vault_name: "Meu vault", governance: { stale_days: 7 } });
+    // um arquivo legível continua valendo na hora
+    writeFileSync(b.vault.configPath, stringify({ ...parse(dumpConfig(b.config)), vault_name: "Editado por fora" }), "utf8");
+    expect(b.freshConfig().vault_name).toBe("Editado por fora");
+    b.close();
   });
 });
