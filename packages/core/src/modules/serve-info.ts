@@ -1,5 +1,6 @@
-import { linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { linkSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { BrainError } from "@brain/shared";
 import { writeFileAtomic } from "../fs-atomic.js";
@@ -46,17 +47,32 @@ export function clearServeInfo(root: string): void {
   try { rmSync(arquivo(root), { force: true }); } catch { /* best effort */ }
 }
 
-/** Identificador não sensível do vault (sha256 curto do caminho real), devolvido por `GET /api/serve`. */
+/**
+ * Identificador não sensível do vault (sha256 curto do caminho real), devolvido por `GET /api/serve` e usado no nome da pasta
+ * de estado. Num FS que não diferencia maiúsculas (/mnt/c, macOS), o mesmo vault pode ser aberto com caixas diferentes: aí o
+ * hash é do caminho em minúsculas.
+ */
 export function vaultFingerprint(vaultRoot: string): string {
-  let p: string; try { p = realpathSync(vaultRoot); } catch { p = resolve(vaultRoot); }
-  return createHash("sha256").update(p).digest("hex").slice(0, 16);
+  let p: string; try { p = realpathSync.native(vaultRoot); } catch { p = resolve(vaultRoot); }
+  return createHash("sha256").update(semDiferencaDeCaixa(p) ? p.toLowerCase() : p).digest("hex").slice(0, 16);
+}
+
+/** Sonda o FS do vault: o nome da pasta com a caixa trocada resolve para o mesmo arquivo (mesmo `ino`/`dev`)? */
+function semDiferencaDeCaixa(p: string): boolean {
+  const nome = basename(p);
+  const trocado = [...nome].map((c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase())).join("");
+  if (trocado === nome) return false; // sem letras: não dá para sondar
+  try {
+    const a = statSync(p); const b = statSync(join(dirname(p), trocado));
+    return a.ino === b.ino && a.dev === b.dev;
+  } catch { return false; }
 }
 
 /**
  * Estado do `serve` anunciado no `serve.json`, para este vault:
  * - `vivo`: `GET <url>/api/serve` com o api-token respondeu 200 com o MESMO pid do arquivo e a impressão do MESMO vault;
  * - `morto`: sem `serve.json`, pid inexistente (ESRCH), conexão recusada, 4xx que não é de credencial (404: outro servidor na
- *   porta) ou resposta de outro pid/vault;
+ *   porta), 200 que não é JSON ou resposta de outro pid/vault;
  * - `indeterminado`: o pid existe mas não deu para confirmar (timeout, outro erro de rede, 5xx, 401/403, sem api-token). Um
  *   serve com o event loop travado (laço síncrono de módulo, indexação pesada) cai aqui. O `serve.json` mora no estado deste
  *   vault (com dono, ver `modulesStateRoot`), então 401/403 não vem de outro vault: é o próprio serve com um api-token
@@ -94,9 +110,10 @@ export async function serveEstado(root: string, vault: { root: string; tokenPath
   if (r.status >= 500) return indeterminado(`respondeu HTTP ${r.status}`);
   if (r.status === 401 || r.status === 403) return indeterminado(`recusou o api-token em disco (HTTP ${r.status})`);
   if (!r.ok) return { estado: "morto" };
-  let j: { vault?: unknown; pid?: unknown };
-  try { j = await r.json() as typeof j; } catch { return indeterminado("resposta ilegível"); }
-  return j.pid === i.pid && j.vault === vaultFingerprint(vault.root) ? { estado: "vivo", url: i.url, pid: i.pid } : { estado: "morto" };
+  // 200 sem JSON, ou JSON sem o pid e o vault deste serve: outro programa na porta
+  let j: { vault?: unknown; pid?: unknown } | null;
+  try { j = await r.json() as typeof j; } catch { return { estado: "morto" }; }
+  return j?.pid === i.pid && j?.vault === vaultFingerprint(vault.root) ? { estado: "vivo", url: i.url, pid: i.pid } : { estado: "morto" };
 }
 
 /** Fallback de §7.10 quando não há `serve.json`: `http://127.0.0.1:<BRAIN_PORT ou 3737>`. Nunca para enviar sessão humana. */
@@ -110,6 +127,27 @@ export function serveFallbackUrl(env: NodeJS.ProcessEnv = process.env): string {
 const arquivoLock = (root: string) => join(dirname(root), "serve.lock");
 /** Lock de pid vivo mas sem serve anunciado por esse pid há mais que isso: pid reusado (reboot), retomado. */
 const LOCK_VELHO_MS = 10 * 60_000;
+/** O serve vivo renova o mtime do lock nesse intervalo (um lock que deixou de ser renovado envelhece). */
+const RENOVAR_LOCK_MS = 60_000;
+/** Folga na comparação com a hora do boot (o uptime e o relógio não batem ao milissegundo). */
+const MARGEM_BOOT_MS = 60_000;
+/** Lock gravado antes do último boot: o processo dono não sobreviveu ao reboot, mesmo que o pid exista de novo. */
+const antesDoBoot = (mtimeMs: number): boolean => mtimeMs < Date.now() - uptime() * 1000 - MARGEM_BOOT_MS;
+
+/** Cria o lock já com o conteúdo: tmp + `link` (atômico, falha com EEXIST se já houver lock). `false` = já existe. */
+function criarLock(alvo: string, conteudo: string): boolean {
+  const tmp = `${alvo}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, conteudo, { mode: 0o600 });
+    linkSync(tmp, alvo);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw e;
+  } finally {
+    try { rmSync(tmp, { force: true }); } catch { /* best effort */ }
+  }
+}
 
 const pidExiste = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
@@ -126,45 +164,51 @@ const lerLock = (arq: string): { pid: number; nonce?: string } => {
 };
 
 /**
- * Lock exclusivo `<stateDir>/serve.lock` (`{ pid, nonce, desde }`, criado com `wx`), adquirido no começo do `startServe`, antes
- * de carregar qualquer coisa. Quando o lock existe:
+ * Lock exclusivo `<stateDir>/serve.lock` (`{ pid, nonce, desde }`, criado já com o conteúdo por tmp + `link`), adquirido no
+ * começo do `startServe`, antes de carregar qualquer coisa, e com o mtime renovado a cada 60 s enquanto o serve vive.
+ * Quando o lock existe:
  * - pid deste processo: só é válido se o nonce for de uma aquisição deste processo (outro `startServe` aqui); senão é velho;
+ * - mtime anterior ao último boot: velho (o pid pode ter renascido em outro processo);
  * - pid inexistente: velho;
  * - pid vivo e `serve.json` desse pid: `serveEstado` decide (`morto` = pid reusado depois de uma queda, velho; `vivo` ou
  *   `indeterminado` = recusa);
  * - pid vivo sem `serve.json` dele (o dono ainda está subindo): recusa, a menos que o lock tenha mais de 10 min (velho).
  * Lock velho é retomado com `rename` para um nome único (atômico: entre dois concorrentes só um vence; o outro recomeça) e
- * só então o novo é criado com `wx`. `liberar()` só apaga o lock se ele ainda for desta aquisição.
+ * só então o novo é criado. `liberar()` para a renovação e só apaga o lock se ele ainda for desta aquisição.
  */
 export async function acquireServeLock(root: string, vault: { root: string; tokenPath: string }): Promise<{ liberar(): void }> {
   const alvo = arquivoLock(root);
   const nonce = randomBytes(8).toString("hex");
   for (let tentativa = 0; tentativa < 5; tentativa++) {
-    try {
-      writeFileSync(alvo, JSON.stringify({ pid: process.pid, nonce, desde: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
+    if (criarLock(alvo, JSON.stringify({ pid: process.pid, nonce, desde: new Date().toISOString() }))) {
       noncesDoProcesso.add(nonce);
+      const renovacao = setInterval(() => {
+        try { if (lerLock(alvo).nonce === nonce) { const t = new Date(); utimesSync(alvo, t, t); } } catch { /* lock removido por terceiro */ }
+      }, RENOVAR_LOCK_MS);
+      renovacao.unref();
       return {
         liberar() {
+          clearInterval(renovacao);
           noncesDoProcesso.delete(nonce);
           try { if (lerLock(alvo).nonce === nonce) rmSync(alvo, { force: true }); } catch { /* já não existe */ }
         },
       };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
     const dono = lerLock(alvo);
+    let mtimeMs: number; try { mtimeMs = statSync(alvo).mtimeMs; } catch { continue; } // sumiu: recomeça
     const recusar = (motivo: string) => new BrainError("locked", `${motivo} (lock: ${alvo})`);
     // cada ramo que não recusa conclui que o lock é velho (dono morto, pid reusado, ou lock ilegível)
     if (dono.pid === process.pid) {
       if (dono.nonce && noncesDoProcesso.has(dono.nonce)) throw recusar("já há um brain serve subindo ou rodando neste processo para este vault");
+    } else if (antesDoBoot(mtimeMs)) {
+      // gravado antes do último boot: o dono não existe mais, mesmo que o pid tenha renascido
     } else if (dono.pid && pidExiste(dono.pid)) {
       if (ler(root)?.pid === dono.pid) {
         const e = await serveEstado(root, vault);
         if (e.estado === "vivo") throw recusar(`já há um brain serve rodando para este vault em ${e.url}`);
         if (e.estado === "indeterminado") throw recusar(`há um brain serve para este vault em ${e.url} (pid ${e.pid}) que não respondeu (${e.motivo}); encerre-o (kill ${e.pid}) antes de subir outro`);
       } else {
-        let idade: number; try { idade = Date.now() - statSync(alvo).mtimeMs; } catch { continue; } // sumiu: recomeça
-        if (idade <= LOCK_VELHO_MS) throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
+        if (Date.now() - mtimeMs <= LOCK_VELHO_MS) throw recusar(`já há um brain serve subindo para este vault (pid ${dono.pid}); se esse processo não é um brain serve, apague o lock`);
       }
     }
     retomar(alvo, dono.nonce);
