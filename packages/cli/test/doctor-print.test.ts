@@ -20,8 +20,14 @@ describe("brain doctor: saída de texto", () => {
   it("remove caracteres de controle (C0/C1, inclusive ESC) do nome, do detalhe e da correção", () => {
     const out = impresso(() => printChecks([{ id: "x", name: "No\x1b[2Jme", status: "warn", detail: "de\x1b[31mtalhe\x07\x9b31m\r\x00fim", fix: "cor\x1b]0;título\x07reção\u0085" }]));
     expect(out.replaceAll("\n", "")).not.toMatch(/\p{Cc}/u); // as quebras de linha são do próprio printChecks
-    expect(out).toContain("[31mtalhe31mfim");
+    expect(out).toContain("[31mtalhe31m fim"); // o \r vira espaço; o \x00 some
     expect(out).toContain("↳ correção: cor]0;títuloreção");
+  });
+
+  it("quebras de linha e tabs viram um espaço (sem colar as linhas) e os acentos ficam", () => {
+    const out = impresso(() => printChecks([{ id: "x", name: "Nome", status: "warn", detail: "linha um\nlinha dois\ttab", fix: "a\r\nb\n\n  c ção" }]));
+    expect(out).toContain("linha um linha dois tab");
+    expect(out).toContain("↳ correção: a b c ção");
   });
 
   it("um model com ESC (vira `oa:<model>` no detalhe dos embeddings) sai sem ESC", async () => {

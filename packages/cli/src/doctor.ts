@@ -66,10 +66,12 @@ export async function runDoctor(vault: string, repoRoot: string, port: number): 
 }
 
 /**
- * Sem caracteres de controle C0/C1 (ESC inclusive): detalhes trazem valores do config.yaml (o `model` em `oa:<model>`, por
+ * Sem caracteres de controle C0/C1 (ESC inclusive; \n, \r e \t viram espaço): detalhes trazem valores do config.yaml (o `model` em `oa:<model>`, por
  * exemplo), gravável pela sessão do navegador, e um ESC ali viraria sequência de terminal.
  */
-const semControle = (s: string): string => s.replace(/\p{Cc}/gu, ""); // Cc = U+0000–U+001F e U+007F–U+009F
+const semControle = (s: string): string =>
+  s.replace(/ *(?:\r\n|[\n\r\t]) *(?:(?:\r\n|[\n\r\t]) *)*/g, " ") // quebras de linha e tabs viram um espaço (sem colar o texto), colapsando os repetidos
+    .replace(/\p{Cc}/gu, ""); // Cc = U+0000–U+001F e U+007F–U+009F
 
 export function printChecks(checks: Check[]): void {
   const icon = { ok: "✔", warn: "▲", fail: "✘" } as const;
