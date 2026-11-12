@@ -603,6 +603,38 @@ describe("brain modules (processo real)", () => {
       expect(r.saida.ok).toBe(false);
       expect(r.saida.causas.join(" ")).toContain("sdk");
     });
+    it("--config <arquivo>, arquivo ilegível e JSON inválido", async () => {
+      const d = mkdtempSync(join(tmpdir(), "brain-check-cfg-"));
+      try {
+        writeFileSync(join(d, "ok.json"), '{"horario":"10:00"}');
+        writeFileSync(join(d, "ruim.json"), "{nao e json");
+        expect((await json([LEMBRETE, "--json", "--config", join(d, "ok.json")])).saida.config).toEqual({ ok: true });
+        for (const arq of [join(d, "ruim.json"), join(d, "nao-existe.json")]) {
+          const r = await json([LEMBRETE, "--json", "--config", arq]);
+          expect(r.saida.config).toMatchObject({ ok: false, erros: [{ campo: "" }] });
+        }
+      } finally { rmSync(d, { recursive: true, force: true }); }
+    });
+    it("segredo na config não aparece na saída", async () => {
+      const r = await json([LEMBRETE, "--json", "--config", "-"], JSON.stringify({ horario: "10:00", token: "ghp_" + "a".repeat(36) }));
+      expect(r.saida.config.ok).toBe(false);
+      expect(r.saida.config.erros[0].campo).toBe("token");
+      expect(JSON.stringify(r.saida)).not.toContain("ghp_");
+    });
+    it("módulo com causas e --config: config não conferida", async () => {
+      const r = await json([join(CORE_FIX, "sdk2"), "--json", "--config", "-"], "{}");
+      expect(r.code).toBe(1);
+      expect(r.saida.config).toEqual({ ok: false, erros: [{ campo: "", mensagem: "módulo não conferido" }] });
+    });
+    it("módulo que imprime no import não corrompe o stdout", async () => {
+      const d = mkdtempSync(join(tmpdir(), "brain-check-ruido-"));
+      try {
+        writeFileSync(join(d, "package.json"), JSON.stringify({ name: "ruidoso", version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
+        writeFileSync(join(d, "index.js"), 'console.log("ola do import"); console.warn("aviso"); export default { sdk: 1, id: "ruidoso", nome: "Ruidoso", versao: "0.1.0" };');
+        const r = await json([d, "--json"]);
+        expect(r.saida).toMatchObject({ ok: true, resumo: { id: "ruidoso" } });
+      } finally { rmSync(d, { recursive: true, force: true }); }
+    });
     it("--config - lê a config da entrada padrão", async () => {
       const r = await json([LEMBRETE, "--json", "--config", "-"], '{"horario":"x"}');
       expect(r.saida.config.ok).toBe(false);

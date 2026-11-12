@@ -279,6 +279,34 @@ export async function checarModulo(pasta: string): Promise<{ id?: string; versao
   }
 }
 
+/**
+ * `check --json`: uma única linha JSON no stdout (a API a lê como processo filho). O código do módulo roda no import e pode
+ * imprimir: durante a checagem `console.log/info/warn/debug` vão para o stderr. `ok` e a saída 0/1 refletem só as causas do
+ * módulo; quem chama deve ler também `config.ok` quando passou `--config`.
+ */
+async function checarJson(pasta: string, configArg: string | undefined): Promise<number> {
+  const orig = { log: console.log, info: console.info, warn: console.warn, debug: console.debug };
+  console.log = console.info = console.warn = console.debug = (...a: unknown[]) => { console.error(...a); };
+  let saida: string; let ok: boolean;
+  try {
+    const r = await checarModulo(pasta);
+    let config: ResultadoConfig | undefined;
+    if (configArg !== undefined) {
+      if (!r.def) config = { ok: false, erros: [{ campo: "", mensagem: "módulo não conferido" }] };
+      else {
+        let bruto: unknown; let lido = true;
+        try { bruto = JSON.parse(configArg === "-" ? readFileSync(0, "utf8") : readFileSync(configArg, "utf8")); }
+        catch (e) { lido = false; config = { ok: false, erros: [{ campo: "", mensagem: `config ilegível: ${(e as Error).message}` }] }; }
+        if (lido) config = await validarConfigDoModulo(r.def, bruto);
+      }
+    }
+    ok = !r.causas.length;
+    saida = JSON.stringify({ ok, causas: r.causas, ...(r.resumo ? { resumo: r.resumo } : {}), ...(config ? { config } : {}) });
+  } finally { Object.assign(console, orig); }
+  process.stdout.write(`${saida}\n`);
+  return ok ? 0 : 1;
+}
+
 const USO = "uso: brain modules list | run <id> <tarefa> [--ocorrencia AAAA-MM-DD] | check <pasta> [--json] [--config <arquivo|->]";
 
 /** `brain modules <list|run|check>`; devolve o código de saída. */
@@ -287,20 +315,8 @@ export async function modulesCommand(args: string[], o: { vault: string; port?: 
   switch (sub) {
     case "check": {
       if (!rest[0]) { console.error(USO); return 2; }
+      if (o.json) return checarJson(rest[0], o.config);
       const r = await checarModulo(rest[0]);
-      if (o.json) {
-        // uma linha JSON, a interface que a API chama como processo filho; com --config, valida também a config informada
-        let config: ResultadoConfig | undefined;
-        if (o.config !== undefined && r.def) {
-          let bruto: unknown;
-          try { bruto = JSON.parse(o.config === "-" ? readFileSync(0, "utf8") : readFileSync(o.config, "utf8")); }
-          catch (e) { config = { ok: false, erros: [{ campo: "", mensagem: `config ilegível: ${(e as Error).message}` }] }; }
-          config ??= await validarConfigDoModulo(r.def, bruto);
-        }
-        const ok = !r.causas.length;
-        console.log(JSON.stringify({ ok, causas: r.causas, ...(r.resumo ? { resumo: r.resumo } : {}), ...(config ? { config } : {}) }));
-        return ok ? 0 : 1;
-      }
       if (!r.causas.length) { console.log(`✔ módulo ${r.id}${r.versao ? ` v${r.versao}` : ""}: ok`); return 0; }
       console.log(`✘ módulo ${r.id ?? rest[0]}: ${r.causas.length} problema(s)`);
       for (const c of r.causas) console.log(`  - ${c}`);

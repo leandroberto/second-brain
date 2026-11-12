@@ -1,5 +1,6 @@
 import type { ModuleDef } from "@brain/module-sdk";
 import { scanSecrets } from "../secrets.js";
+import { validar } from "./schema.js";
 
 /** O que a tela e o `brain modules check --json` mostram de um módulo: só o que o autor declarou, sem rodar nada dele. */
 export interface ResumoDoModulo {
@@ -45,8 +46,8 @@ export function resumirModulo(def: ModuleDef): ResumoDoModulo {
 export type ResultadoConfig = { ok: true } | { ok: false; erros: Array<{ campo: string; mensagem: string }> };
 
 const MSG_SEGREDO = "use variável de ambiente ou o cofre do sistema; o módulo lê a credencial por conta própria";
-const campoDe = (path: ReadonlyArray<PropertyKey | { key: PropertyKey }> | undefined) =>
-  (path ?? []).map((p) => String(typeof p === "object" ? p.key : p)).join(".");
+/** A mensagem de um schema pode citar o valor recebido: com possível segredo, é omitida. */
+const semSegredo = (m: string) => (scanSecrets(m).length ? "[mensagem omitida: possível segredo]" : m);
 
 /** Folhas de texto da config com o caminho de cada uma (para apontar o campo que guarda o segredo). */
 function folhas(v: unknown, caminho: string, out: Array<[string, string]>): void {
@@ -62,10 +63,11 @@ function folhas(v: unknown, caminho: string, out: Array<[string, string]>): void
 export async function validarConfigDoModulo(def: ModuleDef, config: unknown): Promise<ResultadoConfig> {
   const erros: Array<{ campo: string; mensagem: string }> = [];
   if (def.configSchema) {
-    let r;
-    try { r = await def.configSchema["~standard"].validate(config); }
-    catch (e) { return { ok: false, erros: [{ campo: "", mensagem: `validação lançou: ${e instanceof Error ? e.message : String(e)}` }] }; }
-    if ("issues" in r && r.issues) for (const i of r.issues) erros.push({ campo: campoDe(i.path), mensagem: i.message });
+    const v = await validar(def.configSchema, config);
+    if (!v.ok) {
+      if (v.lancou) return { ok: false, erros: [{ campo: "", mensagem: semSegredo(v.mensagem) }] };
+      for (const i of v.issues) erros.push({ campo: i.campo, mensagem: semSegredo(i.mensagem) });
+    }
   }
   const textos: Array<[string, string]> = [];
   folhas(config, "", textos);

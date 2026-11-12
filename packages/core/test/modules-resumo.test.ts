@@ -25,6 +25,13 @@ describe("descreverCron", () => {
     expect(descreverCron("0 10 * * *")).toBe("todo dia às 10:00");
     expect(descreverCron("0 18 * * 5")).toBe("sexta às 18:00");
   });
+  it("domingo como 0 e 7", () => {
+    expect(descreverCron("0 8 * * 0")).toBe("domingo às 08:00");
+    expect(descreverCron("0 8 * * 7")).toBe("domingo às 08:00");
+  });
+  it("horário impossível devolve a expressão", () => {
+    expect(descreverCron("60 25 * * *")).toBe("60 25 * * *");
+  });
   it("fora dos padrões devolve a expressão", () => {
     expect(descreverCron("*/15 * * * *")).toBe("*/15 * * * *");
   });
@@ -37,6 +44,13 @@ describe("validarConfigDoModulo", () => {
     expect(ruim.ok).toBe(false);
     if (!ruim.ok) expect(ruim.erros.map((e) => e.campo)).toContain("horario");
     expect(await validarConfigDoModulo(def, { horario: "10:00" })).toEqual({ ok: true });
+  });
+  it("mensagem de issue com segredo é omitida", async () => {
+    const segredo = "ghp_" + "b".repeat(36);
+    const def = { configSchema: { "~standard": { version: 1, vendor: "t", validate: () => ({ issues: [{ message: `valor ${segredo} inválido`, path: ["x"] }] }) } } } as unknown as ModuleDef;
+    const r = await validarConfigDoModulo(def, {});
+    expect(JSON.stringify(r)).not.toContain("ghp_");
+    expect(r).toEqual({ ok: false, erros: [{ campo: "x", mensagem: "[mensagem omitida: possível segredo]" }] });
   });
   it("segredo vira erro no campo sem repetir o valor", async () => {
     const r = await validarConfigDoModulo(await carregar(), { horario: "10:00", token: "ghp_" + "a".repeat(36) });
